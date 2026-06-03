@@ -13,6 +13,14 @@ nix develop -c bash build.sh
 2. make sure network devices is using dpdk compatible driver `dpdk-devbind.py`
 3. enable hugepages `enable_hugepages.sh` 
 
+## run
+
+```
+sudo ./build/l2fwd -l0-1 -m100 -b0000:00:05.0  -- -p 0x3 --no-mac-updating -m dramblast
+```
+
+before `--` is EAL (DPDK) arguments.
+after is application arguments.
 
 ## Other Resources
 
