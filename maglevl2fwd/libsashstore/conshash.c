@@ -15,6 +15,15 @@ __inline__ static size_t get_permutation(Node node, size_t j) {
 
 // Eisenbud 3.4
 void populate_lut(LookUpTable lut) {
+
+
+    // fake backend server mac address
+    for (size_t i = 0; i < TABLE_SIZE; ++i) {
+		lut[i] = i;
+	}
+
+    return;
+
 	// The nodes are meaningless, just like my life
 	Node nodes[3] = {800, 273, 8255};
 	size_t next[3] = {0, 0, 0};

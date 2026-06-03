@@ -8,7 +8,9 @@
 
 #include <rte_cycles.h>
 
+// change this is part of command line argument.
 #define CAPACITY ((1ULL << 20) * 16)
+// uint64_t CAPACITY = 16 * (1 << 20);
 
 /* maglev KV pair */
 struct maglev_kv_pair {

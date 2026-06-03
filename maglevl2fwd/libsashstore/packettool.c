@@ -53,14 +53,14 @@ __inline__ uint64_t flowhash(void *frame) {
 	// Fail early
 	if (f[ETH_HEADER_LEN] >> 4 != 4) {
         // This shitty implementation can only handle IPv4 :(
-		printf("unhandled! not ipv4?\n");
+		// printf("unhandled! not ipv4?\n");
 		return 0;
 	}
 
 	char proto = f[ETH_HEADER_LEN + IPV4_PROTO_OFFSET];
 	if (proto != 6 && proto != 17) {
         // This shitty implementation can only handle TCP and UDP
-		printf("Unhandled proto %x\n", proto);
+		// printf("Unhandled proto %x\n", proto);
 		return 0;
 	}
 

@@ -1,4 +1,4 @@
-libsashstore_sources = [ 'conshash.c', 'hash.c', 'hashmap.c', 'maglev.c', 'packettool.c', 'sashstore.c' ]
+libsashstore_sources = [ 'conshash.c', 'hash.c', 'hashmap.c', 'maglev.c', 'packettool.c', 'sashstore.c', 'dramblast.c']
 
 libsashstore_inc = include_directories('./.')
 

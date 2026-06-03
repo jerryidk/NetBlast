@@ -13,6 +13,8 @@ project('l2fwd-maglev', 'C',
 	meson_version: '>= 0.47.1'
 )
 
+
+add_project_arguments('-mavx512f', '-mavx512dq', language: 'c')
 pktgen_conf = configuration_data()
 
 # set up some global vars for compiler, platform, configuration, etc.

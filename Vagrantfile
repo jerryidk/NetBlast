@@ -7,7 +7,7 @@ Vagrant.configure("2") do |config|
   # =========================
   config.vm.define "vm1" do |vm1|
     vm1.vm.hostname = "research-node-1"
-
+		vm1.vm.synced_folder "./maglevl2fwd/", "/home/vagrant/maglevl2fwd"
     # NIC #1 (Private Network A)
     vm1.vm.network "private_network",
       ip: "192.168.56.11",
@@ -20,7 +20,7 @@ Vagrant.configure("2") do |config|
 
     vm1.vm.provider :libvirt do |lv|
       lv.memory = 2048
-      lv.cpus = 1
+      lv.cpus = 2
       lv.cpu_mode = "host-passthrough"
     end
   end

@@ -4,7 +4,15 @@ An implementation of the Maglev load balancer integrated into DPDK l2fwd.
 
 ## Quickstart
 
+## build
 nix develop -c bash build.sh
+
+## set up machine
+
+1. discover network devices pci addr, `lspci | grep -i net`
+2. make sure network devices is using dpdk compatible driver `dpdk-devbind.py`
+3. enable hugepages `enable_hugepages.sh` 
+
 
 ## Other Resources
 
