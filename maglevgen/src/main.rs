@@ -115,6 +115,7 @@ fn run_generator(pci_addr: String, running: Arc<AtomicBool>) {
     let mut dev_stats = Default::default();
     let mut dev_stats_old = Default::default();
 
+    println!("beofer reset {}", pci_addr);
     dev.reset_stats();
     dev.read_stats(&mut dev_stats);
     dev.read_stats(&mut dev_stats_old);
