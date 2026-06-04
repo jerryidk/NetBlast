@@ -1,20 +1,7 @@
+Install nix 
 
-some system configuration
+`sh <(curl --proto '=https' --tlsv1.2 -L https://nixos.org/nix/install) --no-daemon`
 
-```
-sudo apt update
-sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virt-manager \
-                 libvirt-dev ruby-dev ruby-build build-essential -y
-vagrant plugin install vagrant-libvirt
-```
+Enter nix 
 
-To start up vm
-```
-vagrant up --provider=libvirt
-```
-
-
-To connecto
-```
-vagrant ssh vm1
-```
+`nix develop`
