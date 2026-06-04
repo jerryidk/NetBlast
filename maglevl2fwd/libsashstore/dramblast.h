@@ -35,7 +35,6 @@ typedef struct {
   uint64_t len;
 } dramblast_ht_t;
 
-#define DRAMBLAST_CAPACITY 1024
 #define DRAMBLAST_FIND_QUEUE_SIZE 64
 // make multiple of 4.
 #define DRAMBLAST_BUCKET_IDX_MASK ~0x3

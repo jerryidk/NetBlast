@@ -17,6 +17,8 @@
 #endif
 
 // lookup backend server
+
+extern uint64_t CAPACITY;
 static LookUpTable dramblast_backends;
 
 dramblast_ht_t *dramblast_ht;
@@ -79,12 +81,15 @@ void dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
   uint64_t idx = dramblast_hash(ht, k);
   dramblast_kv_t *kv;
 
+  uint64_t count = 0;
+
   if(k == 0) {
       return;
   }
 
   try_insert:
     kv = &ht->table[idx];
+    count++;
     if (kv->k == 0) {
       kv->k = k;
       kv->v = v;
@@ -100,6 +105,10 @@ void dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
     if(!(idx & 0x3)){
         dramblast_prefetch(ht, idx);
     }
+
+    if(count >= ht->len)
+        return;
+
     goto try_insert;
 }
 
@@ -235,9 +244,9 @@ void dramblast_init(void) {
   dramblast_ht->find_queue_head = 0;
   dramblast_ht->find_queue_tail = 0;
 
-  dramblast_ht->len = DRAMBLAST_CAPACITY;
+  dramblast_ht->len = CAPACITY;
   // using hugepages 2mb or 1gb for hsahtbale base on table capacity.
-  uint64_t bytes = DRAMBLAST_CAPACITY * sizeof(dramblast_kv_t);
+  uint64_t bytes = dramblast_ht->len * sizeof(dramblast_kv_t);
   dramblast_ht->table = allocate_dramblast_table(bytes);
 
   if(!dramblast_ht->table){

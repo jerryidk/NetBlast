@@ -44,6 +44,8 @@
 #include "packettool.h"
 #include "sashstore.h"
 
+uint64_t CAPACITY = (1 << 20) * 16;
+
 static volatile bool force_quit;
 
 /* MAC updating disabled by default */
@@ -119,7 +121,7 @@ static uint64_t timer_period = 1; /* default period is 10 seconds */
 /* Print out statistics on packets dropped */
 static void print_stats(void) {
   uint64_t total_packets_dropped, total_packets_tx, total_packets_rx,
-      total_packets_fwded;
+      total_packets_fwded, total_hash_duration;
   unsigned portid;
 
   total_packets_dropped = 0;
@@ -149,6 +151,7 @@ static void print_stats(void) {
     total_packets_tx += port_statistics[portid].tx;
     total_packets_rx += port_statistics[portid].rx;
     total_packets_fwded += port_statistics[portid].fwded;
+    total_hash_duration += port_statistics[portid].hash_tsc;
   }
   printf("\nAggregate statistics ==============================="
          "\nTotal packets sent: %18" PRIu64
@@ -157,6 +160,10 @@ static void print_stats(void) {
          "\nTotal packets dropped: %15" PRIu64,
          total_packets_tx, total_packets_rx, total_packets_fwded,
          total_packets_dropped);
+
+  if (total_packets_fwded > 0)
+    printf("\nCycle per fwd packet %lu",
+           total_hash_duration / total_packets_fwded);
 
   printf("\n====================================================\n");
 }
@@ -347,31 +354,29 @@ static void l2fwd_main_loop(void) {
       uint64_t diff;
 
       if (l2fwd_dramblast_enabled && nb_rx > 0) {
-            unsigned int fn = 0;
-            uint64_t hash;
+        unsigned int fn = 0;
+        uint64_t hash;
 
-            for (unsigned int j = 0; j < nb_rx; j++) {
-              m = pkts_burst[j];
-              hash = flowhash(rte_pktmbuf_mtod(pkts_burst[j], void *));
-              if(hash > 0)
-              {
-                  frames[fn] = m;
-                  args[fn].k = hash;
-                  args[fn].id = fn;
-                  fn++;
-              }
-            }
+        for (unsigned int j = 0; j < nb_rx; j++) {
+          m = pkts_burst[j];
+          hash = flowhash(rte_pktmbuf_mtod(m, void *));
+          if (hash > 0) {
+            frames[fn] = m;
+            args[fn].k = hash;
+            args[fn].id = fn;
+            fn++;
+          }
+        }
 
-            if(fn > 0)
-                dramblast_process_frames(args, fn, mac_addrs);
+        if (fn > 0)
+          dramblast_process_frames(args, fn, mac_addrs);
 
-            for (unsigned int j = 0; j < fn; j++) {
-              l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid],
-                                 mac_addrs[j]);
-            }
+        for (unsigned int j = 0; j < fn; j++) {
+          l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid], mac_addrs[j]);
+        }
 
-            port_statistics[portid].fwded += fn;
-            port_statistics[portid].dropped += (nb_rx - fn);
+        port_statistics[portid].fwded += fn;
+        port_statistics[portid].dropped += (nb_rx - fn);
       } else {
         for (j = 0; j < nb_rx; j++) {
           int len = 0;
@@ -545,9 +550,30 @@ static int l2fwd_parse_args(int argc, char **argv) {
         l2fwd_usage(prgname);
         return -1;
       }
-
       break;
+      /* hashtable capacity */
+    case 'c': {
+      char *endptr;
+      errno = 0; // Reset errno before the call
 
+      // Parse the string as a base-10 unsigned long long
+      unsigned long long parsed_cap = strtoull(optarg, &endptr, 10);
+
+      // Check for parsing errors:
+      // 1. errno != 0 checks for overflow (ERANGE)
+      // 2. endptr == optarg checks if no digits were found at all
+      // 3. *endptr != '\0' checks if there are leftover non-numeric characters
+      // (e.g., "1000abc")
+      if (errno != 0 || endptr == optarg || *endptr != '\0') {
+        printf("=> invalid capacity value specified: %s\n", optarg);
+        l2fwd_usage(prgname);
+        return -1;
+      }
+
+      CAPACITY = (uint64_t)parsed_cap;
+      printf("Hashtable capacity set to %" PRIu64 "\n", CAPACITY);
+      break;
+    }
     /* portmask */
     case 'p':
       l2fwd_enabled_port_mask = l2fwd_parse_portmask(optarg);
@@ -917,9 +943,8 @@ int main(int argc, char **argv) {
     printf(" Done\n");
   }
 
-
-  if(l2fwd_dramblast_enabled){
-      dramblast_destroy();
+  if (l2fwd_dramblast_enabled) {
+    dramblast_destroy();
   }
 
   // if (l2fwd_maglev_enabled) {
