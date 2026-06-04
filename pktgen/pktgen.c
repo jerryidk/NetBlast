@@ -75,6 +75,8 @@ static int tx_worker_loop(__rte_unused void *arg) {
             struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
             struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(ip + 1);
 
+            memset(eth, 0, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+
             // Layer 2
             memset(&eth->dst_addr, 0xFF, 6);
             // memset(&eth->src_addr, 0x11, 6);
@@ -89,8 +91,10 @@ static int tx_worker_loop(__rte_unused void *arg) {
             ip->next_proto_id = IPPROTO_UDP;
             ip->src_addr = rte_cpu_to_be_32(client_ip_counter++);
             ip->dst_addr = rte_cpu_to_be_32(RTE_IPV4(192, 168, 1, 1));
+            ip->time_to_live = 64;         // FIX: Set a valid TTL
+            ip->fragment_offset = 0;       // FIX: explicitly no fragmentation (RTE_IPV4_HDR_DF_FLAG can also be used)
+            ip->packet_id = 0;
 
-            ip->hdr_checksum = 0;
             ip->hdr_checksum = rte_ipv4_cksum(ip);
 
             // Layer 4 (Mutate client Port)
