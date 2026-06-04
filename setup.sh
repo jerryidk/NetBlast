@@ -51,7 +51,7 @@ done
 
 # 3. Bind devices to the new driver
 echo "--> Binding devices to $DRIVER_NAME..."
-DEVBIND_PATH=$(which dpdk-devbind.py 2>/dev/null)
+DEVBIND_PATH=./dpdk-devbind.py
 
 if [ -z "$DEVBIND_PATH" ]; then
     echo "Error: dpdk-devbind.py not found in PATH. Please ensure DPDK utilities are installed."
