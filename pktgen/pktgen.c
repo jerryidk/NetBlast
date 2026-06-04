@@ -5,14 +5,21 @@
 #include <rte_ip.h>
 #include <rte_udp.h>
 #include <rte_lcore.h>
+#include <unistd.h>    // Required for sleep()
+#include <signal.h>    // Required for signal handling
+#include <stdbool.h>   // Required for bool type
 
 #define NUM_MBUFS_PER_CORE 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
+#define PAYLOAD_PADDING_SIZE 18
 
 static const struct rte_eth_conf port_conf_default = {
     .rxmode = { .max_lro_pkt_size = RTE_ETHER_MAX_LEN }
 };
+
+/* Global termination flag */
+static volatile bool force_quit = false;
 
 /* Structure containing configuration for each worker lcore */
 struct lcore_conf {
@@ -23,6 +30,14 @@ struct lcore_conf {
 
 static struct lcore_conf lcore_config[RTE_MAX_LCORE];
 
+/* Signal handler function to intercept Ctrl+C / SIGTERM */
+static void signal_handler(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+        printf("\n\nSignal %d received, preparing for safe termination...\n", signum);
+        force_quit = true;
+    }
+}
+
 /* Fast path Tx Main Loop executed on every worker core */
 static int tx_worker_loop(__rte_unused void *arg) {
     unsigned int lcore_id = rte_lcore_id();
@@ -32,15 +47,14 @@ static int tx_worker_loop(__rte_unused void *arg) {
     uint16_t queueid = conf->tx_queue_id;
     struct rte_mempool *mbuf_pool = conf->mbuf_pool;
 
-    /* Give each core a distinct starting IP and port range to maximize entropy
-     * and prevent cores from duplicating the exact same client footprints */
     uint32_t client_ip_counter = RTE_IPV4(10, lcore_id, 0, 1);
     uint16_t client_port_counter = 1025 + (lcore_id * 100);
 
     printf("Core %u spinning up: Transmitting on Port %u, TX Queue %u\n",
            lcore_id, portid, queueid);
 
-    while (1) {
+    /* Loop safely breaks when force_quit becomes true */
+    while (!force_quit) {
         struct rte_mbuf *bufs[BURST_SIZE];
 
         /* Allocate from the core's isolated mbuf pool */
@@ -53,7 +67,8 @@ static int tx_worker_loop(__rte_unused void *arg) {
 
             char *data = rte_pktmbuf_append(m, sizeof(struct rte_ether_hdr) +
                                                sizeof(struct rte_ipv4_hdr) +
-                                               sizeof(struct rte_udp_hdr));
+                                               sizeof(struct rte_udp_hdr) +
+                                               PAYLOAD_PADDING_SIZE);
 
             struct rte_ether_hdr *eth = (struct rte_ether_hdr *)data;
             struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
@@ -66,19 +81,25 @@ static int tx_worker_loop(__rte_unused void *arg) {
 
             // Layer 3 (Mutate client IP)
             ip->version_ihl = 0x45;
-            ip->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+            ip->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) +
+                                               sizeof(struct rte_udp_hdr) +
+                                               PAYLOAD_PADDING_SIZE);
             ip->next_proto_id = IPPROTO_UDP;
             ip->src_addr = rte_cpu_to_be_32(client_ip_counter++);
             ip->dst_addr = rte_cpu_to_be_32(RTE_IPV4(192, 168, 1, 1));
+
             ip->hdr_checksum = 0;
+            ip->hdr_checksum = rte_ipv4_cksum(ip);
 
             // Layer 4 (Mutate client Port)
             udp->src_port = rte_cpu_to_be_16(client_port_counter++);
             udp->dst_port = rte_cpu_to_be_16(80);
-            udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr));
+            udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + PAYLOAD_PADDING_SIZE);
             udp->dgram_cksum = 0;
 
-            /* Rollover bounds specific to this core's subnet partition */
+            char *payload = (char *)(udp + 1);
+            memset(payload, 0, PAYLOAD_PADDING_SIZE);
+
             if (client_ip_counter > RTE_IPV4(10, lcore_id, 255, 254)) {
                 client_ip_counter = RTE_IPV4(10, lcore_id, 0, 1);
             }
@@ -87,7 +108,6 @@ static int tx_worker_loop(__rte_unused void *arg) {
             }
         }
 
-        /* Transmit packets directly to this core's dedicated hardware queue */
         uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, bufs, BURST_SIZE);
 
         if (unlikely(nb_tx < BURST_SIZE)) {
@@ -96,6 +116,8 @@ static int tx_worker_loop(__rte_unused void *arg) {
             }
         }
     }
+
+    printf("Core %u spinning down cleanly.\n", lcore_id);
     return 0;
 }
 
@@ -103,12 +125,16 @@ int main(int argc, char *argv[]) {
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
 
+    /* Register the signal handler patterns */
+    force_quit = false;
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
     uint16_t nb_ports = rte_eth_dev_count_avail();
     if (nb_ports == 0) rte_exit(EXIT_FAILURE, "No Ethernet ports detected\n");
 
     printf("Detected %u usable network port(s).\n", nb_ports);
 
-    /* 1. Calculate how many worker queues each port needs based on available cores */
     uint16_t tx_queues_per_port[RTE_MAX_ETHPORTS] = {0};
     unsigned int lcore_id;
     uint16_t port_rr = 0;
@@ -118,10 +144,9 @@ int main(int argc, char *argv[]) {
         lcore_config[lcore_id].tx_queue_id = tx_queues_per_port[port_rr];
 
         tx_queues_per_port[port_rr]++;
-        port_rr = (port_rr + 1) % nb_ports; // Balance worker cores evenly across ports
+        port_rr = (port_rr + 1) % nb_ports;
     }
 
-    /* 2. Configure Ports and Queues */
     uint16_t portid;
     RTE_ETH_FOREACH_DEV(portid) {
         uint16_t n_tx_queue = tx_queues_per_port[portid];
@@ -132,12 +157,10 @@ int main(int argc, char *argv[]) {
 
         printf("Configuring Port %u with %u hardware TX queues...\n", portid, n_tx_queue);
 
-        // Configure port with 0 RX queues and N TX queues
         if (rte_eth_dev_configure(portid, 0, n_tx_queue, &port_conf_default) < 0) {
             rte_exit(EXIT_FAILURE, "Cannot configure port %u\n", portid);
         }
 
-        /* Set up each assigned TX queue for this port */
         for (uint16_t q = 0; q < n_tx_queue; q++) {
             if (rte_eth_tx_queue_setup(portid, q, 1024, rte_eth_dev_socket_id(portid), NULL) < 0) {
                 rte_exit(EXIT_FAILURE, "Port %u TX queue %u setup failed\n", portid, q);
@@ -149,7 +172,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* 3. Provision an isolated Mempool per worker lcore to eliminate allocation lock steps */
+    printf("Waiting 4 seconds for physical links to come up...\n");
+    sleep(4);
+
     RTE_LCORE_FOREACH_WORKER(lcore_id) {
         char pool_name[32];
         snprintf(pool_name, sizeof(pool_name), "MBUF_POOL_C%u", lcore_id);
@@ -165,12 +190,21 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Master core finished mapping. Launching workers...\n");
-
-    /* 4. Fire up the workers across all allocated processing units */
     rte_eal_mp_remote_launch(tx_worker_loop, NULL, SKIP_MAIN);
 
-    /* Wait for threads to exit (they won't, infinite loop) */
+    /* Wait for all worker threads to return after force_quit switches to true */
     rte_eal_mp_wait_lcore();
 
+    /* Clean up hardware state before returning control to the OS */
+    printf("Stopping and closing network ports...\n");
+    RTE_ETH_FOREACH_DEV(portid) {
+        if (tx_queues_per_port[portid] == 0) continue;
+
+        printf("Closing Port %u...\n", portid);
+        rte_eth_dev_stop(portid);
+        rte_eth_dev_close(portid);
+    }
+
+    printf("DPDK clean exit completed successfully.\n");
     return 0;
 }
