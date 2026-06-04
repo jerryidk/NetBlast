@@ -129,6 +129,7 @@ fn run_generator(pci_addr: String, running: Arc<AtomicBool>) {
     let mut seq_num = 0;
     let mut counter = 0;
 
+    println!("Entering packet sending loop for dev at {}", pci_addr);
     // Use the atomic flag instead of `loop`
     while running.load(Ordering::SeqCst) {
         // re-fill our packet queue with new packets to send out
