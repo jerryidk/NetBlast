@@ -191,7 +191,7 @@ void dramblast_process_frames(dramblast_arg_t* args, unsigned int args_len, uint
     if (result->v == 0) {
       uint64_t client_hash = args[result->id].k;
       backend_mac_addr = dramblast_backends[client_hash % TABLE_SIZE];
-      printf("mapping 0x%016lx to 0x%016lx\n", client_hash, backend_mac_addr);
+      //printf("mapping 0x%016lx to 0x%016lx\n", client_hash, backend_mac_addr);
       dramblast_insert_one(dramblast_ht, client_hash, backend_mac_addr);
     } else {
       backend_mac_addr = result->v;
@@ -205,28 +205,36 @@ void dramblast_process_frames(dramblast_arg_t* args, unsigned int args_len, uint
 
 #define MAP_HUGE_2MB (21 << 26)
 #define MAP_HUGE_1GB (30 << 26)
+#define PAGE_SIZE_2MB (2ULL * 1024 * 1024)
+#define PAGE_SIZE_1GB (1024ULL * 1024 * 1024)
+#define ALIGN_UP(x, align) (((x) + (align) - 1) & ~((align) - 1))
+
+// Helper function to guarantee consistent alignment across init and destroy
+static inline size_t get_aligned_table_size(size_t bytes) {
+    if (bytes > PAGE_SIZE_1GB) {
+        return ALIGN_UP(bytes, PAGE_SIZE_1GB);
+    }
+    return ALIGN_UP(bytes, PAGE_SIZE_2MB);
+}
 
 void* allocate_dramblast_table(size_t bytes) {
     int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB;
+    size_t aligned_bytes = get_aligned_table_size(bytes);
 
-    // Select page size based on capacity
-    if (bytes > 1024 * 1024 * 1024) { // > 1GB
+    if (bytes > PAGE_SIZE_1GB) {
         flags |= MAP_HUGE_1GB;
     } else {
         flags |= MAP_HUGE_2MB;
     }
 
-    void* ptr = mmap(NULL, bytes, PROT_READ | PROT_WRITE, flags, -1, 0);
+    void* ptr = mmap(NULL, aligned_bytes, PROT_READ | PROT_WRITE, flags, -1, 0);
 
     if (ptr == MAP_FAILED) {
-        perror("mmap hugepages failed, falling back to standard allocation");
-        // Fallback: standard allocation if hugepages are unavailable
-        ptr = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        perror("mmap hugepages failed");
         return NULL;
     }
 
-    memset(ptr, 0, bytes);
-
+    memset(ptr, 0, aligned_bytes);
     return ptr;
 }
 
@@ -268,7 +276,11 @@ void dramblast_destroy()
   /* 1. Unmap the hugepage table allocated via mmap */
   if (dramblast_ht->table != NULL) {
     uint64_t bytes = (uint64_t)dramblast_ht->len * sizeof(dramblast_kv_t);
-    if (munmap(dramblast_ht->table, bytes) != 0) {
+
+    // FIX: Calculate the exact aligned size that was mapped
+    size_t aligned_bytes = get_aligned_table_size(bytes);
+
+    if (munmap(dramblast_ht->table, aligned_bytes) != 0) {
       perror("munmap failed during dramblast_destroy");
     }
     dramblast_ht->table = NULL;

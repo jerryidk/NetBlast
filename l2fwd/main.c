@@ -162,7 +162,7 @@ static void print_stats(void) {
          total_packets_dropped);
 
   if (total_packets_fwded > 0)
-    printf("\nCycle per fwd packet %lu",
+    printf("\nCycle per fwd packet%lu",
            total_hash_duration / total_packets_fwded);
 
   printf("\n====================================================\n");
@@ -237,14 +237,15 @@ static void l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid) {
 
   if (mac_updating) {
     l2fwd_mac_updating(m, dst_port, 0xdeadbeef);
-  } else {
-    struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-
-    printf("transmitting MAC Address - Src: " RTE_ETHER_ADDR_PRT_FMT
-           ", Dst: " RTE_ETHER_ADDR_PRT_FMT "\n",
-           RTE_ETHER_ADDR_BYTES(&eth->src_addr),
-           RTE_ETHER_ADDR_BYTES(&eth->dst_addr));
   }
+  // else {
+  //   struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+
+  //   printf("transmitting MAC Address - Src: " RTE_ETHER_ADDR_PRT_FMT
+  //          ", Dst: " RTE_ETHER_ADDR_PRT_FMT "\n",
+  //          RTE_ETHER_ADDR_BYTES(&eth->src_addr),
+  //          RTE_ETHER_ADDR_BYTES(&eth->dst_addr));
+  // }
 
   buffer = tx_buffer[dst_port];
   sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
