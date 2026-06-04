@@ -26,6 +26,7 @@ struct lcore_conf {
     uint16_t port_id;
     uint16_t tx_queue_id;
     struct rte_mempool *mbuf_pool;
+    struct rte_ether_addr port_mac;
 } __rte_cache_aligned;
 
 static struct lcore_conf lcore_config[RTE_MAX_LCORE];
@@ -76,7 +77,8 @@ static int tx_worker_loop(__rte_unused void *arg) {
 
             // Layer 2
             memset(&eth->dst_addr, 0xFF, 6);
-            memset(&eth->src_addr, 0x11, 6);
+            // memset(&eth->src_addr, 0x11, 6);
+            rte_ether_addr_copy(&conf->port_mac, &eth->src_addr);
             eth->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
             // Layer 3 (Mutate client IP)
@@ -143,6 +145,7 @@ int main(int argc, char *argv[]) {
         lcore_config[lcore_id].port_id = port_rr;
         lcore_config[lcore_id].tx_queue_id = tx_queues_per_port[port_rr];
 
+        rte_eth_macaddr_get(port_rr, &lcore_config[lcore_id].port_mac);
         tx_queues_per_port[port_rr]++;
         port_rr = (port_rr + 1) % nb_ports;
     }
