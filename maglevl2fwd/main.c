@@ -502,6 +502,7 @@ static const char short_options[] = "p:" /* portmask */
                                     "q:" /* number of queues */
                                     "T:" /* timer period */
                                     "m:" /* mode of operation */
+                                    "c:" /* hashtable capacity */
     ;
 
 #define CMD_LINE_OPT_MAC_UPDATING "mac-updating"
