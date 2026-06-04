@@ -167,7 +167,7 @@ int main(int argc, char *argv[]) {
     printf("Master core finished mapping. Launching workers...\n");
 
     /* 4. Fire up the workers across all allocated processing units */
-    rte_eal_mp_remote_launch(tx_worker_loop, NULL, CALL_MAIN);
+    rte_eal_mp_remote_launch(tx_worker_loop, NULL, SKIP_MAIN);
 
     /* Wait for threads to exit (they won't, infinite loop) */
     rte_eal_mp_wait_lcore();
