@@ -67,9 +67,11 @@ fn run_generator(pci_addr: String, running: Arc<AtomicBool>) {
     let mut maglev_seq: u32 = 0;
     let mut seq_count: u32 = 0;
 
+    println!("before init {}", pci_addr);
     let mut dev =
         ixy_init(&pci_addr, 1, 1, 0).expect(&format!("Failed to init device at {}", pci_addr));
 
+    println!("after init {}", pci_addr);
     #[rustfmt::skip]
     let pkt_data = [
         0x90, 0xe2, 0xba, 0xb5, 0x15, 0x74,         // dst MAC
