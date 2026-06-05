@@ -102,6 +102,7 @@ void dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
     }
 
     idx++;
+    idx = idx & (ht->len - 1);
     if(!(idx & 0x3)){
         dramblast_prefetch(ht, idx);
     }
@@ -223,10 +224,10 @@ void* allocate_dramblast_table(size_t bytes) {
 
     if (bytes > PAGE_SIZE_1GB) {
         flags |= MAP_HUGE_1GB;
-        printf("try to allocated %lu 1gb pages", (uint64_t)(bytes/PAGE_SIZE_1GB));
+        printf("try to allocated %lu 1gb pages\n", (uint64_t)(bytes/PAGE_SIZE_1GB));
     } else {
         flags |= MAP_HUGE_2MB;
-        printf("try to allocated %lu 2mb pages", (uint64_t)(bytes/PAGE_SIZE_2MB));
+        printf("try to allocated %lu 2mb pages\n", (uint64_t)(bytes/PAGE_SIZE_2MB));
     }
 
     void* ptr = mmap(NULL, aligned_bytes, PROT_READ | PROT_WRITE, flags, -1, 0);
