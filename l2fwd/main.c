@@ -508,6 +508,14 @@ int main(int argc, char **argv) {
         if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
             local_port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
+        // rss
+        local_port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+
+        /* If it supports nothing (like the old VM), disable RSS entirely */
+        if (local_port_conf.rx_adv_conf.rss_conf.rss_hf == 0) {
+            local_port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+        }
+
         /* Configure device with Multiple RX/TX Queues */
         ret = rte_eth_dev_configure(portid, l2fwd_queues_per_port, l2fwd_queues_per_port, &local_port_conf);
         if (ret < 0) rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n", ret, portid);
