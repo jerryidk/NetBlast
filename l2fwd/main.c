@@ -249,7 +249,7 @@ static void l2fwd_main_loop(void) {
 
         if (!end_tsc) {
             start_tsc = cur_tsc;
-            end_tsc = cur_tsc + 300 * rte_get_tsc_hz();
+            end_tsc = cur_tsc + 10 * rte_get_tsc_hz();
         }
 
         if (cur_tsc >= end_tsc) {
