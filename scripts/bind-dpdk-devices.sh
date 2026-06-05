@@ -2,17 +2,26 @@
 
 # Check if correct number of arguments are provided
 if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 <driver_name> <eth_interface1:pci_addr1> [<eth_interface2:pci_addr2> ...]"
-    echo "Example: $0 vfio-pci eth1:0000:01:00.0 eth2:0000:01:00.1"
+    echo "Usage: $0 <driver_name> <eth_interface1> [<eth_interface2> ...]"
+    echo "Example: $0 vfio-pci eth1 eth2"
     exit 1
 fi
 
 DRIVER_NAME=$1
-shift # Shift arguments so $@ only contains the interface:pci pairs
+shift # Shift arguments so $@ only contains the interface names
 
 # Ensure the script is run with sudo/root privileges
 if [ "$EUID" -ne 0 ]; then
     echo "Please run this script with sudo or as root."
+    exit 1
+fi
+
+# Locate the DPDK devbind script
+# Checking for both dpdk-devbind.py and dpdk-binddev.py just in case
+DEVBIND_PATH=$(which dpdk-devbind.py 2>/dev/null || which dpdk-binddev.py 2>/dev/null)
+
+if [ -z "$DEVBIND_PATH" ]; then
+    echo "Error: dpdk-devbind.py not found in PATH. Please ensure DPDK utilities are installed."
     exit 1
 fi
 
@@ -23,22 +32,30 @@ sudo modprobe "$DRIVER_NAME" 2>/dev/null || {
     echo "    Note: modprobe $DRIVER_NAME failed or driver already loaded. Proceeding..."
 }
 
-# Arrays to hold processed interfaces and PCI addresses
-interfaces=()
+interfaces=("$@")
 pci_addrs=()
 
-# Parse the eth_interface:pci_addr pairs
-for pair in "$@"; do
-    if [[ "$pair" != *":"* ]]; then
-        echo "Error: Invalid format '$pair'. Must be eth_interface:pci_addr"
+# 2. Discover PCI addresses automatically
+echo "--> Discovering PCI addresses..."
+# Grab the current network status to parse
+DPDK_STATUS=$(sudo "$DEVBIND_PATH" --status Network)
+
+for eth_if in "${interfaces[@]}"; do
+    # Use grep -w to match the exact interface name (e.g., prevents 'eth1' from matching 'eth10')
+    # and awk to print the first column (the PCI address)
+    pci_addr=$(echo "$DPDK_STATUS" | grep -w "if=$eth_if" | awk '{print $1}')
+
+    if [ -z "$pci_addr" ]; then
+        echo "    Error: Could not find PCI address for interface '$eth_if' in dpdk-devbind.py output."
+        echo "    (Note: If the interface is already bound to DPDK, it may no longer show an 'if=' attribute)."
         exit 1
     fi
-    IFS=":" read -r eth_if pci_addr <<< "$pair"
-    interfaces+=("$eth_if")
+
     pci_addrs+=("$pci_addr")
+    echo "    Mapped $eth_if to PCI address $pci_addr"
 done
 
-# 2. Bring down the ethernet interfaces
+# 3. Bring down the ethernet interfaces
 echo "--> Bringing down network interfaces..."
 for eth_if in "${interfaces[@]}"; do
     if ip link show "$eth_if" > /dev/null 2>&1; then
@@ -49,19 +66,11 @@ for eth_if in "${interfaces[@]}"; do
     fi
 done
 
-# 3. Bind devices to the new driver
+# 4. Bind devices to the new driver
 echo "--> Binding devices to $DRIVER_NAME..."
-DEVBIND_PATH=$(which dpdk-devbind.py)
-
-if [ -z "$DEVBIND_PATH" ]; then
-    echo "Error: dpdk-devbind.py not found in PATH. Please ensure DPDK utilities are installed."
-    exit 1
-fi
-
-# Execute binding for all provided PCI addresses at once
 echo "    sudo $DEVBIND_PATH --bind=$DRIVER_NAME ${pci_addrs[*]}"
 sudo "$DEVBIND_PATH" --bind="$DRIVER_NAME" "${pci_addrs[@]}"
 
-# 4. Check Status
+# 5. Check Status
 echo -e "\n--> Checking DPDK status:"
-"$DEVBIND_PATH" --status Network
+sudo "$DEVBIND_PATH" --status Network
