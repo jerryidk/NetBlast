@@ -188,12 +188,14 @@ static void print_final_stats(uint64_t start, uint64_t end) {
 
     double tx_packets_per_sec = total_packets_tx / time_secs;
     double rx_packets_per_sec = total_packets_rx / time_secs;
+    double fd_packets_per_sec = total_packets_fwded / time_secs;
 
     printf("\n Final statistics ==============================="
            "\nTotal packets sent: %18" PRIu64 " (Tx packets/sec : %.2f)"
            "\nTotal packets received: %14" PRIu64 " (Rx packets/sec : %.2f)"
+           "\nTotal packets forwarded %14" PRIu64 " (Fd packets/sec: %.2f)"
            "\nTotal packets dropped: %15" PRIu64,
-           total_packets_tx, tx_packets_per_sec, total_packets_rx, rx_packets_per_sec, total_packets_dropped);
+           total_packets_tx, tx_packets_per_sec, total_packets_rx, rx_packets_per_sec, total_packets_fwded, fd_packets_per_sec, total_packets_dropped);
     printf("\n====================================================\n");
 
     if (l2fwd_sashstore_enabled) print_sashstore_stats(start, end);
