@@ -111,7 +111,7 @@ struct l2fwd_port_statistics {
 struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS][RTE_MAX_LCORE];
 
 #define MAX_TIMER_PERIOD 86400
-static uint64_t timer_period = 10;
+static uint64_t timer_period = 1; // update 1 sec
 
 /* Helper to aggregate stats across all lcores for a specific port */
 static void get_aggregated_stats(unsigned portid, struct l2fwd_port_statistics *agg) {

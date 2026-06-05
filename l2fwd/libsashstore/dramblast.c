@@ -223,8 +223,10 @@ void* allocate_dramblast_table(size_t bytes) {
 
     if (bytes > PAGE_SIZE_1GB) {
         flags |= MAP_HUGE_1GB;
+        printf("try to allocated %lu 1gb pages", (uint64_t)(bytes/PAGE_SIZE_1GB));
     } else {
         flags |= MAP_HUGE_2MB;
+        printf("try to allocated %lu 2mb pages", (uint64_t)(bytes/PAGE_SIZE_2MB));
     }
 
     void* ptr = mmap(NULL, aligned_bytes, PROT_READ | PROT_WRITE, flags, -1, 0);
