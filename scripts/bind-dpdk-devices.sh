@@ -19,12 +19,6 @@ if [ -z "$DEVBIND_PATH" ]; then
     exit 1
 fi
 
-# Ensure the script is run with sudo/root privileges
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run this script with sudo or as root."
-    exit 1
-fi
-
 # 1. Load the requested VM/DPDK driver
 echo "--> Loading driver: $DRIVER_NAME..."
 sudo modprobe "$DRIVER_NAME" 2>/dev/null || {

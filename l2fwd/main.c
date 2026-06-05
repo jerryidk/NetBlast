@@ -394,6 +394,8 @@ static int l2fwd_parse_args(int argc, char **argv) {
 
     while ((opt = getopt_long(argc, argvopt, "p:q:T:m:c:", lgopts, &option_index)) != EOF) {
         switch (opt) {
+        case  0:
+            break;
         case 'm':
             if (!strncmp(optarg, "maglev", 6)) l2fwd_maglev_enabled = 1;
             else if (!strncmp(optarg, "sashstore", 9)) l2fwd_sashstore_enabled = 1;
