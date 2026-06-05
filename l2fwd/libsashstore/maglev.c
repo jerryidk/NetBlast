@@ -13,7 +13,7 @@ static LookUpTable maglev_lookup;
 int64_t maglev_process_frame(void *frame) {
 	int64_t backend = -1;
 	uint64_t hash = flowhash(frame);
-	if (hash != 0) {
+	if (hash > 0) {
 		struct maglev_kv_pair *cached = maglev_hashmap_get(&maglev_conntrack, hash);
 		if (cached == NULL) {
 			// Use lookup table

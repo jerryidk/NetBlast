@@ -311,12 +311,17 @@ static void l2fwd_main_loop(void) {
                 if (fn > 0)
                     dramblast_process_frames(args, fn, mac_addrs);
 
+                uint64_t found = 0;
                 for (unsigned int j = 0; j < fn; j++) {
-                    l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid], mac_addrs[j]);
+                    if(mac_addrs[j] > 0)
+                    {
+                        l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid], mac_addrs[j]);
+                        found++;
+                    }
                 }
 
-                port_statistics[portid][lcore_id].fwded += fn;
-                port_statistics[portid][lcore_id].dropped += (nb_rx - fn);
+                port_statistics[portid][lcore_id].fwded += found;
+                port_statistics[portid][lcore_id].dropped += (nb_rx - found);
             } else {
                 for (unsigned j = 0; j < nb_rx; j++) {
                     int len = 0;
