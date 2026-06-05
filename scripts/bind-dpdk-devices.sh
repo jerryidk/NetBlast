@@ -10,18 +10,18 @@ fi
 DRIVER_NAME=$1
 shift # Shift arguments so $@ only contains the interface names
 
-# Ensure the script is run with sudo/root privileges
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run this script with sudo or as root."
-    exit 1
-fi
-
 # Locate the DPDK devbind script
 # Checking for both dpdk-devbind.py and dpdk-binddev.py just in case
 DEVBIND_PATH=$(which dpdk-devbind.py 2>/dev/null || which dpdk-binddev.py 2>/dev/null)
 
 if [ -z "$DEVBIND_PATH" ]; then
     echo "Error: dpdk-devbind.py not found in PATH. Please ensure DPDK utilities are installed."
+    exit 1
+fi
+
+# Ensure the script is run with sudo/root privileges
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run this script with sudo or as root."
     exit 1
 fi
 
