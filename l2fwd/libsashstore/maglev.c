@@ -24,6 +24,8 @@ int64_t maglev_process_frame(void *frame) {
 			// Just use the cached backend (noop in this test)
 		}
 
+		printf("client_hash %lu -> backend %lu\n", hash, backend);
+
 	}
 	return backend;
 }
