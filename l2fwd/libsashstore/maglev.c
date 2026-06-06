@@ -10,8 +10,8 @@ static struct maglev_hashmap maglev_conntrack = {};
 // MAGLEV: Lookup table
 static LookUpTable maglev_lookup;
 
-int64_t maglev_process_frame(void *frame) {
-	int64_t backend = -1;
+uint64_t maglev_process_frame(void *frame) {
+	uint64_t backend = 0;
 	uint64_t hash = flowhash(frame);
 	if (hash > 0) {
 		struct maglev_kv_pair *cached = maglev_hashmap_get(&maglev_conntrack, hash);

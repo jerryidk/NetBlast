@@ -5,7 +5,7 @@
 void maglev_init(void);
 
 // Maglev process frame
-int64_t maglev_process_frame(void *frame);
+uint64_t maglev_process_frame(void *frame);
 
 
 #endif /* _MAGLEV_DPDK_H_ */

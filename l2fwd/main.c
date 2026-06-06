@@ -332,8 +332,8 @@ static void l2fwd_main_loop(void) {
                     }
 
                     if (l2fwd_maglev_enabled) {
-                        int64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
-                        if (mac < 0) {
+                        uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
+                        if (mac == 0) {
                             port_statistics[portid][lcore_id].dropped += 1;
                         } else {
                             l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
