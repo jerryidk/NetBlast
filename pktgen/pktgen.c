@@ -8,6 +8,8 @@
 #include <unistd.h>    // Required for sleep()
 #include <signal.h>    // Required for signal handling
 #include <stdbool.h>   // Required for bool type
+#include <getopt.h>    // Required for parsing -r
+#include <stdlib.h>    // Required for atoi()
 
 #define NUM_MBUFS_PER_CORE 8191
 #define MBUF_CACHE_SIZE 250
@@ -20,6 +22,9 @@ static const struct rte_eth_conf port_conf_default = {
 
 /* Global termination flag */
 static volatile bool force_quit = false;
+
+/* Global mask for IP range (-r) */
+static uint32_t g_ip_mask = 0xFF; // Default to 256 IPs (mask 255)
 
 /* Structure containing configuration for each worker lcore */
 struct lcore_conf {
@@ -48,11 +53,12 @@ static int tx_worker_loop(__rte_unused void *arg) {
     uint16_t queueid = conf->tx_queue_id;
     struct rte_mempool *mbuf_pool = conf->mbuf_pool;
 
-    uint32_t client_ip_counter = RTE_IPV4(10, lcore_id, 0, 1);
+    uint32_t base_ip = RTE_IPV4(10, lcore_id, 0, 0);
+    uint32_t client_ip_counter = 1;
     uint16_t client_port_counter = 1025 + (lcore_id * 100);
 
-    printf("Core %u spinning up: Transmitting on Port %u, TX Queue %u\n",
-           lcore_id, portid, queueid);
+    printf("Core %u spinning up: Transmitting on Port %u, TX Queue %u (IP Mask: 0x%X)\n",
+           lcore_id, portid, queueid, g_ip_mask);
 
     /* Loop safely breaks when force_quit becomes true */
     while (!force_quit) {
@@ -79,26 +85,28 @@ static int tx_worker_loop(__rte_unused void *arg) {
 
             // Layer 2
             memset(&eth->dst_addr, 0xFF, 6);
-            // memset(&eth->src_addr, 0x11, 6);
             rte_ether_addr_copy(&conf->port_mac, &eth->src_addr);
             eth->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
-            // Layer 3 (Mutate client IP)
+            // Layer 3 (Mutate client IP within the power-of-2 mask)
+            uint32_t current_ip = base_ip + (client_ip_counter & g_ip_mask);
+            client_ip_counter++;
+
             ip->version_ihl = 0x45;
             ip->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) +
                                                sizeof(struct rte_udp_hdr) +
                                                PAYLOAD_PADDING_SIZE);
             ip->next_proto_id = IPPROTO_UDP;
-            ip->src_addr = rte_cpu_to_be_32(client_ip_counter++);
+            ip->src_addr = rte_cpu_to_be_32(current_ip);
             ip->dst_addr = rte_cpu_to_be_32(RTE_IPV4(192, 168, 1, 1));
             ip->time_to_live = 64;         // FIX: Set a valid TTL
-            ip->fragment_offset = 0;       // FIX: explicitly no fragmentation (RTE_IPV4_HDR_DF_FLAG can also be used)
+            ip->fragment_offset = 0;       // FIX: explicitly no fragmentation
             ip->packet_id = 0;
 
             ip->hdr_checksum = rte_ipv4_cksum(ip);
 
             // Layer 4 (Mutate client Port)
-            udp->src_port = rte_cpu_to_be_16(client_port_counter++);
+            udp->src_port = rte_cpu_to_be_16(client_port_counter);
             udp->dst_port = rte_cpu_to_be_16(80);
             udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + PAYLOAD_PADDING_SIZE);
             udp->dgram_cksum = 0;
@@ -106,9 +114,6 @@ static int tx_worker_loop(__rte_unused void *arg) {
             char *payload = (char *)(udp + 1);
             memset(payload, 0, PAYLOAD_PADDING_SIZE);
 
-            if (client_ip_counter > RTE_IPV4(10, lcore_id, 255, 254)) {
-                client_ip_counter = RTE_IPV4(10, lcore_id, 0, 1);
-            }
             if (client_port_counter > 65000) {
                 client_port_counter = 1025;
             }
@@ -130,6 +135,22 @@ static int tx_worker_loop(__rte_unused void *arg) {
 int main(int argc, char *argv[]) {
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+
+    /* Adjust argc and argv to parse application-specific arguments */
+    argc -= ret;
+    argv += ret;
+
+    int opt;
+    while ((opt = getopt(argc, argv, "r:")) != -1) {
+        if (opt == 'r') {
+            int range = atoi(optarg);
+            // Verify it is strictly a power of 2 and greater than 0
+            if (range <= 0 || (range & (range - 1)) != 0) {
+                rte_exit(EXIT_FAILURE, "Invalid range: -r must be a power of 2 (e.g., 2, 4, 128, 256)\n");
+            }
+            g_ip_mask = range - 1;
+        }
+    }
 
     /* Register the signal handler patterns */
     force_quit = false;
