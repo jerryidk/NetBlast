@@ -216,6 +216,8 @@ static void print_final_stats(uint64_t start, uint64_t end) {
     total_packets_tx += agg.tx;
     total_packets_rx += agg.rx;
     total_packets_fwded += agg.fwded;
+
+    print_port_stats(portid);
   }
 
   double time_secs = (double)(end - start) / rte_get_tsc_hz();
@@ -290,33 +292,31 @@ static void l2fwd_main_loop(void) {
             qconf->rx_port_list[i].port_id, qconf->rx_port_list[i].queue_id);
   }
 
+  if (!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled &&
+      !l2fwd_sashstore_enabled) {
 
-
-  if(!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled && !l2fwd_sashstore_enabled)
-  {
-
-      start_tsc = rte_rdtsc();
-      printf("receive test to test max receiving speed");
-      while(!force_quit)
-      {
-          for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-            unsigned portid = qconf->rx_port_list[i].port_id;
-            unsigned queueid = qconf->rx_port_list[i].queue_id;
-            unsigned nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-            if(nb_rx > 0)
-            {
-                port_statistics[portid][lcore_id].rx += nb_rx;
-                for (unsigned j = 0; j < nb_rx; j++) {
-                    rte_pktmbuf_free(pkts_burst[j]);
-                }
-            }
+    start_tsc = rte_rdtsc();
+    printf("receive test to test max receiving speed");
+    while (!force_quit) {
+      for (unsigned i = 0; i < qconf->n_rx_port; i++) {
+        unsigned portid = qconf->rx_port_list[i].port_id;
+        unsigned queueid = qconf->rx_port_list[i].queue_id;
+        unsigned nb_rx =
+            rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
+        if (nb_rx > 0) {
+          port_statistics[portid][lcore_id].rx += nb_rx;
+          for (unsigned j = 0; j < nb_rx; j++) {
+            rte_pktmbuf_free(pkts_burst[j]);
           }
+        }
       }
-      end_tsc = rte_rdtsc();
+    }
+    end_tsc = rte_rdtsc();
+    if (lcore_id == rte_get_main_lcore()) {
       print_final_stats(start_tsc, end_tsc);
-     return;
+    }
+    return;
   }
-
 
   while (!force_quit) {
     cur_tsc = rte_rdtsc();
@@ -359,7 +359,8 @@ static void l2fwd_main_loop(void) {
     for (unsigned i = 0; i < qconf->n_rx_port; i++) {
       unsigned portid = qconf->rx_port_list[i].port_id;
       unsigned queueid = qconf->rx_port_list[i].queue_id;
-      unsigned nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
+      unsigned nb_rx =
+          rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
       if (unlikely(nb_rx == 0))
         continue;
 
@@ -397,7 +398,7 @@ static void l2fwd_main_loop(void) {
 
         port_statistics[portid][lcore_id].fwded += found;
         port_statistics[portid][lcore_id].dropped += (nb_rx - found);
-      } else if(l2fwd_maglev_enabled){
+      } else if (l2fwd_maglev_enabled) {
         for (unsigned j = 0; j < nb_rx; j++) {
           int len = 0;
           m = pkts_burst[j];
@@ -430,8 +431,8 @@ static void l2fwd_main_loop(void) {
         }
       } else {
 
-          // straight through, no load balance
-          port_statistics[portid][lcore_id].fwded += nb_rx;
+        // straight through, no load balance
+        port_statistics[portid][lcore_id].fwded += nb_rx;
       }
       /* --- END USER INTEGRATION LOGIC --- */
 
@@ -458,15 +459,15 @@ static void signal_handler(int signum) {
 }
 
 static void l2fwd_usage(const char *prgname) {
-  printf(
-      "%s [EAL options] -- -p PORTMASK [-q NQ]\n"
-      "  -m MODE: mode specified as a string (maglev | sashstore | dramblast | none)\n"
-      "  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
-      "  -q NQ: number of queues per port (multithread scaling, default 1)\n"
-      "  -T PERIOD: statistics refresh period in seconds\n"
-      "  -c CAPACITY: hashtable capacity\n"
-      "  --[no-]mac-updating: Enable/disable MAC updating\n",
-      prgname);
+  printf("%s [EAL options] -- -p PORTMASK [-q NQ]\n"
+         "  -m MODE: mode specified as a string (maglev | sashstore | "
+         "dramblast | none)\n"
+         "  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
+         "  -q NQ: number of queues per port (multithread scaling, default 1)\n"
+         "  -T PERIOD: statistics refresh period in seconds\n"
+         "  -c CAPACITY: hashtable capacity\n"
+         "  --[no-]mac-updating: Enable/disable MAC updating\n",
+         prgname);
 }
 
 static int l2fwd_parse_args(int argc, char **argv) {
@@ -492,12 +493,11 @@ static int l2fwd_parse_args(int argc, char **argv) {
         l2fwd_sashstore_enabled = 1;
       else if (!strncmp(optarg, "dramblast", 9))
         l2fwd_dramblast_enabled = 1;
-      else if (!strncmp(optarg, "none", 4)){
+      else if (!strncmp(optarg, "none", 4)) {
         l2fwd_dramblast_enabled = 0;
         l2fwd_maglev_enabled = 0;
         l2fwd_sashstore_enabled = 0;
-      }
-      else
+      } else
         return -1;
       break;
     case 'c':
