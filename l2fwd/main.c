@@ -296,7 +296,6 @@ static void l2fwd_main_loop(void) {
       !l2fwd_sashstore_enabled) {
 
     start_tsc = rte_rdtsc();
-    printf("receive test to test max receiving speed");
     while (!force_quit) {
       for (unsigned i = 0; i < qconf->n_rx_port; i++) {
         unsigned portid = qconf->rx_port_list[i].port_id;
@@ -306,6 +305,10 @@ static void l2fwd_main_loop(void) {
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
           for (unsigned j = 0; j < nb_rx; j++) {
+
+              if ((j + 1) < nb_rx) {
+                rte_prefetch1(rte_pktmbuf_mtod(pkts_burst[j + 1], void *));
+              }
             rte_pktmbuf_free(pkts_burst[j]);
           }
         }
