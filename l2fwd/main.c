@@ -492,7 +492,7 @@ static int l2fwd_parse_args(int argc, char **argv) {
         l2fwd_sashstore_enabled = 1;
       else if (!strncmp(optarg, "dramblast", 9))
         l2fwd_dramblast_enabled = 1;
-      else if (!strncmp(optarg, "none", 9)){
+      else if (!strncmp(optarg, "none", 4)){
         l2fwd_dramblast_enabled = 0;
         l2fwd_maglev_enabled = 0;
         l2fwd_sashstore_enabled = 0;
