@@ -325,7 +325,7 @@ static void l2fwd_main_loop(void) {
 
     if (cur_tsc >= end_tsc) {
       force_quit = true;
-      print_final_stats(start_tsc, cur_tsc);
+      // print_final_stats(start_tsc, cur_tsc);
     }
 
     diff_tsc = cur_tsc - prev_tsc;
@@ -440,6 +440,11 @@ static void l2fwd_main_loop(void) {
         l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
       }
     }
+  }
+
+  if (lcore_id == rte_get_main_lcore()) {
+      end_tsc = rte_rdtsc();
+    print_final_stats(start_tsc, end_tsc);
   }
 }
 
