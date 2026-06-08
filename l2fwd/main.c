@@ -290,6 +290,32 @@ static void l2fwd_main_loop(void) {
             qconf->rx_port_list[i].port_id, qconf->rx_port_list[i].queue_id);
   }
 
+
+
+  if(!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled && !l2fwd_sashstore_enabled)
+  {
+
+      print("receive test to test max receiving speed")
+      while(!force_quit)
+      {
+          for (unsigned i = 0; i < qconf->n_rx_port; i++) {
+            unsigned portid = qconf->rx_port_list[i].port_id;
+            unsigned queueid = qconf->rx_port_list[i].queue_id;
+            unsigned nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
+            if(nb_rx > 0)
+            {
+                port_statistics[portid][lcore_id].rx += nb_rx;
+                for (unsigned j = 0; j < nb_rx; j++) {
+                    rte_pktmbuf_free(pkts_burst[j]);
+                }
+            }
+          }
+      }
+
+     return;
+  }
+
+
   while (!force_quit) {
     cur_tsc = rte_rdtsc();
 
@@ -305,16 +331,16 @@ static void l2fwd_main_loop(void) {
 
     diff_tsc = cur_tsc - prev_tsc;
     if (unlikely(diff_tsc > drain_tsc)) {
-      // for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-      //   unsigned portid = qconf->rx_port_list[i].port_id;
-      //   unsigned queueid = qconf->rx_port_list[i].queue_id;
-      //   unsigned dst_port = l2fwd_dst_ports[portid];
+      for (unsigned i = 0; i < qconf->n_rx_port; i++) {
+        unsigned portid = qconf->rx_port_list[i].port_id;
+        unsigned queueid = qconf->rx_port_list[i].queue_id;
+        unsigned dst_port = l2fwd_dst_ports[portid];
 
-      //   struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_port];
-      //   int sent = rte_eth_tx_buffer_flush(dst_port, queueid, buffer);
-      //   if (sent)
-      //     port_statistics[dst_port][lcore_id].tx += sent;
-      // }
+        struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_port];
+        int sent = rte_eth_tx_buffer_flush(dst_port, queueid, buffer);
+        if (sent)
+          port_statistics[dst_port][lcore_id].tx += sent;
+      }
 
       if (timer_period > 0) {
         timer_tsc += diff_tsc;
@@ -410,9 +436,9 @@ static void l2fwd_main_loop(void) {
       port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
 
       /* Forwarding logic */
-      //for (unsigned j = 0; j < nb_rx; j++) {
-      //  l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
-      //}
+      for (unsigned j = 0; j < nb_rx; j++) {
+        l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
+      }
     }
   }
 }
