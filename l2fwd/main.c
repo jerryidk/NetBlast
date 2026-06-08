@@ -225,7 +225,7 @@ static void print_final_stats(uint64_t start, uint64_t end) {
          start, end);
   printf("Total time in secs: %f\n", time_secs);
 
-  double tx_packets_per_sec = total_packets_tx / / time_secs;
+  double tx_packets_per_sec = total_packets_tx /  time_secs;
   double rx_packets_per_sec = total_packets_rx / time_secs;
   double fd_packets_per_sec = total_packets_fwded / time_secs;
 
