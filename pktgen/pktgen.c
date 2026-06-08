@@ -60,6 +60,11 @@ static int tx_worker_loop(__rte_unused void *arg) {
     printf("Core %u spinning up: Transmitting on Port %u, TX Queue %u (IP Mask: 0x%X)\n",
            lcore_id, portid, queueid, g_ip_mask);
 
+
+    printf("packet size is %lu\n", sizeof(struct rte_ether_hdr) +
+                                       sizeof(struct rte_ipv4_hdr) +
+                                       sizeof(struct rte_udp_hdr) +
+                                       PAYLOAD_PADDING_SIZE);
     /* Loop safely breaks when force_quit becomes true */
     while (!force_quit) {
         struct rte_mbuf *bufs[BURST_SIZE];

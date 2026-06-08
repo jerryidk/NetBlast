@@ -371,7 +371,7 @@ static void l2fwd_main_loop(void) {
 
         port_statistics[portid][lcore_id].fwded += found;
         port_statistics[portid][lcore_id].dropped += (nb_rx - found);
-      } else {
+      } else if(l2fwd_maglev_enabled){
         for (unsigned j = 0; j < nb_rx; j++) {
           int len = 0;
           m = pkts_burst[j];
@@ -402,6 +402,10 @@ static void l2fwd_main_loop(void) {
             port_statistics[portid][lcore_id].dropped += 1;
           }
         }
+      } else {
+
+          // straight through, no load balance
+          port_statistics[portid][lcore_id].fwded += nb_rx;
       }
       /* --- END USER INTEGRATION LOGIC --- */
 
@@ -430,7 +434,7 @@ static void signal_handler(int signum) {
 static void l2fwd_usage(const char *prgname) {
   printf(
       "%s [EAL options] -- -p PORTMASK [-q NQ]\n"
-      "  -m MODE: mode specified as a string (maglev | sashstore | dramblast)\n"
+      "  -m MODE: mode specified as a string (maglev | sashstore | dramblast | none)\n"
       "  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
       "  -q NQ: number of queues per port (multithread scaling, default 1)\n"
       "  -T PERIOD: statistics refresh period in seconds\n"
@@ -462,6 +466,11 @@ static int l2fwd_parse_args(int argc, char **argv) {
         l2fwd_sashstore_enabled = 1;
       else if (!strncmp(optarg, "dramblast", 9))
         l2fwd_dramblast_enabled = 1;
+      else if (!strncmp(optarg, "none", 9)){
+        l2fwd_dramblast_enabled = 0;
+        l2fwd_maglev_enabled = 0;
+        l2fwd_sashstore_enabled = 0;
+      }
       else
         return -1;
       break;
