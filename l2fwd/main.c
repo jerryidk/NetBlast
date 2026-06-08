@@ -107,7 +107,7 @@ static struct rte_eth_conf port_conf = {
 struct rte_mempool *l2fwd_pktmbuf_pool = NULL;
 
 /* Per-port, Per-lcore statistics struct to prevent false sharing */
-struct l2fwd_port_statistics {
+struct alignas(RTE_CACHE_LINE_SIZE) l2fwd_port_statistics {
   uint64_t tx;
   uint64_t rx;
   uint64_t dropped;
@@ -307,6 +307,9 @@ static void l2fwd_main_loop(void) {
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
           rte_pktmbuf_free_bulk(pkts_burst, nb_rx);
+        }
+        else{
+            rte_pause();
         }
       }
 
