@@ -85,6 +85,12 @@ static int tx_worker_loop(__rte_unused void *arg) {
 
             // Layer 2
             memset(&eth->dst_addr, 0xFF, 6);
+            eth->dst_addr.addr_bytes[0] = 0x40;
+            eth->dst_addr.addr_bytes[1] = 0xA6;
+            eth->dst_addr.addr_bytes[2] = 0xB7;
+            eth->dst_addr.addr_bytes[3] = 0xC3;
+            eth->dst_addr.addr_bytes[4] = 0x42;
+            eth->dst_addr.addr_bytes[5] = 0xE1;
             rte_ether_addr_copy(&conf->port_mac, &eth->src_addr);
             eth->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
