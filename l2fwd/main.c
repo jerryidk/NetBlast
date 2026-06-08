@@ -35,6 +35,7 @@
 #include <rte_per_lcore.h>
 #include <rte_prefetch.h>
 #include <rte_random.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "dramblast.h"
@@ -307,7 +308,14 @@ static void l2fwd_main_loop(void) {
           rte_pktmbuf_free_bulk(pkts_burst, nb_rx);
         }
       }
+
+      cur_tsc = rte_rdtsc();
+      if(cur_tsc >= timer_period){
+          print_stats();
+          prev_tsc = cur_tsc;
+      }
     }
+
     end_tsc = rte_rdtsc();
     if (lcore_id == rte_get_main_lcore()) {
       print_final_stats(start_tsc, end_tsc);
