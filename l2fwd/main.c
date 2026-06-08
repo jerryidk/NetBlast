@@ -598,7 +598,7 @@ int main(int argc, char **argv) {
 
     RTE_ETH_FOREACH_DEV(portid) {
         struct rte_eth_link link;
-        rte_eth_link_get_nowait(portid, &link); // Check Port 1
+        rte_eth_link_get(portid, &link); // Check Port 1
         if (link.link_status) {
             printf("Port %lu Link UP - %u Mbps\n", portid, link.link_speed);
         } else {
