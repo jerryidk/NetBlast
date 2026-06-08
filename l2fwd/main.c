@@ -598,6 +598,7 @@ int main(int argc, char **argv) {
 
     RTE_ETH_FOREACH_DEV(portid) {
         struct rte_eth_link link;
+        if ((l2fwd_enabled_port_mask & (1 << portid)) == 0) continue;
         rte_eth_link_get(portid, &link); // Check Port 1
         if (link.link_status) {
             printf("Port %lu Link UP - %u Mbps\n", portid, link.link_speed);
