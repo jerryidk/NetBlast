@@ -10,11 +10,13 @@
 #include <stdbool.h>   // Required for bool type
 #include <getopt.h>    // Required for parsing -r
 #include <stdlib.h>    // Required for atoi()
+#include <rte_cycles.h> // Ensure this is included at the top of your file
+
 
 #define NUM_MBUFS_PER_CORE 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
-#define PAYLOAD_PADDING_SIZE 18
+#define PAYLOAD_PADDING_SIZE 0
 
 static const struct rte_eth_conf port_conf_default = {
     .rxmode = { .max_lro_pkt_size = RTE_ETHER_MAX_LEN }
@@ -44,7 +46,6 @@ static void signal_handler(int signum) {
     }
 }
 
-/* Fast path Tx Main Loop executed on every worker core */
 static int tx_worker_loop(__rte_unused void *arg) {
     unsigned int lcore_id = rte_lcore_id();
     struct lcore_conf *conf = &lcore_config[lcore_id];
@@ -57,14 +58,25 @@ static int tx_worker_loop(__rte_unused void *arg) {
     uint32_t client_ip_counter = 1;
     uint16_t client_port_counter = 1025 + (lcore_id * 100);
 
+    // Pre-calculate packet lengths
+    uint32_t l2_payload_len = sizeof(struct rte_ether_hdr) +
+                              sizeof(struct rte_ipv4_hdr) +
+                              sizeof(struct rte_udp_hdr) +
+                              PAYLOAD_PADDING_SIZE;
+
+    // Wire length includes 24 bytes (20B Preamble/IPG + 4B FCS)
+    uint32_t wire_len = l2_payload_len + 24;
+
     printf("Core %u spinning up: Transmitting on Port %u, TX Queue %u (IP Mask: 0x%X)\n",
            lcore_id, portid, queueid, g_ip_mask);
+    printf("packet size is %u (wire size %u)\n", l2_payload_len, wire_len);
 
+    // --- Statistics Tracking Variables ---
+    uint64_t timer_hz = rte_get_timer_hz(); // CPU cycles per second
+    uint64_t last_tsc = rte_rdtsc();
+    uint64_t pkts_sent_this_sec = 0;
+    uint64_t bytes_sent_this_sec = 0;
 
-    printf("packet size is %lu\n", sizeof(struct rte_ether_hdr) +
-                                       sizeof(struct rte_ipv4_hdr) +
-                                       sizeof(struct rte_udp_hdr) +
-                                       PAYLOAD_PADDING_SIZE);
     /* Loop safely breaks when force_quit becomes true */
     while (!force_quit) {
         struct rte_mbuf *bufs[BURST_SIZE];
@@ -77,10 +89,7 @@ static int tx_worker_loop(__rte_unused void *arg) {
         for (int i = 0; i < BURST_SIZE; i++) {
             struct rte_mbuf *m = bufs[i];
 
-            char *data = rte_pktmbuf_append(m, sizeof(struct rte_ether_hdr) +
-                                               sizeof(struct rte_ipv4_hdr) +
-                                               sizeof(struct rte_udp_hdr) +
-                                               PAYLOAD_PADDING_SIZE);
+            char *data = rte_pktmbuf_append(m, l2_payload_len);
 
             struct rte_ether_hdr *eth = (struct rte_ether_hdr *)data;
             struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
@@ -90,12 +99,6 @@ static int tx_worker_loop(__rte_unused void *arg) {
 
             // Layer 2
             memset(&eth->dst_addr, 0xFF, 6);
-            // eth->dst_addr.addr_bytes[0] = 0x40;
-            // eth->dst_addr.addr_bytes[1] = 0xA6;
-            // eth->dst_addr.addr_bytes[2] = 0xB7;
-            // eth->dst_addr.addr_bytes[3] = 0xC3;
-            // eth->dst_addr.addr_bytes[4] = 0x42;
-            // eth->dst_addr.addr_bytes[5] = 0xE1;
             rte_ether_addr_copy(&conf->port_mac, &eth->src_addr);
             eth->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
@@ -136,6 +139,33 @@ static int tx_worker_loop(__rte_unused void *arg) {
             for (uint16_t buf = nb_tx; buf < BURST_SIZE; buf++) {
                 rte_pktmbuf_free(bufs[buf]);
             }
+        }
+
+        // --- Update Statistics ---
+        if (nb_tx > 0) {
+            pkts_sent_this_sec += nb_tx;
+            bytes_sent_this_sec += (nb_tx * wire_len);
+        }
+
+        // --- Calculate and Print Metrics Once Per Second ---
+        uint64_t current_tsc = rte_rdtsc();
+        uint64_t diff_tsc = current_tsc - last_tsc;
+
+        if (unlikely(diff_tsc >= timer_hz)) {
+            double mpps = (double)pkts_sent_this_sec / 1000000.0;
+            // Bits per second = Bytes * 8
+            double gbps = ((double)bytes_sent_this_sec * 8.0) / 1000000000.0;
+
+            // Cycles Per Packet = Total Cycles Elapsed / Total Packets Sent
+            uint64_t cpp = pkts_sent_this_sec > 0 ? (diff_tsc / pkts_sent_this_sec) : 0;
+
+            printf("[Core %u] Throughput: %5.2f Mpps | %6.2f Gbps | CPP: %4lu\n",
+                   lcore_id, mpps, gbps, cpp);
+
+            // Reset counters for the next second
+            pkts_sent_this_sec = 0;
+            bytes_sent_this_sec = 0;
+            last_tsc = current_tsc;
         }
     }
 
