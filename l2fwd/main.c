@@ -564,7 +564,10 @@ int main(int argc, char **argv) {
             if (ret < 0) rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup failed port=%u queue=%u\n", portid, q);
         }
 
-        rte_eth_dev_start(portid);
+        ret = rte_eth_dev_start(portid);
+            if (ret < 0) {
+                rte_exit(EXIT_FAILURE, "rte_eth_dev_start failed: err=%d, port=%u\n", ret, portid);
+            }
         rte_eth_promiscuous_enable(portid);
     }
 
