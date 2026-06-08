@@ -295,6 +295,7 @@ static void l2fwd_main_loop(void) {
   if(!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled && !l2fwd_sashstore_enabled)
   {
 
+      start_tsc = rte_rdtsc();
       print("receive test to test max receiving speed")
       while(!force_quit)
       {
@@ -311,7 +312,8 @@ static void l2fwd_main_loop(void) {
             }
           }
       }
-
+      end_tsc = rte_rdtsc();
+      print_final_stats(start_tsc, end_tsc);
      return;
   }
 
