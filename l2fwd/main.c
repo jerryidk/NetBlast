@@ -296,7 +296,7 @@ static void l2fwd_main_loop(void) {
   {
 
       start_tsc = rte_rdtsc();
-      print("receive test to test max receiving speed")
+      printf("receive test to test max receiving speed");
       while(!force_quit)
       {
           for (unsigned i = 0; i < qconf->n_rx_port; i++) {
