@@ -44,11 +44,11 @@
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
-#define MAX_PKT_BURST 32
+#define MAX_PKT_BURST 64
 #define BURST_TX_DRAIN_US 100
 #define MEMPOOL_CACHE_SIZE 256
 
-#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_RX_DESC_DEFAULT 4096
 #define RTE_TEST_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
@@ -331,9 +331,7 @@ static void l2fwd_main_loop(void) {
     for (unsigned i = 0; i < qconf->n_rx_port; i++) {
       unsigned portid = qconf->rx_port_list[i].port_id;
       unsigned queueid = qconf->rx_port_list[i].queue_id;
-
-      unsigned nb_rx =
-          rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
+      unsigned nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
       if (unlikely(nb_rx == 0))
         continue;
 
