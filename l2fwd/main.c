@@ -286,11 +286,11 @@ static void l2fwd_main_loop(void) {
     return;
   }
 
-  RTE_LOG(INFO, L2FWD, "entering main loop on lcore %u\n", lcore_id);
-  for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-    RTE_LOG(INFO, L2FWD, " -- lcoreid=%u portid=%u rx_queue=%u\n", lcore_id,
-            qconf->rx_port_list[i].port_id, qconf->rx_port_list[i].queue_id);
-  }
+  // RTE_LOG(INFO, L2FWD, "entering main loop on lcore %u\n", lcore_id);
+  // for (unsigned i = 0; i < qconf->n_rx_port; i++) {
+  //   RTE_LOG(INFO, L2FWD, " -- lcoreid=%u portid=%u rx_queue=%u\n", lcore_id,
+  //           qconf->rx_port_list[i].port_id, qconf->rx_port_list[i].queue_id);
+  // }
 
   if (!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled &&
       !l2fwd_sashstore_enabled) {
