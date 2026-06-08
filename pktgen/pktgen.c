@@ -15,7 +15,7 @@
 
 #define NUM_MBUFS_PER_CORE 8191
 #define MBUF_CACHE_SIZE 250
-#define BURST_SIZE 32
+#define BURST_SIZE 64
 #define PAYLOAD_PADDING_SIZE 0
 
 static const struct rte_eth_conf port_conf_default = {
@@ -231,7 +231,7 @@ int main(int argc, char *argv[]) {
         }
 
         for (uint16_t q = 0; q < n_tx_queue; q++) {
-            if (rte_eth_tx_queue_setup(portid, q, 1024, rte_eth_dev_socket_id(portid), NULL) < 0) {
+            if (rte_eth_tx_queue_setup(portid, q, 4096, rte_eth_dev_socket_id(portid), NULL) < 0) {
                 rte_exit(EXIT_FAILURE, "Port %u TX queue %u setup failed\n", portid, q);
             }
         }
