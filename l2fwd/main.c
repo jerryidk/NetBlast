@@ -297,6 +297,7 @@ static void l2fwd_main_loop(void) {
       !l2fwd_sashstore_enabled) {
 
     start_tsc = rte_rdtsc();
+    prev_tsc = start_tsc;
     while (!force_quit) {
       for (unsigned i = 0; i < qconf->n_rx_port; i++) {
         unsigned portid = qconf->rx_port_list[i].port_id;
@@ -310,7 +311,7 @@ static void l2fwd_main_loop(void) {
       }
 
       cur_tsc = rte_rdtsc();
-      if(cur_tsc >= timer_period){
+      if(unlikely(cur_tsc - prev_tsc>= timer_period)){
           print_stats();
           prev_tsc = cur_tsc;
       }
