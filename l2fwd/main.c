@@ -225,17 +225,17 @@ static void print_final_stats(uint64_t start, uint64_t end) {
          start, end);
   printf("Total time in secs: %f\n", time_secs);
 
-  double tx_packets_per_sec = total_packets_tx / time_secs;
+  double tx_packets_per_sec = total_packets_tx / / time_secs;
   double rx_packets_per_sec = total_packets_rx / time_secs;
   double fd_packets_per_sec = total_packets_fwded / time_secs;
 
   printf("\n Final statistics ==============================="
-         "\nTotal packets sent: %18" PRIu64 " (Tx packets/sec : %.2f)"
-         "\nTotal packets received: %14" PRIu64 " (Rx packets/sec : %.2f)"
-         "\nTotal packets forwarded %14" PRIu64 " (Fd packets/sec: %.2f)"
+         "\nTotal packets sent: %18" PRIu64 " (million Tx packets/sec : %.2f)"
+         "\nTotal packets received: %14" PRIu64 " (million Rx packets/sec : %.2f)"
+         "\nTotal packets forwarded %14" PRIu64 " (million Fd packets/sec: %.2f)"
          "\nTotal packets dropped: %15" PRIu64,
-         total_packets_tx, tx_packets_per_sec, total_packets_rx,
-         rx_packets_per_sec, total_packets_fwded, fd_packets_per_sec,
+         total_packets_tx, tx_packets_per_sec/1000000.0, total_packets_rx,
+         rx_packets_per_sec/1000000.0, total_packets_fwded, fd_packets_per_sec/1000000.0,
          total_packets_dropped);
   printf("\n====================================================\n");
 
@@ -304,13 +304,7 @@ static void l2fwd_main_loop(void) {
             rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
-          for (unsigned j = 0; j < nb_rx; j++) {
-
-              if ((j + 1) < nb_rx) {
-                rte_prefetch1(rte_pktmbuf_mtod(pkts_burst[j + 1], void *));
-              }
-            rte_pktmbuf_free(pkts_burst[j]);
-          }
+          rte_pktmbuf_free_bulk(pkts_burst, nb_rx);
         }
       }
     }
@@ -326,7 +320,7 @@ static void l2fwd_main_loop(void) {
 
     if (!end_tsc) {
       start_tsc = cur_tsc;
-      end_tsc = cur_tsc + 10 * rte_get_tsc_hz();
+      end_tsc = cur_tsc + 60 * rte_get_tsc_hz();
     }
 
     if (cur_tsc >= end_tsc) {
