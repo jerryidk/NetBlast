@@ -305,16 +305,16 @@ static void l2fwd_main_loop(void) {
 
     diff_tsc = cur_tsc - prev_tsc;
     if (unlikely(diff_tsc > drain_tsc)) {
-      for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-        unsigned portid = qconf->rx_port_list[i].port_id;
-        unsigned queueid = qconf->rx_port_list[i].queue_id;
-        unsigned dst_port = l2fwd_dst_ports[portid];
+      // for (unsigned i = 0; i < qconf->n_rx_port; i++) {
+      //   unsigned portid = qconf->rx_port_list[i].port_id;
+      //   unsigned queueid = qconf->rx_port_list[i].queue_id;
+      //   unsigned dst_port = l2fwd_dst_ports[portid];
 
-        struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_port];
-        //int sent = rte_eth_tx_buffer_flush(dst_port, queueid, buffer);
-        //if (sent)
-        //  port_statistics[dst_port][lcore_id].tx += sent;
-      }
+      //   struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_port];
+      //   int sent = rte_eth_tx_buffer_flush(dst_port, queueid, buffer);
+      //   if (sent)
+      //     port_statistics[dst_port][lcore_id].tx += sent;
+      // }
 
       if (timer_period > 0) {
         timer_tsc += diff_tsc;
