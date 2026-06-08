@@ -591,7 +591,7 @@ int main(int argc, char **argv) {
     else if (l2fwd_dramblast_enabled) dramblast_init();
 
 
-    sleep(4);
+    sleep(15);
 
     RTE_ETH_FOREACH_DEV(portid) {
         struct rte_eth_link link;
@@ -601,6 +601,12 @@ int main(int argc, char **argv) {
         } else {
             printf("Port %lu Link DOWN\n", portid);
         }
+
+        struct rte_ether_addr *mac = &l2fwd_ports_eth_addr[portid];
+        printf("Port %u Physical MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n",
+               portid,
+               mac->addr_bytes[0], mac->addr_bytes[1], mac->addr_bytes[2],
+               mac->addr_bytes[3], mac->addr_bytes[4], mac->addr_bytes[5]);
     }
 
     rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, NULL, CALL_MAIN);
