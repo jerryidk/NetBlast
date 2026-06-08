@@ -46,7 +46,7 @@ struct sashstore_hashmap {
 	struct sashstore_kv_pair *pairs;
 };
 
-void maglev_hashmap_insert(struct maglev_hashmap *map,
+int maglev_hashmap_insert(struct maglev_hashmap *map,
 				uint64_t key,
 				uint64_t value);
 

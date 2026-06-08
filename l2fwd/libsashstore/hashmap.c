@@ -13,7 +13,7 @@ __inline__ static unsigned int hash_fn(uint64_t x )
 
 // Maglev hashmap
 // empty buckets have zero keys
-void maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key, uint64_t value)
+int maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key, uint64_t value)
 {
 	//uint64_t hash = hash_fn(key);
 	uint64_t hash = fnv_1((char*)&key, sizeof(key));
@@ -23,9 +23,11 @@ void maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key, uint64_t va
 		if (pair->key == key || pair->key == 0) {
 			pair->key = key;
 			pair->value = value;
-			break;
+			return 0; // success
 		}
 	}
+
+	return -1;
 }
 
 struct maglev_kv_pair* maglev_hashmap_get(struct maglev_hashmap *map, uint64_t key)
@@ -58,7 +60,7 @@ inline struct sashstore_kv_pair *sashstore_hashmap_insert(struct sashstore_hashm
 		uint64_t probe = hash + i;
 		/*if ((i + 2) < CAPACITY) {
 			uint64_t p2 = hash + i + 4;
-			rte_prefetch0(&map->pairs[p2 % CAPACITY]); 
+			rte_prefetch0(&map->pairs[p2 % CAPACITY]);
 		}*/
 		struct sashstore_kv_pair* pair = &map->pairs[probe % CAPACITY];
 		if (!memcmp(pair->key, key, KEY_SIZE) ||

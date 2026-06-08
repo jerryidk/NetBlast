@@ -75,8 +75,7 @@ inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
   return (uint64_t)hash & (ht->len - 1) & DRAMBLAST_BUCKET_IDX_MASK;
 }
 
-void dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
-
+int dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
 
   uint64_t idx = dramblast_hash(ht, k);
   dramblast_kv_t *kv;
@@ -84,21 +83,16 @@ void dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
   uint64_t count = 0;
 
   if(k == 0) {
-      return;
+      return -1;
   }
 
   try_insert:
     kv = &ht->table[idx];
     count++;
-    if (kv->k == 0) {
+    if (kv->k == 0 || kv->k == k) {
       kv->k = k;
       kv->v = v;
-      return;
-    }
-
-    if (kv->k == k) {
-      kv->v = v;
-      return;
+      return 0;
     }
 
     idx++;
@@ -108,7 +102,7 @@ void dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
     }
 
     if(count >= ht->len)
-        return;
+        return -1;
 
     goto try_insert;
 }
@@ -193,7 +187,8 @@ void dramblast_process_frames(dramblast_arg_t* args, unsigned int args_len, uint
       uint64_t client_hash = args[result->id].k;
       backend_mac_addr = dramblast_backends[client_hash % TABLE_SIZE];
       //printf("mapping 0x%016lx to 0x%016lx\n", client_hash, backend_mac_addr);
-      dramblast_insert_one(dramblast_ht, client_hash, backend_mac_addr);
+      if(dramblast_insert_one(dramblast_ht, client_hash, backend_mac_addr) < 0)
+          backend_mac_addr = 0; // insertion failed
     } else {
       backend_mac_addr = result->v;
     }
