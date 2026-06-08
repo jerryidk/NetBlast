@@ -315,8 +315,10 @@ static void l2fwd_main_loop(void) {
 
       cur_tsc = rte_rdtsc();
       if(unlikely(cur_tsc - prev_tsc>= timer_period)){
-          print_stats();
-          prev_tsc = cur_tsc;
+          if (lcore_id == rte_get_main_lcore()) {
+              print_stats();
+              prev_tsc = cur_tsc;
+          }
       }
     }
 
