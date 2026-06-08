@@ -725,7 +725,7 @@ int main(int argc, char **argv) {
   else if (l2fwd_dramblast_enabled)
     dramblast_init();
 
-  sleep(15);
+  sleep(5);
 
   RTE_ETH_FOREACH_DEV(portid) {
     struct rte_eth_link link;
