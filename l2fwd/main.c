@@ -107,7 +107,7 @@ static struct rte_eth_conf port_conf = {
 struct rte_mempool *l2fwd_pktmbuf_pool = NULL;
 
 /* Per-port, Per-lcore statistics struct to prevent false sharing */
-struct alignas(RTE_CACHE_LINE_SIZE) l2fwd_port_statistics {
+struct l2fwd_port_statistics {
   uint64_t tx;
   uint64_t rx;
   uint64_t dropped;
