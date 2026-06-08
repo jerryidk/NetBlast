@@ -311,9 +311,9 @@ static void l2fwd_main_loop(void) {
         unsigned dst_port = l2fwd_dst_ports[portid];
 
         struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_port];
-        int sent = rte_eth_tx_buffer_flush(dst_port, queueid, buffer);
-        if (sent)
-          port_statistics[dst_port][lcore_id].tx += sent;
+        //int sent = rte_eth_tx_buffer_flush(dst_port, queueid, buffer);
+        //if (sent)
+        //  port_statistics[dst_port][lcore_id].tx += sent;
       }
 
       if (timer_period > 0) {
@@ -410,9 +410,9 @@ static void l2fwd_main_loop(void) {
       port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
 
       /* Forwarding logic */
-      for (unsigned j = 0; j < nb_rx; j++) {
-        l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
-      }
+      //for (unsigned j = 0; j < nb_rx; j++) {
+      //  l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
+      //}
     }
   }
 }
