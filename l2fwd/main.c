@@ -15,6 +15,7 @@
 #include <sys/queue.h>
 #include <sys/types.h>
 
+#include <unistd.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_common.h>
@@ -126,6 +127,24 @@ static void get_aggregated_stats(unsigned portid, struct l2fwd_port_statistics *
     }
 }
 
+void print_port_stats(uint16_t portid) {
+    struct rte_eth_stats stats;
+
+    // Fetch hardware stats from the NIC
+    if (rte_eth_stats_get(portid, &stats) == 0) {
+        printf("\n--- Port %u Hardware Stats ---\n", portid);
+        printf("RX-Packets (Good)  : %"PRIu64"\n", stats.ipackets);
+        printf("RX-Missed (Dropped): %"PRIu64" (Hardware queue full)\n", stats.imissed);
+        printf("RX-Errors (Bad)    : %"PRIu64" (MAC mismatch, bad CRC, etc.)\n", stats.ierrors);
+        printf("RX-No-Mbuf         : %"PRIu64" (Software ran out of memory)\n", stats.rx_nombuf);
+        printf("TX-Packets (Good)  : %"PRIu64"\n", stats.opackets);
+        printf("TX-Errors          : %"PRIu64"\n", stats.oerrors);
+        printf("------------------------------\n");
+    } else {
+        printf("Failed to get stats for Port %u\n", portid);
+    }
+}
+
 static void print_stats(void) {
     uint64_t total_packets_dropped = 0, total_packets_tx = 0, total_packets_rx = 0;
     uint64_t total_packets_fwded = 0, total_hash_duration = 0;
@@ -152,6 +171,7 @@ static void print_stats(void) {
         total_packets_rx += agg.rx;
         total_packets_fwded += agg.fwded;
         total_hash_duration += agg.hash_tsc;
+        print_port_stats(portid);
     }
 
     printf("\nAggregate statistics ==============================="
@@ -207,8 +227,7 @@ static inline void l2fwd_mac_updating(struct rte_mbuf *m, unsigned dest_portid, 
     rte_ether_addr_copy(&l2fwd_ports_eth_addr[dest_portid], &eth->src_addr);
 }
 
-static inline void l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid, unsigned queue_id, unsigned lcore_id) {
-    unsigned dst_port = l2fwd_dst_ports[portid];
+static inline void l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid, unsigned queue_id, unsigned lcore_id) { unsigned dst_port = l2fwd_dst_ports[portid];
     struct rte_eth_dev_tx_buffer *buffer = lcore_queue_conf[lcore_id].tx_buffer[dst_port];
 
     if (mac_updating) {
@@ -570,6 +589,19 @@ int main(int argc, char **argv) {
     if (l2fwd_maglev_enabled) maglev_init();
     else if (l2fwd_sashstore_enabled) sashstore_init();
     else if (l2fwd_dramblast_enabled) dramblast_init();
+
+
+    sleep(4);
+
+    RTE_ETH_FOREACH_DEV(portid) {
+        struct rte_eth_link link;
+        rte_eth_link_get_nowait(portid, &link); // Check Port 1
+        if (link.link_status) {
+            printf("Port %lu Link UP - %u Mbps\n", portid, link.link_speed);
+        } else {
+            printf("Port %lu Link DOWN\n", portid);
+        }
+    }
 
     rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, NULL, CALL_MAIN);
 
