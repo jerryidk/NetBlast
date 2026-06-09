@@ -309,12 +309,12 @@ static void l2fwd_main_loop(void) {
             rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
-          uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-          if (unlikely(nb_tx < MAX_PKT_BURST)) {
-            for (uint16_t buf = nb_tx; buf < MAX_PKT_BURST; buf++) {
+          uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
+          if (unlikely(nb_tx < nb_rx)) {
+            for (uint16_t buf = nb_tx; buf < nb_rx; buf++) {
               rte_pktmbuf_free(pkts_burst[buf]);
             }
-            port_statistics[portid][lcore_id].tx_dropped += MAX_PKT_BURST - nb_tx;
+            port_statistics[portid][lcore_id].tx_dropped += nb_rx - nb_tx;
           }
 
           if(nb_tx > 0)
