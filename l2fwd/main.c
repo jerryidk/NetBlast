@@ -295,7 +295,7 @@ static void l2fwd_main_loop(void) {
   start_tsc = rte_rdtsc();
   prev_tsc = start_tsc;
   // 10 secs later
-  end_tsc = start_tsc + 10 * rte_get_tsc_hz();
+  end_tsc = start_tsc + 20 * rte_get_tsc_hz();
   while (!force_quit) {
     for (unsigned i = 0; i < qconf->n_rx_port; i++) {
       unsigned portid = qconf->rx_port_list[i].port_id;

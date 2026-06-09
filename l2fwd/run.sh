@@ -38,6 +38,7 @@ echo "Running 8gb hashtable"
 # Toggle prefetch control script
 ../scripts/prefetch_control.sh "$PREFETCH_STATUS"
 
+set -x
 # Run the command with dynamically assigned core list (-l) and queue count (-q)
 sudo ./build/l2fwd \
     --in-memory \
@@ -50,3 +51,5 @@ sudo ./build/l2fwd \
     -no-mac-updating \
     -m "${MODE}" \
     -c 536870912
+
+set +x
