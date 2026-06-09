@@ -180,7 +180,7 @@ static void print_stats(void) {
 
     printf("\nStatistics for port %u ------------------------------"
            "\nPackets sent: %24" PRIu64 "\nPackets received: %20" PRIu64
-           "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64 "\nPackets tx dropped: %lu" PRIu64,
+           "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64 "\nPackets tx dropped: %21" PRIu64,
            portid, agg.tx, agg.rx, agg.fwded, agg.dropped, agg.tx_dropped);
 
     total_packets_dropped += agg.dropped;
