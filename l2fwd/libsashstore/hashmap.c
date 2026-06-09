@@ -6,8 +6,16 @@
 
 uint8_t empty_key[KEY_SIZE] = {0};
 
-__inline__ static unsigned int hash_fn(uint64_t x) {
-  return (x * 14695981039346656037ull) >> (64 - 24);
+inline uint64_t maglev_hash(uint64_t k) {
+  uint64_t hash;
+#ifdef SSE42
+  hash = _mm_crc32_u64(0, k);
+#else
+  // 64bit golden prime
+  hash = k * 0x9E3779B97F4A7C15ULL;
+#endif
+
+  return hash;
 }
 
 // Maglev hashmap
@@ -15,7 +23,7 @@ __inline__ static unsigned int hash_fn(uint64_t x) {
 int maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key,
                           uint64_t value) {
   // uint64_t hash = hash_fn(key);
-  uint64_t hash = fnv_1((char *)&key, sizeof(key));
+  uint64_t hash = maglev_hash(key) % CAPACITY;
   for (uint64_t i = 0; i < CAPACITY; ++i) {
     uint64_t probe = hash + i;
     struct maglev_kv_pair *pair = &map->pairs[probe % CAPACITY];
