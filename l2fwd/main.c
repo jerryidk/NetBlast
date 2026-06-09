@@ -297,8 +297,8 @@ static void l2fwd_main_loop(void) {
   //           qconf->rx_port_list[i].port_id, qconf->rx_port_list[i].queue_id);
   // }
 
-  if (!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled &&
-      !l2fwd_sashstore_enabled) {
+  // if (!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled &&
+  //     !l2fwd_sashstore_enabled) {
 
     start_tsc = rte_rdtsc();
     prev_tsc = start_tsc;
@@ -311,10 +311,51 @@ static void l2fwd_main_loop(void) {
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
 
-          for (uint16_t j = 0; j < nb_rx; j++) {
-            unsigned dst_port = l2fwd_dst_ports[portid];
-            uint64_t mac = 0xff;
-            l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+          if(l2fwd_maglev_enabled)
+          {
+              for (uint16_t j = 0; j < nb_rx; j++) {
+                //unsigned dst_port = l2fwd_dst_ports[portid];
+                //uint64_t mac = 0xff;
+                //l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+                m = pkts_burst[j];
+                uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
+                if (mac == 0) {
+                  port_statistics[portid][lcore_id].dropped += 1;
+                } else {
+                  l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
+                  port_statistics[portid][lcore_id].fwded += 1;
+                }
+              }
+          }
+          else if(l2fwd_dramblast_enabled) {
+              unsigned int fn = 0;
+              uint64_t hash;
+
+              for (unsigned int j = 0; j < nb_rx; j++) {
+                m = pkts_burst[j];
+                hash = flowhash(rte_pktmbuf_mtod(m, void *));
+                if (hash > 0) {
+                  frames[fn] = m;
+                  args[fn].k = hash;
+                  args[fn].id = fn;
+                  fn++;
+                }
+              }
+
+              if (fn > 0)
+                dramblast_process_frames(args, fn, mac_addrs, lcore_id);
+
+              uint64_t found = 0;
+              for (unsigned int j = 0; j < fn; j++) {
+                if (mac_addrs[j] > 0) {
+                  l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid],
+                                     mac_addrs[j]);
+                  found++;
+                }
+              }
+
+              port_statistics[portid][lcore_id].fwded += found;
+              port_statistics[portid][lcore_id].dropped += (nb_rx - found);
           }
 
           uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
@@ -347,7 +388,7 @@ static void l2fwd_main_loop(void) {
       print_final_stats(start_tsc, end_tsc);
     }
     return;
-  }
+    //}
 
   while (!force_quit) {
     cur_tsc = rte_rdtsc();
