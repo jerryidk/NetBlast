@@ -311,6 +311,7 @@ static void l2fwd_main_loop(void) {
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
 
+          uint64_t start = rte_rdtsc();
           if(l2fwd_maglev_enabled)
           {
               for (uint16_t j = 0; j < nb_rx; j++) {
@@ -356,7 +357,16 @@ static void l2fwd_main_loop(void) {
 
               port_statistics[portid][lcore_id].fwded += found;
               port_statistics[portid][lcore_id].dropped += (nb_rx - found);
+          }else {
+              for (uint16_t j = 0; j < nb_rx; j++) {
+                unsigned dst_port = l2fwd_dst_ports[portid];
+                uint64_t mac = 0xff;
+                l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+              }
+              port_statistics[portid][lcore_id].fwded += nb_rx;
           }
+
+          port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
 
           uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
           if (unlikely(nb_tx < nb_rx)) {
@@ -369,6 +379,7 @@ static void l2fwd_main_loop(void) {
           if (nb_tx > 0) {
             port_statistics[portid][lcore_id].tx += nb_tx;
           }
+
         } else {
           rte_pause();
         }
