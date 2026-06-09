@@ -311,7 +311,9 @@ static void l2fwd_main_loop(void) {
           port_statistics[portid][lcore_id].rx += nb_rx;
 
           for(uint16_t j = 0; j<nb_rx; j++){
-              l2fwd_mac_updating(pkts_burst[i], portid, 0xdeadbeef);
+
+              unsigned dst_port = l2fwd_dst_ports[portid];
+              l2fwd_mac_updating(pkts_burst[i], dst_port, 0xff);
           }
 
           uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
