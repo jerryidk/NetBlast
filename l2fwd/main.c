@@ -229,18 +229,19 @@ static void print_final_stats(uint64_t start, uint64_t end) {
          start, end);
   printf("Total time in secs: %f\n", time_secs);
 
-  double tx_packets_per_sec = total_packets_tx /  time_secs;
+  double tx_packets_per_sec = total_packets_tx / time_secs;
   double rx_packets_per_sec = total_packets_rx / time_secs;
   double fd_packets_per_sec = total_packets_fwded / time_secs;
 
-  printf("\n Final statistics ==============================="
-         "\nTotal packets sent: %18" PRIu64 " (million Tx packets/sec : %.2f)"
-         "\nTotal packets received: %14" PRIu64 " (million Rx packets/sec : %.2f)"
-         "\nTotal packets forwarded %14" PRIu64 " (million Fd packets/sec: %.2f)"
-         "\nTotal packets dropped: %15" PRIu64,
-         total_packets_tx, tx_packets_per_sec/1000000.0, total_packets_rx,
-         rx_packets_per_sec/1000000.0, total_packets_fwded, fd_packets_per_sec/1000000.0,
-         total_packets_dropped);
+  printf(
+      "\n Final statistics ==============================="
+      "\nTotal packets sent: %18" PRIu64 " (million Tx packets/sec : %.2f)"
+      "\nTotal packets received: %14" PRIu64 " (million Rx packets/sec : %.2f)"
+      "\nTotal packets forwarded %14" PRIu64 " (million Fd packets/sec: %.2f)"
+      "\nTotal packets dropped: %15" PRIu64,
+      total_packets_tx, tx_packets_per_sec / 1000000.0, total_packets_rx,
+      rx_packets_per_sec / 1000000.0, total_packets_fwded,
+      fd_packets_per_sec / 1000000.0, total_packets_dropped);
   printf("\n====================================================\n");
 
   if (l2fwd_sashstore_enabled)
@@ -310,10 +311,10 @@ static void l2fwd_main_loop(void) {
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
 
-          for(uint16_t j = 0; j<nb_rx; j++){
-              unsigned dst_port = l2fwd_dst_ports[portid];
-              uint64_t mac = 0xff;
-              l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+          for (uint16_t j = 0; j < nb_rx; j++) {
+            unsigned dst_port = l2fwd_dst_ports[portid];
+            uint64_t mac = 0xff;
+            l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
           }
 
           uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
@@ -324,22 +325,20 @@ static void l2fwd_main_loop(void) {
             port_statistics[portid][lcore_id].tx_dropped += nb_rx - nb_tx;
           }
 
-          if(nb_tx > 0)
-          {
-              port_statistics[portid][lcore_id].tx += nb_tx;
+          if (nb_tx > 0) {
+            port_statistics[portid][lcore_id].tx += nb_tx;
           }
-        }
-        else{
-            rte_pause();
+        } else {
+          rte_pause();
         }
       }
 
       cur_tsc = rte_rdtsc();
-      if(unlikely(cur_tsc - prev_tsc>= timer_period)){
-          if (lcore_id == rte_get_main_lcore()) {
-              print_stats();
-              prev_tsc = cur_tsc;
-          }
+      if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
+        if (lcore_id == rte_get_main_lcore()) {
+          print_stats();
+          prev_tsc = cur_tsc;
+        }
       }
     }
 
@@ -393,10 +392,9 @@ static void l2fwd_main_loop(void) {
       unsigned queueid = qconf->rx_port_list[i].queue_id;
       unsigned nb_rx =
           rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-      if (nb_rx == 0)
-      {
-          rte_pause();
-          continue;
+      if (nb_rx == 0) {
+        rte_pause();
+        continue;
       }
 
       port_statistics[portid][lcore_id].rx += nb_rx;
@@ -420,7 +418,7 @@ static void l2fwd_main_loop(void) {
         }
 
         if (fn > 0)
-          dramblast_process_frames(args, fn, mac_addrs,lcore_id);
+          dramblast_process_frames(args, fn, mac_addrs, lcore_id);
 
         uint64_t found = 0;
         for (unsigned int j = 0; j < fn; j++) {
@@ -435,37 +433,19 @@ static void l2fwd_main_loop(void) {
         port_statistics[portid][lcore_id].dropped += (nb_rx - found);
       } else if (l2fwd_maglev_enabled) {
         for (unsigned j = 0; j < nb_rx; j++) {
-          int len = 0;
           m = pkts_burst[j];
-
-          if ((j + 1) < nb_rx) {
-            rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + 1], void *));
-          }
-
-          if (l2fwd_maglev_enabled) {
-            uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
-            if (mac == 0) {
-              port_statistics[portid][lcore_id].dropped += 1;
-            } else {
-              l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
-              port_statistics[portid][lcore_id].fwded += 1;
-            }
-
-          } else if (l2fwd_sashstore_enabled &&
-                     ((len = sashstore_process_frame(
-                           rte_pktmbuf_mtod(m, void *),
-                           rte_pktmbuf_pkt_len(m))) != -1)) {
-            struct rte_ether_hdr *eth =
-                rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-            struct rte_ipv4_hdr *iph = (struct rte_ipv4_hdr *)&eth[1];
-            iph->total_length = rte_cpu_to_be_16(len + 42 - 14);
-            port_statistics[portid][lcore_id].fwded += 1;
-          } else {
+          // if ((j + 1) < nb_rx) {
+          //   rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + 1], void *));
+          // }
+          uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
+          if (mac == 0) {
             port_statistics[portid][lcore_id].dropped += 1;
+          } else {
+            l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
+            port_statistics[portid][lcore_id].fwded += 1;
           }
         }
       } else {
-
         // straight through, no load balance
         port_statistics[portid][lcore_id].fwded += nb_rx;
       }
@@ -486,15 +466,14 @@ static void l2fwd_main_loop(void) {
         port_statistics[portid][lcore_id].tx_dropped += nb_rx - nb_tx;
       }
 
-      if(nb_tx > 0)
-      {
-          port_statistics[portid][lcore_id].tx += nb_tx;
+      if (nb_tx > 0) {
+        port_statistics[portid][lcore_id].tx += nb_tx;
       }
     }
   }
 
   if (lcore_id == rte_get_main_lcore()) {
-      end_tsc = rte_rdtsc();
+    end_tsc = rte_rdtsc();
     print_final_stats(start_tsc, end_tsc);
   }
 }
