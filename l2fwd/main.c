@@ -111,8 +111,8 @@ struct rte_mempool *l2fwd_pktmbuf_pool = NULL;
 struct l2fwd_port_statistics {
   uint64_t tx;
   uint64_t rx;
-  uint64_t fwd;
-  uint64_t fwd_dropped;
+  uint64_t fwded;
+  uint64_t dropped;
   uint64_t rx_dropped;
   uint64_t tx_dropped;
   uint64_t hash_tsc;
