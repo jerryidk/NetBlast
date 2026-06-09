@@ -283,6 +283,8 @@ int main(int argc, char *argv[]) {
     uint64_t prev_pkts[RTE_MAX_LCORE] = {0};
     uint64_t prev_bytes[RTE_MAX_LCORE] = {0};
 
+
+    const char clr[] = {27, '[', '2', 'J', '\0'};
     printf("\n======================================================\n");
     while (!force_quit) {
         sleep(1);
@@ -306,7 +308,7 @@ int main(int argc, char *argv[]) {
         double mpps = (double)total_pkts_sec / 1000000.0;
         double gbps = ((double)total_bytes_sec * 8.0) / 1000000000.0;
 
-        printf("System Output: %7.2f Mpps (Frame) | %7.2f Gbps (Line)\n", mpps, gbps);
+        printf("%sSystem Output: %7.2f Mpps (Frame) | %7.2f Gbps (Line)\n", clr, mpps, gbps);
     }
     printf("======================================================\n");
 
