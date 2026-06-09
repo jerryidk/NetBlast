@@ -400,7 +400,7 @@ static void l2fwd_main_loop(void) {
         }
 
         if (fn > 0)
-          dramblast_process_frames(args, fn, mac_addrs);
+          dramblast_process_frames(args, fn, mac_addrs,lcore_id);
 
         uint64_t found = 0;
         for (unsigned int j = 0; j < fn; j++) {

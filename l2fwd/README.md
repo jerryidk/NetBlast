@@ -16,7 +16,7 @@ nix develop -c bash build.sh
 ## run
 
 ```
-sudo ./build/l2fwd -l0-1 -m100 -b0000:00:05.0  -- -p 0x3 --no-mac-updating -m dramblast
+sudo ./build/l2fwd -l0-1 -m100 -b0000:00:05.0  -- -p 0x3 --no-mac-updating -m dramblast -c 32
 ```
 
 before `--` is EAL (DPDK) arguments.
