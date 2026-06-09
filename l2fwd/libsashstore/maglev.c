@@ -48,7 +48,7 @@ void maglev_init(void) {
     exit(1);
   }
 
-  for(size_t i = 0; i< size; i++){
+  for(size_t i = 0; i< CAPACITY; i++){
       maglev_conntrack.pairs[i].key = 0;
       maglev_conntrack.pairs[i].value = 0;
   }
