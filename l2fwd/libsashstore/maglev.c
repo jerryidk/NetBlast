@@ -15,23 +15,26 @@ uint64_t maglev_process_frame(void *frame) {
   uint64_t backend = 0;
   uint64_t hash = flowhash(frame);
 
-  if (hash == 0) {
-    // printf("hash 0\n");
-    return 0;
-  }
+  // if (hash == 0) {
+  //   // printf("hash 0\n");
+  //   return 0;
+  // }
 
-  struct maglev_kv_pair *cached = maglev_hashmap_get(&maglev_conntrack, hash);
-  if (cached == NULL) {
-    // Use lookup table
-    backend = maglev_lookup[hash % TABLE_SIZE];
-    // insertion can fail if it is full.
-    if (maglev_hashmap_insert(&maglev_conntrack, hash, backend) < 0) {
-      // printf("hashtable insertion failed, need more memory\n");
-      return 0;
-    }
-  } else {
-    backend = cached->value;
-    // Just use the cached backend (noop in this test)
+  if(hash > 0)
+  {
+      struct maglev_kv_pair *cached = maglev_hashmap_get(&maglev_conntrack, hash);
+      if (cached == NULL) {
+        // Use lookup table
+        backend = maglev_lookup[hash % TABLE_SIZE];
+        // insertion can fail if it is full.
+        if (maglev_hashmap_insert(&maglev_conntrack, hash, backend) < 0) {
+          // printf("hashtable insertion failed, need more memory\n");
+          return 0;
+        }
+      } else {
+        backend = cached->value;
+        // Just use the cached backend (noop in this test)
+      }
   }
   return backend;
 }
