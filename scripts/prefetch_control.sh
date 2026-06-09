@@ -9,11 +9,9 @@ fi
 # 2. Auto-install msr-tools on Ubuntu/Debian if missing
 if ! command -v wrmsr &> /dev/null || ! command -v rdmsr &> /dev/null; then
     echo "msr-tools not found. Attempting to install on Ubuntu..."
-    # -yq makes it quiet and non-interactive so it doesn't prompt you
     apt-get update -yq
     apt-get install -yq msr-tools
 
-    # Verify installation succeeded
     if ! command -v wrmsr &> /dev/null; then
         echo "Error: Failed to install msr-tools. Please install manually."
         exit 1
@@ -61,5 +59,5 @@ case "$1" in
         ;;
 esac
 
-# Verify by reading core 0 (reading all cores clutters the terminal)
-printf "Value: 0x%x\n" $(rdmsr -p 0 0x1a4)
+# Verify by reading core 0 as a string (%s) instead of hex integer (%x)
+printf "Value: 0x%s\n" "$(rdmsr -p 0 0x1a4)"
