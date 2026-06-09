@@ -19,7 +19,7 @@ void populate_lut(LookUpTable lut) {
 
     // fake backend server mac address
     for (size_t i = 0; i < TABLE_SIZE; ++i) {
-		lut[i] = i+1;
+		lut[i] = 0xff;
 	}
 
     return;
