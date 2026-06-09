@@ -26,10 +26,10 @@ CORE_LIST=$(seq -s, 0 2 $MAX_CORE)
 if [ "$MODE" == "dramblast" ]; then
     PREFETCH_STATUS="off"
 elif [ "$MODE" == "maglev" ]; then
-    PREFETCH_STATUS="off"
+    PREFETCH_STATUS="on"
 else
     # Default fallback just in case
-    PREFETCH_STATUS="off"
+    PREFETCH_STATUS="on"
 fi
 
 # 5. Execute the sequence
