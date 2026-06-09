@@ -200,18 +200,10 @@ static void print_stats(void) {
     print_port_stats(portid);
   }
 
-  printf("\nAggregate statistics ==============================="
-         "\nTotal packets sent: %18" PRIu64
-         "\nTotal packets received: %14" PRIu64
-         "\nTotal packets forwarded: %14" PRIu64
-         "\nTotal packets dropped: %15" PRIu64,
-         total_packets_tx, total_packets_rx, total_packets_fwded,
-         total_packets_dropped);
-
   if(timer_period > 0){
-      double t_s = timer_period * 1.0;
+      double t_s = timer_period / rte_get_timer_hz();
       printf("\n%.2f Mpps",
-             total_packets_fwded/t_s);
+             (total_packets_fwded/1000000.0)/t_s);
   }
 
   if (total_packets_fwded > 0) {
