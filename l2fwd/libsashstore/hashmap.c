@@ -48,7 +48,7 @@ int maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key,
 struct maglev_kv_pair *maglev_hashmap_get(struct maglev_hashmap *map,
                                           uint64_t key) {
   // uint64_t hash = hash_fn(key);
-  uint64_t hash = fnv_1((char *)&key, sizeof(key));
+  uint64_t hash = maglev_hash(key) % CAPACITY;
   for (uint64_t i = 0; i < CAPACITY; ++i) {
     uint64_t probe = hash + i;
     struct maglev_kv_pair *pair = &map->pairs[probe % CAPACITY];
