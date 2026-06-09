@@ -309,6 +309,11 @@ static void l2fwd_main_loop(void) {
             rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
+
+          for(uint16_t j = 0; j<nb_rx; j++){
+              l2fwd_mac_updating(pkts_burst[i], portid, 0xdeadbeef);
+          }
+
           uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
           if (unlikely(nb_tx < nb_rx)) {
             for (uint16_t buf = nb_tx; buf < nb_rx; buf++) {
