@@ -134,6 +134,7 @@ static void get_aggregated_stats(unsigned portid,
     agg->dropped += port_statistics[portid][lcore_id].dropped;
     agg->hash_tsc += port_statistics[portid][lcore_id].hash_tsc;
     agg->fwded += port_statistics[portid][lcore_id].fwded;
+    agg->tx_dropped += port_statistics[portid][lcore_id].tx_dropped;
   }
 }
 
@@ -179,8 +180,8 @@ static void print_stats(void) {
 
     printf("\nStatistics for port %u ------------------------------"
            "\nPackets sent: %24" PRIu64 "\nPackets received: %20" PRIu64
-           "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64,
-           portid, agg.tx, agg.rx, agg.fwded, agg.dropped);
+           "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64 "\nPackets tx dropped: %lu" PRIu64,
+           portid, agg.tx, agg.rx, agg.fwded, agg.dropped, agg.tx_dropped);
 
     total_packets_dropped += agg.dropped;
     total_packets_tx += agg.tx;
