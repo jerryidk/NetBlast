@@ -22,21 +22,8 @@ MAX_CORE=$(( (NUM_CORES - 1) * 2 ))
 # Use seq to generate a comma-separated list jumping by 2
 CORE_LIST=$(seq -s, 0 2 $MAX_CORE)
 
-# 4. Determine prefetcher status based on mode
-if [ "$MODE" == "dramblast" ]; then
-    PREFETCH_STATUS="off"
-elif [ "$MODE" == "maglev" ]; then
-    PREFETCH_STATUS="on"
-else
-    # Default fallback just in case
-    PREFETCH_STATUS="on"
-fi
-
 # 5. Execute the sequence
 echo "Running 8gb hashtable"
-
-# Toggle prefetch control script
-sudo ../scripts/prefetch_control.sh "$PREFETCH_STATUS"
 
 set -x
 # Run the command with dynamically assigned core list (-l) and queue count (-q)
