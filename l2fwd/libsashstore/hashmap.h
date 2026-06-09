@@ -15,7 +15,7 @@
 extern uint64_t CAPACITY;
 
 /* maglev KV pair */
-struct maglev_kv_pair {
+struct __attribute__((aligned(16))) maglev_kv_pair {
     uint64_t key;
     uint64_t value;
 };

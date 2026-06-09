@@ -97,8 +97,17 @@ int dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
 try_insert:
   kv = &ht->table[idx];
   count++;
-  if (kv->k == 0 || kv->k == k) {
-    kv->k = k;
+  if (kv->k == 0)
+  {
+      dramblast_kv_t swapped;
+      swapped.k = k;
+      swapped.v = v;
+      if (__sync_bool_compare_and_swap((__int128 *)kv, (__int128)0, *(__int128 *)&swapped)) {
+          return 0;
+      }
+  }
+
+  if(kv->k == k) {
     kv->v = v;
     return 0;
   }
