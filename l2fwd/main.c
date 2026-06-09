@@ -124,19 +124,6 @@ struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS][RTE_MAX_LCORE];
 #define MAX_TIMER_PERIOD 86400
 static uint64_t timer_period = 1; // update 1 sec
 
-/* --- New Structs & Variables for Sampling Data --- */
-struct stat_sample {
-    double tx_mpps;
-    double rx_mpps;
-    double fwd_mpps;
-    uint64_t cycles_per_fwd;
-};
-
-static struct stat_sample *samples_buffer = NULL;
-static uint32_t sample_count = 0;
-static uint32_t max_samples = 0;
-/* ------------------------------------------------ */
-
 /* Helper to aggregate stats across all lcores for a specific port */
 static void get_aggregated_stats(unsigned portid,
                                  struct l2fwd_port_statistics *agg) {
@@ -173,12 +160,9 @@ void print_port_stats(uint16_t portid) {
   }
 }
 
-static void print_stats(uint64_t cur_tsc, uint64_t prev_tsc) {
-  // Static variables keep track of the previous cumulative stats
-  static uint64_t prev_total_tx = 0, prev_total_rx = 0;
-  static uint64_t prev_total_fwded = 0, prev_total_hash_tsc = 0;
-
-  uint64_t total_packets_dropped = 0, total_packets_tx = 0, total_packets_rx = 0;
+static void print_stats(void) {
+  uint64_t total_packets_dropped = 0, total_packets_tx = 0,
+           total_packets_rx = 0;
   uint64_t total_packets_fwded = 0, total_hash_duration = 0;
   unsigned portid;
   struct l2fwd_port_statistics agg;
@@ -186,7 +170,8 @@ static void print_stats(uint64_t cur_tsc, uint64_t prev_tsc) {
   const char clr[] = {27, '[', '2', 'J', '\0'};
   const char topLeft[] = {27, '[', '1', ';', '1', 'H', '\0'};
 
-  printf("%s%s\nPort statistics ====================================", clr, topLeft);
+  printf("%s%s\nPort statistics ====================================", clr,
+         topLeft);
 
   for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {
     if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
@@ -208,87 +193,59 @@ static void print_stats(uint64_t cur_tsc, uint64_t prev_tsc) {
     print_port_stats(portid);
   }
 
-  // Calculate Deltas for this sample point
-  uint64_t d_tx = total_packets_tx - prev_total_tx;
-  uint64_t d_rx = total_packets_rx - prev_total_rx;
-  uint64_t d_fwd = total_packets_fwded - prev_total_fwded;
-  uint64_t d_hash = total_hash_duration - prev_total_hash_tsc;
+  printf("\nAggregate statistics ==============================="
+         "\nTotal packets sent: %18" PRIu64
+         "\nTotal packets received: %14" PRIu64
+         "\nTotal packets forwarded: %14" PRIu64
+         "\nTotal packets dropped: %15" PRIu64,
+         total_packets_tx, total_packets_rx, total_packets_fwded,
+         total_packets_dropped);
 
-  double time_diff_secs = (double)(cur_tsc - prev_tsc) / rte_get_tsc_hz();
-
-  // Compute rates
-  double tx_mpps = (d_tx / time_diff_secs) / 1000000.0;
-  double rx_mpps = (d_rx / time_diff_secs) / 1000000.0;
-  double fwd_mpps = (d_fwd / time_diff_secs) / 1000000.0;
-  uint64_t cycles_per_fwd = d_fwd > 0 ? (d_hash / d_fwd) : 0;
-
-  printf("\nThroughput (Current Sample) ========================"
-         "\nTX: %5.2f Mpps"
-         "\nRX: %5.2f Mpps"
-         "\nFWD: %4.2f Mpps"
-         "\nCycles/Fwd pkt: %lu",
-         tx_mpps, rx_mpps, fwd_mpps, cycles_per_fwd);
-  printf("\n====================================================\n");
-
-  // Save the sample to the buffer, ensuring we don't overflow
-  if (samples_buffer != NULL && sample_count < max_samples) {
-      samples_buffer[sample_count].tx_mpps = tx_mpps;
-      samples_buffer[sample_count].rx_mpps = rx_mpps;
-      samples_buffer[sample_count].fwd_mpps = fwd_mpps;
-      samples_buffer[sample_count].cycles_per_fwd = cycles_per_fwd;
-      sample_count++;
+  if (total_packets_fwded > 0) {
+    printf("\nCycle per fwd packet: %lu",
+           total_hash_duration / total_packets_fwded);
   }
-
-  // Update previous trackers for the next iteration
-  prev_total_tx = total_packets_tx;
-  prev_total_rx = total_packets_rx;
-  prev_total_fwded = total_packets_fwded;
-  prev_total_hash_tsc = total_hash_duration;
+  printf("\n====================================================\n");
 }
 
 static void print_final_stats(uint64_t start, uint64_t end) {
+  uint64_t total_packets_dropped = 0, total_packets_tx = 0,
+           total_packets_rx = 0;
+  uint64_t total_packets_fwded = 0;
+  unsigned portid;
+  struct l2fwd_port_statistics agg;
+
+  for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {
+    if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
+      continue;
+    get_aggregated_stats(portid, &agg);
+    total_packets_dropped += agg.dropped;
+    total_packets_tx += agg.tx;
+    total_packets_rx += agg.rx;
+    total_packets_fwded += agg.fwded;
+
+    print_port_stats(portid);
+  }
+
   double time_secs = (double)(end - start) / rte_get_tsc_hz();
-  printf("\nrte_get_tsc_hz: %" PRIu64 ", (start %" PRIu64 " end %" PRIu64 ")\n",
-         rte_get_tsc_hz(), start, end);
+  printf("\nrte_get_tsc_hz: %llu, (start %llu end %llu)\n", rte_get_tsc_hz(),
+         start, end);
   printf("Total time in secs: %f\n", time_secs);
 
-  if (sample_count == 0) {
-      printf("\nNo samples were collected. Processing too short or timer too long.\n");
-      return;
-  }
+  double tx_packets_per_sec = total_packets_tx / time_secs;
+  double rx_packets_per_sec = total_packets_rx / time_secs;
+  double fd_packets_per_sec = total_packets_fwded / time_secs;
 
-  // Aggregation variables
-  double sum_tx = 0, max_tx = 0, min_tx = -1.0;
-  double sum_rx = 0, max_rx = 0, min_rx = -1.0;
-  double sum_fwd = 0, max_fwd = 0, min_fwd = -1.0;
-  uint64_t sum_cyc = 0, max_cyc = 0, min_cyc = (uint64_t)-1;
-
-  for (uint32_t i = 0; i < sample_count; i++) {
-      struct stat_sample *s = &samples_buffer[i];
-
-      sum_tx += s->tx_mpps;
-      if (min_tx < 0 || s->tx_mpps < min_tx) min_tx = s->tx_mpps;
-      if (s->tx_mpps > max_tx) max_tx = s->tx_mpps;
-
-      sum_rx += s->rx_mpps;
-      if (min_rx < 0 || s->rx_mpps < min_rx) min_rx = s->rx_mpps;
-      if (s->rx_mpps > max_rx) max_rx = s->rx_mpps;
-
-      sum_fwd += s->fwd_mpps;
-      if (min_fwd < 0 || s->fwd_mpps < min_fwd) min_fwd = s->fwd_mpps;
-      if (s->fwd_mpps > max_fwd) max_fwd = s->fwd_mpps;
-
-      sum_cyc += s->cycles_per_fwd;
-      if (min_cyc == (uint64_t)-1 || s->cycles_per_fwd < min_cyc) min_cyc = s->cycles_per_fwd;
-      if (s->cycles_per_fwd > max_cyc) max_cyc = s->cycles_per_fwd;
-  }
-
-  printf("\n Final Statistics (Averaged over %u sample points) =======\n", sample_count);
-  printf("TX Mpps         | Avg: %6.2f | Max: %6.2f | Min: %6.2f\n", sum_tx / sample_count, max_tx, min_tx);
-  printf("RX Mpps         | Avg: %6.2f | Max: %6.2f | Min: %6.2f\n", sum_rx / sample_count, max_rx, min_rx);
-  printf("FWD Mpps        | Avg: %6.2f | Max: %6.2f | Min: %6.2f\n", sum_fwd / sample_count, max_fwd, min_fwd);
-  printf("Cycles/Fwd pkt  | Avg: %6lu | Max: %6lu | Min: %6lu\n", sum_cyc / sample_count, max_cyc, min_cyc);
-  printf("==================================================================\n");
+  printf(
+      "\n Final statistics ==============================="
+      "\nTotal packets sent: %18" PRIu64 " (million Tx packets/sec : %.2f)"
+      "\nTotal packets received: %14" PRIu64 " (million Rx packets/sec : %.2f)"
+      "\nTotal packets forwarded %14" PRIu64 " (million Fd packets/sec: %.2f)"
+      "\nTotal packets dropped: %15" PRIu64,
+      total_packets_tx, tx_packets_per_sec / 1000000.0, total_packets_rx,
+      rx_packets_per_sec / 1000000.0, total_packets_fwded,
+      fd_packets_per_sec / 1000000.0, total_packets_dropped);
+  printf("\n====================================================\n");
 
   if (l2fwd_sashstore_enabled)
     print_sashstore_stats(start, end);
@@ -327,7 +284,8 @@ static void l2fwd_main_loop(void) {
   unsigned lcore_id = rte_lcore_id();
   struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 
-  uint64_t prev_tsc = 0, cur_tsc = 0, start_tsc = 0, end_tsc = 0;
+  uint64_t prev_tsc = 0, cur_tsc = 0, start_tsc = 0,
+           end_tsc = 0;
 
   if (qconf->n_rx_port == 0) {
     RTE_LOG(INFO, L2FWD, "lcore %u has nothing to do\n", lcore_id);
@@ -336,19 +294,8 @@ static void l2fwd_main_loop(void) {
 
   start_tsc = rte_rdtsc();
   prev_tsc = start_tsc;
-  // 20 secs later
+  // 10 secs later
   end_tsc = start_tsc + 20 * rte_get_tsc_hz();
-
-  // Master lcore allocates the dynamic sample buffer based on the timeline
-  if (lcore_id == rte_get_main_lcore()) {
-      // Calculate max possible samples for the duration. Added +5 padding to eliminate overflow chance.
-      max_samples = ((end_tsc - start_tsc) / timer_period) + 5;
-      samples_buffer = calloc(max_samples, sizeof(struct stat_sample));
-      if (!samples_buffer) {
-          rte_exit(EXIT_FAILURE, "Failed to allocate memory for samples buffer\n");
-      }
-  }
-
   while (!force_quit) {
     for (unsigned i = 0; i < qconf->n_rx_port; i++) {
       unsigned portid = qconf->rx_port_list[i].port_id;
@@ -361,6 +308,9 @@ static void l2fwd_main_loop(void) {
         uint64_t start = rte_rdtsc();
         if (l2fwd_maglev_enabled) {
           for (uint16_t j = 0; j < nb_rx; j++) {
+            // unsigned dst_port = l2fwd_dst_ports[portid];
+            // uint64_t mac = 0xff;
+            // l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
             m = pkts_burst[j];
             uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
             if (mac == 0) {
@@ -430,7 +380,7 @@ static void l2fwd_main_loop(void) {
     cur_tsc = rte_rdtsc();
     if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
       if (lcore_id == rte_get_main_lcore()) {
-        print_stats(cur_tsc, prev_tsc);
+        print_stats();
         prev_tsc = cur_tsc;
       }
     }
@@ -606,7 +556,8 @@ int main(int argc, char **argv) {
 
       printf("Lcore %u assigned to Port %u Queue %u\n", rx_lcore_id, portid, q);
 
-      rx_lcore_id++; /* Move to next core for the next queue to spread the load */
+      rx_lcore_id++; /* Move to next core for the next queue to spread the load
+                      */
     }
   }
 
@@ -635,6 +586,8 @@ int main(int argc, char **argv) {
     rte_eth_dev_info_get(portid, &dev_info);
 
     struct rte_eth_conf local_port_conf = port_conf;
+    // if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+    //     local_port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
     // rss
     local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
@@ -685,7 +638,8 @@ int main(int argc, char **argv) {
     rte_eth_promiscuous_enable(portid);
   }
 
-  /* Initialize TX buffers explicitly per lcore to map directly to their queue */
+  /* Initialize TX buffers explicitly per lcore to map directly to their queue
+   */
   for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
     struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
     if (qconf->n_rx_port == 0)
@@ -701,6 +655,8 @@ int main(int argc, char **argv) {
         rte_exit(EXIT_FAILURE, "Cannot allocate buffer\n");
 
       rte_eth_tx_buffer_init(qconf->tx_buffer[portid], MAX_PKT_BURST);
+      /* Error callbacks omitted for brevity, but you can attach them to
+       * dropping here */
     }
   }
 
@@ -750,12 +706,6 @@ int main(int argc, char **argv) {
 
   if (l2fwd_dramblast_enabled)
     dramblast_destroy();
-
-  // Free the stats buffer safely
-  if (samples_buffer != NULL) {
-      free(samples_buffer);
-      samples_buffer = NULL;
-  }
 
   printf("Bye...\n");
   return ret;
