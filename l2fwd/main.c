@@ -284,10 +284,8 @@ static void l2fwd_main_loop(void) {
   unsigned lcore_id = rte_lcore_id();
   struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 
-  uint64_t prev_tsc = 0, diff_tsc, cur_tsc, timer_tsc = 0, start_tsc = 0,
+  uint64_t prev_tsc = 0, cur_tsc = 0, start_tsc = 0,
            end_tsc = 0;
-  const uint64_t drain_tsc =
-      (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
 
   if (qconf->n_rx_port == 0) {
     RTE_LOG(INFO, L2FWD, "lcore %u has nothing to do\n", lcore_id);
