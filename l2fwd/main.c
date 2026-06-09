@@ -595,7 +595,7 @@ static int l2fwd_parse_args(int argc, char **argv) {
       }
 
       double g = 1024 * 1024 * 1024.0;
-      printf("hashtable size %.2f gb", CAPACITY/g);
+      printf("hashtable size %.2f gb\n", (CAPACITY*16)/g);
       break;
     case 'p':
       l2fwd_enabled_port_mask = strtoul(optarg, NULL, 16);
