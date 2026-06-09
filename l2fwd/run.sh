@@ -48,7 +48,7 @@ sudo ./build/l2fwd \
     -- \
     -p 1 \
     -q "${NUM_CORES}" \
-    -no-mac-updating \
+    --no-mac-updating \
     -m "${MODE}" \
     -c 536870912
 
