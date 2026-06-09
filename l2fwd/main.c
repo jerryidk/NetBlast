@@ -594,7 +594,7 @@ static int l2fwd_parse_args(int argc, char **argv) {
         return -1;
       }
 
-      double g = 1024 * 1024 * 1024.0
+      double g = 1024 * 1024 * 1024.0;
       printf("hashtable size %.2f gb", CAPACITY/g);
       break;
     case 'p':

@@ -6,6 +6,9 @@
 
 uint8_t empty_key[KEY_SIZE] = {0};
 #define SSE42
+#ifdef SSE42
+#include <nmmintrin.h> // Header for CRC32 intrinsics
+#endif
 inline uint64_t maglev_hash(uint64_t k) {
   uint64_t hash;
 #ifdef SSE42
