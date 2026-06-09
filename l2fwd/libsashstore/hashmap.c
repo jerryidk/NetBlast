@@ -25,6 +25,9 @@ inline uint64_t maglev_hash(uint64_t k) {
 // empty buckets have zero keys
 int maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key,
                           uint64_t value) {
+
+  if(key == 0)
+      return -1;
   // uint64_t hash = hash_fn(key);
   uint64_t hash = maglev_hash(key) & (CAPACITY-1);
   for (uint64_t i = 0; i < CAPACITY; ++i) {

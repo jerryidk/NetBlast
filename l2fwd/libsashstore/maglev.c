@@ -28,7 +28,7 @@ uint64_t maglev_process_frame(void *frame) {
         backend = maglev_lookup[hash % TABLE_SIZE];
         // insertion can fail if it is full.
         if (maglev_hashmap_insert(&maglev_conntrack, hash, backend) < 0) {
-          // printf("hashtable insertion failed, need more memory\n");
+          printf("hashtable insertion failed, need more memory\n");
           return 0;
         }
       } else {
