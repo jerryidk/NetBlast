@@ -39,6 +39,7 @@
 #include <unistd.h>
 
 #include "dramblast.h"
+#include "generic/rte_cycles.h"
 #include "generic/rte_pause.h"
 #include "maglev.h"
 #include "packettool.h"
@@ -293,17 +294,10 @@ static void l2fwd_main_loop(void) {
     return;
   }
 
-  // RTE_LOG(INFO, L2FWD, "entering main loop on lcore %u\n", lcore_id);
-  // for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-  //   RTE_LOG(INFO, L2FWD, " -- lcoreid=%u portid=%u rx_queue=%u\n", lcore_id,
-  //           qconf->rx_port_list[i].port_id, qconf->rx_port_list[i].queue_id);
-  // }
-
-  // if (!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled &&
-  //     !l2fwd_sashstore_enabled) {
-
   start_tsc = rte_rdtsc();
   prev_tsc = start_tsc;
+  // 10 secs later
+  end_tsc = start_tsc + 10 * rte_get_tsc_hz();
   while (!force_quit) {
     for (unsigned i = 0; i < qconf->n_rx_port; i++) {
       unsigned portid = qconf->rx_port_list[i].port_id;
@@ -392,140 +386,14 @@ static void l2fwd_main_loop(void) {
         prev_tsc = cur_tsc;
       }
     }
+
+    if (cur_tsc >= end_tsc) {
+      force_quit = true;
+    }
   }
 
   end_tsc = rte_rdtsc();
   if (lcore_id == rte_get_main_lcore()) {
-    print_final_stats(start_tsc, end_tsc);
-  }
-  return;
-  //}
-
-  while (!force_quit) {
-    cur_tsc = rte_rdtsc();
-
-    if (!end_tsc) {
-      start_tsc = cur_tsc;
-      end_tsc = cur_tsc + 60 * rte_get_tsc_hz();
-    }
-
-    if (cur_tsc >= end_tsc) {
-      force_quit = true;
-      // print_final_stats(start_tsc, cur_tsc);
-    }
-
-    diff_tsc = cur_tsc - prev_tsc;
-    if (unlikely(diff_tsc > drain_tsc)) {
-      for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-        unsigned portid = qconf->rx_port_list[i].port_id;
-        unsigned queueid = qconf->rx_port_list[i].queue_id;
-        unsigned dst_port = l2fwd_dst_ports[portid];
-
-        struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_port];
-        int sent = rte_eth_tx_buffer_flush(dst_port, queueid, buffer);
-        if (sent)
-          port_statistics[dst_port][lcore_id].tx += sent;
-      }
-
-      if (timer_period > 0) {
-        timer_tsc += diff_tsc;
-        if (unlikely(timer_tsc >= timer_period)) {
-          if (lcore_id == rte_get_main_lcore()) {
-            print_stats();
-            timer_tsc = 0;
-          }
-        }
-      }
-      prev_tsc = cur_tsc;
-    }
-
-    for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-      unsigned portid = qconf->rx_port_list[i].port_id;
-      unsigned queueid = qconf->rx_port_list[i].queue_id;
-      unsigned nb_rx =
-          rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-      if (nb_rx == 0) {
-        rte_pause();
-        continue;
-      }
-
-      port_statistics[portid][lcore_id].rx += nb_rx;
-
-      uint64_t start = rte_rdtsc();
-
-      /* --- USER INTEGRATION LOGIC --- */
-      if (l2fwd_dramblast_enabled) {
-        unsigned int fn = 0;
-        uint64_t hash;
-
-        for (unsigned int j = 0; j < nb_rx; j++) {
-          m = pkts_burst[j];
-          hash = flowhash(rte_pktmbuf_mtod(m, void *));
-          if (hash > 0) {
-            frames[fn] = m;
-            args[fn].k = hash;
-            args[fn].id = fn;
-            fn++;
-          }
-        }
-
-        if (fn > 0)
-          dramblast_process_frames(args, fn, mac_addrs, lcore_id);
-
-        uint64_t found = 0;
-        for (unsigned int j = 0; j < fn; j++) {
-          if (mac_addrs[j] > 0) {
-            l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid],
-                               mac_addrs[j]);
-            found++;
-          }
-        }
-
-        port_statistics[portid][lcore_id].fwded += found;
-        port_statistics[portid][lcore_id].dropped += (nb_rx - found);
-      } else if (l2fwd_maglev_enabled) {
-        for (unsigned j = 0; j < nb_rx; j++) {
-          m = pkts_burst[j];
-          // if ((j + 1) < nb_rx) {
-          //   rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + 1], void *));
-          // }
-          uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
-          if (mac == 0) {
-            port_statistics[portid][lcore_id].dropped += 1;
-          } else {
-            l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
-            port_statistics[portid][lcore_id].fwded += 1;
-          }
-        }
-      } else {
-        // straight through, no load balance
-        port_statistics[portid][lcore_id].fwded += nb_rx;
-      }
-      /* --- END USER INTEGRATION LOGIC --- */
-
-      port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
-
-      // /* Forwarding logic */
-      // for (unsigned j = 0; j < nb_rx; j++) {
-      //   l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
-      // }
-
-      uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
-      if (unlikely(nb_tx < nb_rx)) {
-        for (uint16_t buf = nb_tx; buf < nb_rx; buf++) {
-          rte_pktmbuf_free(pkts_burst[buf]);
-        }
-        port_statistics[portid][lcore_id].tx_dropped += nb_rx - nb_tx;
-      }
-
-      if (nb_tx > 0) {
-        port_statistics[portid][lcore_id].tx += nb_tx;
-      }
-    }
-  }
-
-  if (lcore_id == rte_get_main_lcore()) {
-    end_tsc = rte_rdtsc();
     print_final_stats(start_tsc, end_tsc);
   }
 }
