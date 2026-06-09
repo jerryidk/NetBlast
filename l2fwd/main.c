@@ -136,6 +136,13 @@ static void get_aggregated_stats(unsigned portid,
     agg->hash_tsc += port_statistics[portid][lcore_id].hash_tsc;
     agg->fwded += port_statistics[portid][lcore_id].fwded;
     agg->tx_dropped += port_statistics[portid][lcore_id].tx_dropped;
+
+    port_statistics[portid][lcore_id].tx = 0;
+    port_statistics[portid][lcore_id].rx = 0;
+    port_statistics[portid][lcore_id].dropped = 0;
+    port_statistics[portid][lcore_id].hash_tsc = 0;
+    port_statistics[portid][lcore_id].fwded = 0;
+    port_statistics[portid][lcore_id].tx_dropped= 0;
   }
 }
 
@@ -200,6 +207,12 @@ static void print_stats(void) {
          "\nTotal packets dropped: %15" PRIu64,
          total_packets_tx, total_packets_rx, total_packets_fwded,
          total_packets_dropped);
+
+  if(timer_period > 0){
+      double t_s = timer_period * 1.0;
+      printf("\n%.2f Mpps",
+             total_packets_fwded/t_s);
+  }
 
   if (total_packets_fwded > 0) {
     printf("\nCycle per fwd packet: %lu",
