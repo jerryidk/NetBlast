@@ -180,7 +180,8 @@ static void print_stats(void) {
 
     printf("\nStatistics for port %u ------------------------------"
            "\nPackets sent: %24" PRIu64 "\nPackets received: %20" PRIu64
-           "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64 "\nPackets tx dropped: %21" PRIu64,
+           "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64
+           "\nPackets tx dropped: %21" PRIu64,
            portid, agg.tx, agg.rx, agg.fwded, agg.dropped, agg.tx_dropped);
 
     total_packets_dropped += agg.dropped;
@@ -301,106 +302,104 @@ static void l2fwd_main_loop(void) {
   // if (!l2fwd_maglev_enabled && !l2fwd_dramblast_enabled &&
   //     !l2fwd_sashstore_enabled) {
 
-    start_tsc = rte_rdtsc();
-    prev_tsc = start_tsc;
-    while (!force_quit) {
-      for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-        unsigned portid = qconf->rx_port_list[i].port_id;
-        unsigned queueid = qconf->rx_port_list[i].queue_id;
-        unsigned nb_rx =
-            rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-        if (nb_rx > 0) {
-          port_statistics[portid][lcore_id].rx += nb_rx;
+  start_tsc = rte_rdtsc();
+  prev_tsc = start_tsc;
+  while (!force_quit) {
+    for (unsigned i = 0; i < qconf->n_rx_port; i++) {
+      unsigned portid = qconf->rx_port_list[i].port_id;
+      unsigned queueid = qconf->rx_port_list[i].queue_id;
+      unsigned nb_rx =
+          rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
+      if (nb_rx > 0) {
+        port_statistics[portid][lcore_id].rx += nb_rx;
 
-          uint64_t start = rte_rdtsc();
-          if(l2fwd_maglev_enabled)
-          {
-              for (uint16_t j = 0; j < nb_rx; j++) {
-                //unsigned dst_port = l2fwd_dst_ports[portid];
-                //uint64_t mac = 0xff;
-                //l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
-                m = pkts_burst[j];
-                uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
-                if (mac == 0) {
-                  port_statistics[portid][lcore_id].dropped += 1;
-                } else {
-                  l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
-                  port_statistics[portid][lcore_id].fwded += 1;
-                }
-              }
-          }
-          else if(l2fwd_dramblast_enabled) {
-              unsigned int fn = 0;
-              uint64_t hash;
-
-              for (unsigned int j = 0; j < nb_rx; j++) {
-                m = pkts_burst[j];
-                hash = flowhash(rte_pktmbuf_mtod(m, void *));
-                if (hash > 0) {
-                  frames[fn] = m;
-                  args[fn].k = hash;
-                  args[fn].id = fn;
-                  fn++;
-                }
-              }
-
-              if (fn > 0)
-                dramblast_process_frames(args, fn, mac_addrs, lcore_id);
-
-              uint64_t found = 0;
-              for (unsigned int j = 0; j < fn; j++) {
-                if (mac_addrs[j] > 0) {
-                  l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid],
-                                     mac_addrs[j]);
-                  found++;
-                }
-              }
-
-              port_statistics[portid][lcore_id].fwded += found;
-              port_statistics[portid][lcore_id].dropped += (nb_rx - found);
-          }else {
-              for (uint16_t j = 0; j < nb_rx; j++) {
-                unsigned dst_port = l2fwd_dst_ports[portid];
-                uint64_t mac = 0xff;
-                l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
-              }
-              port_statistics[portid][lcore_id].fwded += nb_rx;
-          }
-
-          port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
-
-          uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
-          if (unlikely(nb_tx < nb_rx)) {
-            for (uint16_t buf = nb_tx; buf < nb_rx; buf++) {
-              rte_pktmbuf_free(pkts_burst[buf]);
+        uint64_t start = rte_rdtsc();
+        if (l2fwd_maglev_enabled) {
+          for (uint16_t j = 0; j < nb_rx; j++) {
+            // unsigned dst_port = l2fwd_dst_ports[portid];
+            // uint64_t mac = 0xff;
+            // l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+            m = pkts_burst[j];
+            uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
+            if (mac == 0) {
+              port_statistics[portid][lcore_id].dropped += 1;
+            } else {
+              l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
+              port_statistics[portid][lcore_id].fwded += 1;
             }
-            port_statistics[portid][lcore_id].tx_dropped += nb_rx - nb_tx;
+          }
+        } else if (l2fwd_dramblast_enabled) {
+          unsigned int fn = 0;
+          uint64_t hash;
+
+          for (unsigned int j = 0; j < nb_rx; j++) {
+            m = pkts_burst[j];
+            hash = flowhash(rte_pktmbuf_mtod(m, void *));
+            if (hash > 0) {
+              frames[fn] = m;
+              args[fn].k = hash;
+              args[fn].id = fn;
+              fn++;
+            }
           }
 
-          if (nb_tx > 0) {
-            port_statistics[portid][lcore_id].tx += nb_tx;
+          if (fn > 0)
+            dramblast_process_frames(args, fn, mac_addrs, lcore_id);
+
+          uint64_t found = 0;
+          for (unsigned int j = 0; j < fn; j++) {
+            if (mac_addrs[j] > 0) {
+              l2fwd_mac_updating(frames[j], l2fwd_dst_ports[portid],
+                                 mac_addrs[j]);
+              found++;
+            }
           }
 
+          port_statistics[portid][lcore_id].fwded += found;
+          port_statistics[portid][lcore_id].dropped += (nb_rx - found);
         } else {
-          rte_pause();
+          for (uint16_t j = 0; j < nb_rx; j++) {
+            unsigned dst_port = l2fwd_dst_ports[portid];
+            uint64_t mac = 0xff;
+            l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+          }
+          port_statistics[portid][lcore_id].fwded += nb_rx;
         }
-      }
 
-      cur_tsc = rte_rdtsc();
-      if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
-        if (lcore_id == rte_get_main_lcore()) {
-          print_stats();
-          prev_tsc = cur_tsc;
+        port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
+
+        uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
+        if (unlikely(nb_tx < nb_rx)) {
+          for (uint16_t buf = nb_tx; buf < nb_rx; buf++) {
+            rte_pktmbuf_free(pkts_burst[buf]);
+          }
+          port_statistics[portid][lcore_id].tx_dropped += nb_rx - nb_tx;
         }
+
+        if (nb_tx > 0) {
+          port_statistics[portid][lcore_id].tx += nb_tx;
+        }
+
+      } else {
+        rte_pause();
       }
     }
 
-    end_tsc = rte_rdtsc();
-    if (lcore_id == rte_get_main_lcore()) {
-      print_final_stats(start_tsc, end_tsc);
+    cur_tsc = rte_rdtsc();
+    if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
+      if (lcore_id == rte_get_main_lcore()) {
+        print_stats();
+        prev_tsc = cur_tsc;
+      }
     }
-    return;
-    //}
+  }
+
+  end_tsc = rte_rdtsc();
+  if (lcore_id == rte_get_main_lcore()) {
+    print_final_stats(start_tsc, end_tsc);
+  }
+  return;
+  //}
 
   while (!force_quit) {
     cur_tsc = rte_rdtsc();
@@ -587,6 +586,16 @@ static int l2fwd_parse_args(int argc, char **argv) {
       break;
     case 'c':
       CAPACITY = strtoull(optarg, NULL, 10);
+      if (CAPACITY == 0 || (CAPACITY & (CAPACITY - 1)) != 0) {
+        fprintf(stderr,
+                "Error: Capacity (-c %llu) must be a power of 2 "
+                "(e.g., 1048576, 16777216).\n",
+                CAPACITY);
+        return -1;
+      }
+
+      double g = 1024 * 1024 * 1024.0
+      printf("hashtable size %.2f gb", CAPACITY/g);
       break;
     case 'p':
       l2fwd_enabled_port_mask = strtoul(optarg, NULL, 16);

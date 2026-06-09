@@ -5,7 +5,7 @@
 #include <rte_prefetch.h>
 
 uint8_t empty_key[KEY_SIZE] = {0};
-
+#define SSE42
 inline uint64_t maglev_hash(uint64_t k) {
   uint64_t hash;
 #ifdef SSE42
@@ -23,10 +23,10 @@ inline uint64_t maglev_hash(uint64_t k) {
 int maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key,
                           uint64_t value) {
   // uint64_t hash = hash_fn(key);
-  uint64_t hash = maglev_hash(key) % CAPACITY;
+  uint64_t hash = maglev_hash(key) & (CAPACITY-1);
   for (uint64_t i = 0; i < CAPACITY; ++i) {
     uint64_t probe = hash + i;
-    struct maglev_kv_pair *pair = &map->pairs[probe % CAPACITY];
+    struct maglev_kv_pair *pair = &map->pairs[probe & (CAPACITY-1)];
     if (pair->key == 0) {
 
       maglev_swap_kv_t swapped;
@@ -48,10 +48,10 @@ int maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key,
 struct maglev_kv_pair *maglev_hashmap_get(struct maglev_hashmap *map,
                                           uint64_t key) {
   // uint64_t hash = hash_fn(key);
-  uint64_t hash = maglev_hash(key) % CAPACITY;
+  uint64_t hash = maglev_hash(key) & (CAPACITY-1);
   for (uint64_t i = 0; i < CAPACITY; ++i) {
     uint64_t probe = hash + i;
-    struct maglev_kv_pair *pair = &map->pairs[probe % CAPACITY];
+    struct maglev_kv_pair *pair = &map->pairs[probe & (CAPACITY-1)];
     if (pair->key == 0) {
       return NULL;
     }
