@@ -1,4 +1,5 @@
 #include <getopt.h>
+#include <inttypes.h>
 #include <rte_cycles.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -410,6 +411,13 @@ int main(int argc, char *argv[]) {
   struct rte_eth_stats prev_hw_stats[RTE_MAX_ETHPORTS];
   memset(prev_hw_stats, 0, sizeof(prev_hw_stats));
 
+  /* Calculate Total Max Flows Before Loop */
+  uint64_t total_tx_queues = 0;
+  RTE_ETH_FOREACH_DEV(portid) {
+    total_tx_queues += tx_queues_per_port[portid];
+  }
+  uint64_t max_capable_flows = (uint64_t)(g_ip_mask + 1) * total_tx_queues;
+
   const char clr[] = {27, '[', '2', 'J', '\0'};
   while (!force_quit) {
     sleep(1);
@@ -471,16 +479,17 @@ int main(int argc, char *argv[]) {
     double rx_mpps = (double)tot_rx_pkts_sec / 1000000.0;
     double rx_gbps = ((double)tot_rx_bytes_sec * 8.0) / 1000000000.0;
 
-    double avg_lat_ns = 0.0;
+    double avg_cycles = 0.0;
     if (tot_rx_pkts_sec > 0) {
-      double avg_cycles = (double)tot_lat_cycles_sec / (double)tot_rx_pkts_sec;
-      avg_lat_ns = (avg_cycles * 1000000000.0) / (double)g_timer_hz;
+      avg_cycles = (double)tot_lat_cycles_sec / (double)tot_rx_pkts_sec;
     }
 
     printf("%s======================================================\n", clr);
+    printf(" Max Flows    : %" PRIu64 "\n", max_capable_flows);
+    printf("------------------------------------------------------\n");
     printf(" TX: %7.2f Mpps | %7.2f Gbps\n", tx_mpps, tx_gbps);
     printf(" RX: %7.2f Mpps | %7.2f Gbps\n", rx_mpps, rx_gbps);
-    printf(" Latency: %.2f ns\n", avg_lat_ns);
+    printf(" Latency: %.2f cycles/packet\n", avg_cycles);
     printf("------------------------------------------------------\n");
     printf(" HW Drops/sec : %" PRIu64 " missed (NIC queue full)\n",
            tot_imissed_sec);
