@@ -311,10 +311,9 @@ static void l2fwd_main_loop(void) {
           port_statistics[portid][lcore_id].rx += nb_rx;
 
           for(uint16_t j = 0; j<nb_rx; j++){
-
               unsigned dst_port = l2fwd_dst_ports[portid];
-              uint64_t mac = 0xffffffff;
-              l2fwd_mac_updating(pkts_burst[i], dst_port, mac);
+              uint64_t mac = 0xff;
+              l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
           }
 
           uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
@@ -474,9 +473,22 @@ static void l2fwd_main_loop(void) {
 
       port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
 
-      /* Forwarding logic */
-      for (unsigned j = 0; j < nb_rx; j++) {
-        l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
+      // /* Forwarding logic */
+      // for (unsigned j = 0; j < nb_rx; j++) {
+      //   l2fwd_simple_forward(pkts_burst[j], portid, queueid, lcore_id);
+      // }
+
+      uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
+      if (unlikely(nb_tx < nb_rx)) {
+        for (uint16_t buf = nb_tx; buf < nb_rx; buf++) {
+          rte_pktmbuf_free(pkts_burst[buf]);
+        }
+        port_statistics[portid][lcore_id].tx_dropped += nb_rx - nb_tx;
+      }
+
+      if(nb_tx > 0)
+      {
+          port_statistics[portid][lcore_id].tx += nb_tx;
       }
     }
   }
