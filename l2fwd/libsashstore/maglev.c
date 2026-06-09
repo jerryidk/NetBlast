@@ -49,8 +49,8 @@ void maglev_init(void) {
   }
 
   for(size_t i = 0; i< size; i++){
-      maglev_conntrack.pairs->key = 0;
-      maglev_conntrack.pairs->value = 0;
+      maglev_conntrack.pairs[i].key = 0;
+      maglev_conntrack.pairs[i].value = 0;
   }
 
   populate_lut(maglev_lookup);
