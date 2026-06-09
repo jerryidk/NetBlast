@@ -111,9 +111,11 @@ struct rte_mempool *l2fwd_pktmbuf_pool = NULL;
 struct l2fwd_port_statistics {
   uint64_t tx;
   uint64_t rx;
-  uint64_t dropped;
+  uint64_t fwd;
+  uint64_t fwd_dropped;
+  uint64_t rx_dropped;
+  uint64_t tx_dropped;
   uint64_t hash_tsc;
-  uint64_t fwded;
 } __rte_cache_aligned;
 
 struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS][RTE_MAX_LCORE];
@@ -307,7 +309,18 @@ static void l2fwd_main_loop(void) {
             rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
         if (nb_rx > 0) {
           port_statistics[portid][lcore_id].rx += nb_rx;
-          rte_pktmbuf_free_bulk(pkts_burst, nb_rx);
+          uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
+          if (unlikely(nb_tx < MAX_PKT_BURST)) {
+            for (uint16_t buf = nb_tx; buf < MAX_PKT_BURST; buf++) {
+              rte_pktmbuf_free(pkts_burst[buf]);
+            }
+            port_statistics[portid][lcore_id].tx_dropped += MAX_PKT_BURST - nb_tx;
+          }
+
+          if(nb_tx > 0)
+          {
+              port_statistics[portid][lcore_id].tx += nb_tx;
+          }
         }
         else{
             rte_pause();
