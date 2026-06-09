@@ -39,6 +39,7 @@
 #include <unistd.h>
 
 #include "dramblast.h"
+#include "generic/rte_pause.h"
 #include "maglev.h"
 #include "packettool.h"
 #include "sashstore.h"
@@ -372,15 +373,18 @@ static void l2fwd_main_loop(void) {
       unsigned queueid = qconf->rx_port_list[i].queue_id;
       unsigned nb_rx =
           rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-      if (unlikely(nb_rx == 0))
-        continue;
+      if (nb_rx == 0)
+      {
+          rte_pause();
+          continue;
+      }
 
       port_statistics[portid][lcore_id].rx += nb_rx;
 
       uint64_t start = rte_rdtsc();
 
       /* --- USER INTEGRATION LOGIC --- */
-      if (l2fwd_dramblast_enabled && nb_rx > 0) {
+      if (l2fwd_dramblast_enabled) {
         unsigned int fn = 0;
         uint64_t hash;
 
