@@ -4,10 +4,16 @@
 #include <stdint.h>
 
 
-typedef struct {
-  uint64_t k;
-  uint64_t v;
+
+typedef struct __attribute__((aligned(16))) {
+    uint64_t k;
+    uint64_t v;
 } dramblast_kv_t;
+
+typedef union {
+    dramblast_kv_t pair;
+    __int128 i128;
+} dramblast_swap_kv_t;
 
 typedef struct {
   uint64_t v;

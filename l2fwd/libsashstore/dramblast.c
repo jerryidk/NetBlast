@@ -99,9 +99,9 @@ try_insert:
   count++;
   if (kv->k == 0)
   {
-      dramblast_kv_t swapped;
-      swapped.k = k;
-      swapped.v = v;
+      dramblast_swap_kv_t swapped;
+      swapped.pair.k = k;
+      swapped.pair.v = v;
       if (__sync_bool_compare_and_swap((__int128 *)kv, (__int128)0, *(__int128 *)&swapped)) {
           return 0;
       }

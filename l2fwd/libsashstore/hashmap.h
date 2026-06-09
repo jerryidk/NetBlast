@@ -20,6 +20,11 @@ struct __attribute__((aligned(16))) maglev_kv_pair {
     uint64_t value;
 };
 
+typedef union {
+    struct maglev_kv_pair pair;
+    __int128 i128;
+} maglev_swap_kv_t;
+
 #define KEY_SIZE	64
 #define VALUE_SIZE	64
 

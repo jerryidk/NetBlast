@@ -21,9 +21,9 @@ int maglev_hashmap_insert(struct maglev_hashmap *map, uint64_t key,
     struct maglev_kv_pair *pair = &map->pairs[probe % CAPACITY];
     if (pair->key == 0) {
 
-      struct maglev_kv_pair swapped;
-      swapped.key = key;
-      swapped.value = value;
+      maglev_swap_kv_t swapped;
+      swapped.pair.key = key;
+      swapped.pair.value = value;
       if (__sync_bool_compare_and_swap((__int128 *)pair, (__int128)0, *(__int128 *)&swapped)) {
           return 0;
       }
