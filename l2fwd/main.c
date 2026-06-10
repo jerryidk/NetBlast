@@ -112,6 +112,7 @@ struct rte_mempool *l2fwd_pktmbuf_pool = NULL;
 struct l2fwd_port_statistics {
   uint64_t tx;
   uint64_t rx;
+  uint64_t rx_cnt;
   uint64_t fwded;
   uint64_t dropped;
   uint64_t rx_dropped;
@@ -136,6 +137,7 @@ static void get_aggregated_stats(unsigned portid,
     agg->hash_tsc += port_statistics[portid][lcore_id].hash_tsc;
     agg->fwded += port_statistics[portid][lcore_id].fwded;
     agg->tx_dropped += port_statistics[portid][lcore_id].tx_dropped;
+    agg->rx_cnt += port_statistics[portid][lcore_id].rx_cnt;
   }
 }
 
@@ -165,6 +167,8 @@ uint32_t *samples;
 #define TOTAL_SAMPLES 32
 
 uint64_t total_packets_fwded_prev = 0;
+
+struct l2fwd_port_statistics prev_agg;
 static void print_stats(void) {
   uint64_t total_packets_fwded = 0, total_hash_duration = 0;
   unsigned portid;
@@ -182,12 +186,16 @@ static void print_stats(void) {
 
     get_aggregated_stats(portid, &agg);
 
+    prev_agg = agg;
     printf("\nStatistics for port %u ------------------------------"
            "\nPackets sent: %24" PRIu64 "\nPackets received: %20" PRIu64
            "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64
            "\nPackets tx dropped: %21" PRIu64,
            portid, agg.tx, agg.rx, agg.fwded, agg.dropped, agg.tx_dropped);
 
+    if(agg.rx_cnt > 0){
+        printf("average rx batch sz %lu", (agg.rx - prev_agg.rx) / agg.rx_cnt);
+    }
     total_packets_fwded += agg.fwded;
     total_hash_duration += agg.hash_tsc;
     print_port_stats(portid);
