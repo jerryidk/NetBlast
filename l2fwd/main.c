@@ -47,7 +47,7 @@
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
-#define MAX_PKT_BURST 64
+#define MAX_PKT_BURST 128
 #define BURST_TX_DRAIN_US 100
 #define MEMPOOL_CACHE_SIZE 256
 
@@ -193,7 +193,7 @@ static void print_stats(void) {
            portid, agg.tx, agg.rx, agg.fwded, agg.dropped, agg.tx_dropped);
 
     if((agg.rx_cnt - prev_agg.rx_cnt) > 0){
-        printf("\nAverage rx batch sz %lu", (agg.rx - prev_agg.rx) / (agg.rx_cnt - prev_agg.rx_cnt));
+        printf("\nAverage rx batch sz: %lu", (agg.rx - prev_agg.rx) / (agg.rx_cnt - prev_agg.rx_cnt));
     }
     total_packets_fwded += agg.fwded;
     total_hash_duration += agg.hash_tsc;
