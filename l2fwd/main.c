@@ -297,6 +297,8 @@ static void l2fwd_main_loop(void) {
       unsigned queueid = qconf->rx_port_list[i].queue_id;
       unsigned nb_rx =
           rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
+
+      port_statistics[portid][lcore_id].rx_cnt += 1;
       if (nb_rx > 0) {
         port_statistics[portid][lcore_id].rx += nb_rx;
 
