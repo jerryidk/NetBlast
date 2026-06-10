@@ -193,8 +193,8 @@ static void print_stats(void) {
            "\nPackets tx dropped: %21" PRIu64,
            portid, agg.tx, agg.rx, agg.fwded, agg.dropped, agg.tx_dropped);
 
-    if(agg.rx_cnt > 0){
-        printf("average rx batch sz %lu", (agg.rx - prev_agg.rx) / agg.rx_cnt);
+    if((agg.rx_cnt - prev_agg.rx_cnt) > 0){
+        printf("\nAverage rx batch sz %lu", (agg.rx - prev_agg.rx) / (agg.rx_cnt - prev_agg.rx_cnt));
     }
     total_packets_fwded += agg.fwded;
     total_hash_duration += agg.hash_tsc;
