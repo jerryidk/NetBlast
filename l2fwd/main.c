@@ -164,6 +164,7 @@ uint32_t SAMPLE_SIZE = 0;
 uint32_t *samples;
 #define TOTAL_SAMPLES 32
 
+uint64_t total_packets_fwded_prev = 0;
 static void print_stats(void) {
   uint64_t total_packets_fwded = 0, total_hash_duration = 0;
   unsigned portid;
@@ -194,7 +195,7 @@ static void print_stats(void) {
 
   if (timer_period > 0) {
     double t_s = timer_period / rte_get_timer_hz();
-    double mpps = (total_packets_fwded / 1000000.0) / t_s;
+    double mpps = ((total_packets_fwded-total_packets_fwded_prev) / 1000000.0) / t_s;
     printf("\n%.2f Mpps", mpps);
     samples[SAMPLE_SIZE] = mpps;
     SAMPLE_SIZE++;
@@ -204,6 +205,8 @@ static void print_stats(void) {
     printf("\nCycle per fwd packet: %lu",
            total_hash_duration / total_packets_fwded);
   }
+
+  total_packets_fwded_prev = total_packets_fwded;
   printf("\n====================================================\n");
 }
 
@@ -371,17 +374,6 @@ static void l2fwd_main_loop(void) {
     if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
       if (lcore_id == rte_get_main_lcore()) {
         print_stats();
-      }
-
-      // reset stats
-      for (unsigned i = 0; i < qconf->n_rx_port; i++) {
-        unsigned portid = qconf->rx_port_list[i].port_id;
-        port_statistics[portid][lcore_id].tx = 0;
-        port_statistics[portid][lcore_id].rx = 0;
-        port_statistics[portid][lcore_id].dropped = 0;
-        port_statistics[portid][lcore_id].hash_tsc = 0;
-        port_statistics[portid][lcore_id].fwded = 0;
-        port_statistics[portid][lcore_id].tx_dropped = 0;
       }
       prev_tsc = cur_tsc;
     }
