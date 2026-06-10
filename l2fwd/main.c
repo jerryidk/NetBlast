@@ -186,7 +186,6 @@ static void print_stats(void) {
 
     get_aggregated_stats(portid, &agg);
 
-    prev_agg = agg;
     printf("\nStatistics for port %u ------------------------------"
            "\nPackets sent: %24" PRIu64 "\nPackets received: %20" PRIu64
            "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64
@@ -199,6 +198,7 @@ static void print_stats(void) {
     total_packets_fwded += agg.fwded;
     total_hash_duration += agg.hash_tsc;
     print_port_stats(portid);
+    prev_agg = agg;
   }
 
   if (timer_period > 0) {
