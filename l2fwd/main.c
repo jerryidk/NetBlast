@@ -278,17 +278,11 @@ static void l2fwd_main_loop(void) {
   unsigned lcore_id = rte_lcore_id();
   struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 
-  uint64_t prev_tsc = 0, cur_tsc = 0, start_tsc = 0, end_tsc = 0;
-
   if (qconf->n_rx_port == 0) {
     RTE_LOG(INFO, L2FWD, "lcore %u has nothing to do\n", lcore_id);
     return;
   }
 
-  start_tsc = rte_rdtsc();
-  prev_tsc = start_tsc;
-  // 10 secs later
-  end_tsc = start_tsc + rte_get_tsc_hz() * TOTAL_SAMPLES;
   while (!force_quit) {
     for (unsigned i = 0; i < qconf->n_rx_port; i++) {
       unsigned portid = qconf->rx_port_list[i].port_id;
@@ -301,9 +295,6 @@ static void l2fwd_main_loop(void) {
         uint64_t start = rte_rdtsc();
         if (l2fwd_maglev_enabled) {
           for (uint16_t j = 0; j < nb_rx; j++) {
-            // unsigned dst_port = l2fwd_dst_ports[portid];
-            // uint64_t mac = 0xff;
-            // l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
             m = pkts_burst[j];
             uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
             if (mac == 0) {
@@ -369,22 +360,6 @@ static void l2fwd_main_loop(void) {
         rte_pause();
       }
     }
-
-    cur_tsc = rte_rdtsc();
-    if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
-      if (lcore_id == rte_get_main_lcore()) {
-        print_stats();
-      }
-      prev_tsc = cur_tsc;
-    }
-
-    if (cur_tsc >= end_tsc) {
-      force_quit = true;
-    }
-  }
-
-  if (lcore_id == rte_get_main_lcore()) {
-    print_final_stats();
   }
 }
 
@@ -533,7 +508,9 @@ int main(int argc, char **argv) {
       continue;
 
     for (unsigned q = 0; q < l2fwd_queues_per_port; q++) {
+      /* Skip main lcore to ensure it's dedicated strictly to print logic */
       while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
+             rx_lcore_id == rte_get_main_lcore() ||
              lcore_queue_conf[rx_lcore_id].n_rx_port ==
                  MAX_RX_QUEUE_PER_LCORE) {
         rx_lcore_id++;
@@ -548,8 +525,7 @@ int main(int argc, char **argv) {
 
       printf("Lcore %u assigned to Port %u Queue %u\n", rx_lcore_id, portid, q);
 
-      rx_lcore_id++; /* Move to next core for the next queue to spread the load
-                      */
+      rx_lcore_id++; /* Move to next core for the next queue to spread the load */
     }
   }
 
@@ -630,8 +606,7 @@ int main(int argc, char **argv) {
     rte_eth_promiscuous_enable(portid);
   }
 
-  /* Initialize TX buffers explicitly per lcore to map directly to their queue
-   */
+  /* Initialize TX buffers explicitly per lcore to map directly to their queue */
   for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
     struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
     if (qconf->n_rx_port == 0)
@@ -647,8 +622,6 @@ int main(int argc, char **argv) {
         rte_exit(EXIT_FAILURE, "Cannot allocate buffer\n");
 
       rte_eth_tx_buffer_init(qconf->tx_buffer[portid], MAX_PKT_BURST);
-      /* Error callbacks omitted for brevity, but you can attach them to
-       * dropping here */
     }
   }
 
@@ -681,7 +654,30 @@ int main(int argc, char **argv) {
            mac->addr_bytes[3], mac->addr_bytes[4], mac->addr_bytes[5]);
   }
 
-  rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, NULL, CALL_MAIN);
+  /* Use SKIP_MAIN so the main lcore stays available to process stats/timers exclusively */
+  rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, NULL, SKIP_MAIN);
+
+  /* Stand-alone timer and statistics loop strictly for the main core */
+  uint64_t prev_tsc = 0, cur_tsc = 0, start_tsc = 0, end_tsc = 0;
+  start_tsc = rte_rdtsc();
+  prev_tsc = start_tsc;
+  end_tsc = start_tsc + rte_get_tsc_hz() * TOTAL_SAMPLES;
+
+  while (!force_quit) {
+    cur_tsc = rte_rdtsc();
+    if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
+      print_stats();
+      prev_tsc = cur_tsc;
+    }
+
+    if (cur_tsc >= end_tsc) {
+      force_quit = true;
+    }
+
+    rte_pause();
+  }
+
+  print_final_stats();
 
   RTE_LCORE_FOREACH_WORKER(lcore_id) {
     if (rte_eal_wait_lcore(lcore_id) < 0) {
