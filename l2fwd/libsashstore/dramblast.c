@@ -68,7 +68,7 @@ inline dramblast_queue_item_t *dramblast_pop_queue(dramblast_ht_t *ht,
 // Updated dramblast_prefetch function
 inline void dramblast_prefetch(dramblast_ht_t *ht, uint64_t idx) {
   // Using PREFETCH_T0 is standard for items you are about to access immediately
-  LX_PREFETCH(&ht->table[idx], PREFETCH_T0);
+  LX_PREFETCH(&ht->table[idx], PREFETCH_T1);
 }
 
 inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {

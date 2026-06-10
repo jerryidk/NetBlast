@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 def main():
     modes = ["maglev", "dramblast"]
-    cores = list(range(1, 11))  # Cores 1 through 10
+    cores = list(range(2, 12))  # Cores 1 through 10
 
     # Dictionary to store all results
     results_data = {mode: {} for mode in modes}
@@ -100,7 +100,7 @@ def main():
     # Formatting the plot
     plt.title("Performance Stats by Core Count and Mode", fontsize=14)
     plt.xlabel("Number of Cores", fontsize=12)
-    plt.ylabel("Performance Value", fontsize=12)
+    plt.ylabel("Miilion Packets per Sec", fontsize=12)
     plt.xticks(cores)  # Force x-axis to show only whole integer core counts
     plt.legend(loc="best")
     plt.grid(True, linestyle="--", alpha=0.6)
