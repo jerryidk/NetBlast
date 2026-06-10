@@ -13,8 +13,16 @@
   in rec {
     defaultPackage = packages.l2fwd-maglev;
     packages.l2fwd-maglev = pkgs.callPackage ./package.nix { };
+
     devShell = pkgs.mkShell {
+      # Inherit the build dependencies of your C project
       inputsFrom = [ defaultPackage ];
+
+      # Add extra tools specifically for your development environment
+      packages = [
+        pkgs.python3
+        pkgs.python3Packages.matplotlib
+      ];
     };
   });
 }
