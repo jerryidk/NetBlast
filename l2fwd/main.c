@@ -136,13 +136,6 @@ static void get_aggregated_stats(unsigned portid,
     agg->hash_tsc += port_statistics[portid][lcore_id].hash_tsc;
     agg->fwded += port_statistics[portid][lcore_id].fwded;
     agg->tx_dropped += port_statistics[portid][lcore_id].tx_dropped;
-
-    port_statistics[portid][lcore_id].tx = 0;
-    port_statistics[portid][lcore_id].rx = 0;
-    port_statistics[portid][lcore_id].dropped = 0;
-    port_statistics[portid][lcore_id].hash_tsc = 0;
-    port_statistics[portid][lcore_id].fwded = 0;
-    port_statistics[portid][lcore_id].tx_dropped= 0;
   }
 }
 
@@ -168,14 +161,13 @@ void print_port_stats(uint16_t portid) {
 }
 
 uint32_t SAMPLE_SIZE = 0;
-uint32_t* samples;
+uint32_t *samples;
 #define TOTAL_SAMPLES 32
 
 static void print_stats(void) {
   uint64_t total_packets_fwded = 0, total_hash_duration = 0;
   unsigned portid;
   struct l2fwd_port_statistics agg;
-
 
   const char clr[] = {27, '[', '2', 'J', '\0'};
   const char topLeft[] = {27, '[', '1', ';', '1', 'H', '\0'};
@@ -200,12 +192,12 @@ static void print_stats(void) {
     print_port_stats(portid);
   }
 
-  if(timer_period > 0){
-      double t_s = timer_period / rte_get_timer_hz();
-      double mpps = (total_packets_fwded/1000000.0) / t_s;
-      printf("\n%.2f Mpps", mpps);
-      samples[SAMPLE_SIZE] = mpps;
-      SAMPLE_SIZE++;
+  if (timer_period > 0) {
+    double t_s = timer_period / rte_get_timer_hz();
+    double mpps = (total_packets_fwded / 1000000.0) / t_s;
+    printf("\n%.2f Mpps", mpps);
+    samples[SAMPLE_SIZE] = mpps;
+    SAMPLE_SIZE++;
   }
 
   if (total_packets_fwded > 0) {
@@ -216,37 +208,38 @@ static void print_stats(void) {
 }
 
 static void print_final_stats() {
-    // Check for an empty array to avoid division by zero
-    if (SAMPLE_SIZE <= 0) {
-        printf("No samples to process.\n");
-        return;
+  // Check for an empty array to avoid division by zero
+  if (SAMPLE_SIZE <= 0) {
+    printf("No samples to process.\n");
+    return;
+  }
+
+  // Initialize min and max to the first element in the array
+  uint64_t min = samples[0];
+  uint64_t max = samples[0];
+  double sum =
+      0.0; // Use double to prevent integer overflow and get an accurate average
+
+  // Loop through the array to find min, max, and the total sum
+  for (uint32_t i = 0; i < SAMPLE_SIZE; i++) {
+    if (samples[i] < min) {
+      min = samples[i];
     }
 
-    // Initialize min and max to the first element in the array
-    uint64_t min = samples[0];
-    uint64_t max = samples[0];
-    double sum = 0.0; // Use double to prevent integer overflow and get an accurate average
-
-    // Loop through the array to find min, max, and the total sum
-    for (uint32_t i = 0; i < SAMPLE_SIZE; i++) {
-        if (samples[i] < min) {
-            min = samples[i];
-        }
-
-        if (samples[i] > max) {
-            max = samples[i];
-        }
-
-        sum += samples[i];
+    if (samples[i] > max) {
+      max = samples[i];
     }
 
-    // Calculate the average
-    double avg = sum / SAMPLE_SIZE;
+    sum += samples[i];
+  }
 
-    // Print the results
-    printf("Minimum: %lu\n", min);
-    printf("Maximum: %lu\n", max);
-    printf("Average: %.2f\n", avg);
+  // Calculate the average
+  double avg = sum / SAMPLE_SIZE;
+
+  // Print the results
+  printf("Minimum: %lu\n", min);
+  printf("Maximum: %lu\n", max);
+  printf("Average: %.2f\n", avg);
 }
 
 static inline void l2fwd_mac_updating(struct rte_mbuf *m, unsigned dest_portid,
@@ -282,8 +275,7 @@ static void l2fwd_main_loop(void) {
   unsigned lcore_id = rte_lcore_id();
   struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 
-  uint64_t prev_tsc = 0, cur_tsc = 0, start_tsc = 0,
-           end_tsc = 0;
+  uint64_t prev_tsc = 0, cur_tsc = 0, start_tsc = 0, end_tsc = 0;
 
   if (qconf->n_rx_port == 0) {
     RTE_LOG(INFO, L2FWD, "lcore %u has nothing to do\n", lcore_id);
@@ -379,8 +371,19 @@ static void l2fwd_main_loop(void) {
     if (unlikely(cur_tsc - prev_tsc >= timer_period)) {
       if (lcore_id == rte_get_main_lcore()) {
         print_stats();
-        prev_tsc = cur_tsc;
       }
+
+      // reset stats
+      for (unsigned i = 0; i < qconf->n_rx_port; i++) {
+        unsigned portid = qconf->rx_port_list[i].port_id;
+        port_statistics[portid][lcore_id].tx = 0;
+        port_statistics[portid][lcore_id].rx = 0;
+        port_statistics[portid][lcore_id].dropped = 0;
+        port_statistics[portid][lcore_id].hash_tsc = 0;
+        port_statistics[portid][lcore_id].fwded = 0;
+        port_statistics[portid][lcore_id].tx_dropped = 0;
+      }
+      prev_tsc = cur_tsc;
     }
 
     if (cur_tsc >= end_tsc) {
@@ -389,9 +392,8 @@ static void l2fwd_main_loop(void) {
   }
 
   if (lcore_id == rte_get_main_lcore()) {
-      print_final_stats();
+    print_final_stats();
   }
-
 }
 
 static int l2fwd_launch_one_lcore(__attribute__((unused)) void *dummy) {
@@ -459,7 +461,7 @@ static int l2fwd_parse_args(int argc, char **argv) {
       }
 
       double g = 1024 * 1024 * 1024.0;
-      printf("hashtable size %.2f gb\n", (CAPACITY*16)/g);
+      printf("hashtable size %.2f gb\n", (CAPACITY * 16) / g);
       break;
     case 'p':
       l2fwd_enabled_port_mask = strtoul(optarg, NULL, 16);
