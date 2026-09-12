@@ -360,8 +360,19 @@ Ranked by how well each matches a *cliff* rather than a gradual slope.
 3. **The two modes allocate their 8 GiB table completely differently.** Both run
    with `-c 536870912` (`run.sh:38`) = 2^29 x 16 B = 8 GiB. dramblast uses
    `mmap(..., MAP_HUGETLB | MAP_HUGE_1GB)` (`dramblast.c:253`); maglev uses plain
-   `aligned_alloc(4096, ...)` (`maglev.c:43-44`), so 4 KiB pages unless THP is
-   `always`. This is a large uncontrolled difference between the two curves.
+   `aligned_alloc(4096, ...)` (`maglev.c:43-44`).
+
+**Both backings are now measured, and the gap is smaller than first written.**
+dramblast takes nine 1 GiB pages (`free_hugepages` 16 -> 7; maglev takes one,
+16 -> 15, isolating DPDK's own). And maglev's table is **not** on 4 KiB pages as
+originally assumed: `AnonHugePages` reads **8,515,584 kB during a maglev run
+against a 36,864 kB baseline**, so the 8 GiB table is fully THP-backed at 2 MiB.
+
+So the real asymmetry is **1 GiB vs 2 MiB** -- 8 TLB entries against 4096, a 512x
+difference -- not the 1 GiB vs 4 KiB (262144x) that earlier notes implied. Still
+a genuine uncontrolled variable between the two curves, but a materially smaller
+one, and it depends on THP being `always`, which this repo's
+`reserve_hugepages.sh` sets as a side effect (§3.2).
 4. **False sharing in dramblast's per-lcore queues.** `dramblast_queue_t`
    (`dramblast.h:35-40`) is 24 bytes, unpadded, in a flat array indexed by
    **`lcore_id`** rather than a dense 0..N-1 index (`main.c:333`).
@@ -574,6 +585,98 @@ Revert: `sudo dpdk-devbind.py --bind=ice 0000:17:00.0 && sudo ip link set enp23s
 Created, then found to be unnecessary — `vfio_pci` is built into this kernel.
 Harmless no-op, recorded so it is not mistaken for load-bearing config.
 Revert: `sudo rm /etc/modules-load.d/vfio-pci.conf`.
+
+### 3.4b Measurement-stability configuration (runtime, resets on reboot)
+
+Applied after a contention artifact was traced to the scheduler co-locating
+other processes onto the DPDK polling cores (§2, maglev q=7). Coordinated with
+the other benchmarking session on this host before applying, since all six are
+machine-wide.
+
+| # | Change | Reason | Revert |
+|---|---|---|---|
+| 1 | `no_turbo=1` | removes the 800 MHz - 3.7 GHz clock swing | `echo 0 > .../intel_pstate/no_turbo` |
+| 2 | `scaling_min=max=2100000` on all CPUs | pins at base frequency | restore `800000`/`3700000` |
+| 3 | C-states disabled | removes wake-latency variance | `echo 0 > .../cpuidle/state*/disable` |
+| 4 | `irqbalance` stopped | it migrates IRQs onto busy cores mid-run | `systemctl start irqbalance` |
+| 5 | `nmi_watchdog=0` | removes a periodic per-core interrupt | `echo 1 > /proc/sys/kernel/nmi_watchdog` |
+| 6 | THP `defrag` `always` -> `madvise` | stops synchronous compaction stalls | restore `always` |
+
+1-3 via this repo's `scripts/constant_freq.sh 2.1GHz`.
+
+**Why 2.1 GHz specifically.** It is this SKU's `base_frequency` *and* exactly the
+invariant TSC rate. Pinning there makes TSC ticks equal core cycles, so l2fwd's
+"Cycle per fwd packet" becomes literally true and the tick-to-cycle correction
+(§2) disappears rather than having to be measured.
+
+**Verified by measurement, not sysfs.** perf counted 33,482,579,855 cycles over
+8 s on two busy cores = **2.0927 GHz delivered**, within 0.3% of nominal. THP was
+re-checked after change 6 and still applies: `AnonHugePages` rises from 122,880
+kB to 8,509,440 kB during a maglev run, so maglev's table keeps its 2 MiB
+backing and the crossover comparison is unaffected.
+
+**What this configuration costs.** Every absolute number measured under it
+describes a machine nobody deploys on -- production runs with turbo. Ratios
+survive; "cycles per packet at 2.1 GHz" is a measurement of a configuration
+chosen for measurability. Absolute throughput drops ~1.67x.
+
+**A caveat on comparing across the change.** Cycles per operation is
+frequency-invariant only for compute-bound code. For memory-bound code
+`cycles_per_op = compute_cycles + memory_stall_ns x frequency`, so the stall
+component shrinks *in cycles* at a lower clock. Any comparison of cycle counts
+taken before and after this change must account for that rather than assuming
+cycles are a frequency-independent unit.
+
+### 3.4c CPU isolation via cpuset (runtime, resets on reboot)
+
+Frequency pinning removes clock variance, but it does nothing about the
+scheduler co-locating other work on the DPDK polling cores -- which is what
+actually produced the false maglev q=7 result (§2). Fixed with cgroup v2
+cpusets rather than `isolcpus`, so no reboot is needed.
+
+    bench.slice  (TOP-LEVEL, partition root)  ->  0-23
+    system.slice / user.slice / init.scope    ->  24-27,52-55
+
+Housekeeping is physical cores 24-27 *and* their hyperthread siblings 52-55, so
+nothing in housekeeping shares a physical core with a benchmark core. The
+siblings of the benchmark cores (28-51) are left unused by both sets.
+
+Applied with `systemctl set-property --runtime`, so it does not survive a reboot.
+Revert by setting `AllowedCPUs=` (empty) on the three slices.
+
+**Two things that are easy to get wrong here.**
+
+*`bench.slice` must be top-level, not under `system.slice`.* cgroup v2 cpusets
+are hierarchical: a scope beneath a restricted `system.slice` can never exceed
+its parent's effective cpuset, whatever `AllowedCPUs` is passed to it. It is
+silently confined to the housekeeping set instead of failing.
+
+*The slice restrictions alone are not sufficient.* They confine userspace, but
+kernel threads live in the root cgroup and are not bound by them. Setting
+`cpuset.cpus.partition = root` on `bench.slice` makes those CPUs exclusive and
+removes them from the root cgroup's effective set:
+
+    /sys/fs/cgroup/cpuset.cpus.effective:   0-55  ->  24-55
+
+(The stronger `isolated` partition type, which also disables load balancing
+inside the set, postdates this 5.15 kernel; `root` is the strongest available
+here.)
+
+**Consequence for how benchmarks are launched.** A plain `sudo ./build/l2fwd`
+inherits the shell's cpuset and is confined to housekeeping -- it still runs,
+silently, on the wrong cores. `sweep.sh` therefore launches into the partition:
+
+    sudo systemd-run --scope --slice=bench.slice -p AllowedCPUs=0-23 -- ./build/l2fwd ...
+
+Verified end to end: a sweep run through this path reports `freq=2095MHz` from
+the perf-based instrumentation, `hp1g=16->7`, and leaves the root cgroup's
+effective set at `24-55`.
+
+**Diagnostic trap worth recording.** Checking isolation with
+`pgrep -f 'l2fwd.*dramblast'` matches the **`sudo`/`systemd-run` wrapper**, whose
+command line contains the same strings and which legitimately lives in the
+shell's cgroup. That made a correctly-isolated process look unisolated and cost
+several minutes of chasing a non-existent bug. Use `pgrep -x l2fwd`.
 
 ### 3.5 Repository additions
 

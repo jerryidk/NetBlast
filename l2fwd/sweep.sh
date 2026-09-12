@@ -29,6 +29,17 @@ shift 2
 MODES=("${@:-dramblast maglev}")
 [ "$#" -eq 0 ] && MODES=(dramblast maglev)
 
+# CPUs the benchmark is allowed to use. system.slice / user.slice / init.scope
+# are confined to a disjoint housekeeping set (docs/INVESTIGATION.md 3.4c), so
+# l2fwd must be launched into its own scope to reach these at all -- a plain
+# `sudo ./build/l2fwd` inherits the shell's restricted cpuset and would be
+# silently confined to the housekeeping cores.
+#
+# bench.slice is TOP-LEVEL, not under system.slice, deliberately: cgroup v2
+# cpusets are hierarchical, so a scope under a restricted system.slice could
+# never exceed system.slice's cpuset however AllowedCPUs was set on it.
+BENCH_CPUS="${BENCH_CPUS:-0-23}"
+
 MAX_QUEUES="${MAX_QUEUES:-10}"
 CAPACITY="${CAPACITY:-536870912}"   # 2^29 entries x 16 B = 8 GiB table
 DPDK_MEM="${DPDK_MEM:-2000}"
@@ -51,7 +62,9 @@ for MODE in "${MODES[@]}"; do
     HP1G=/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages
     HP_BEFORE=$(cat $HP1G)
 
-    sudo ./build/l2fwd \
+    sudo systemd-run --scope --quiet --collect \
+        --slice=bench.slice -p AllowedCPUs="$BENCH_CPUS" \
+        ./build/l2fwd \
         --in-memory \
         -l "$CORE_LIST" \
         -m "$DPDK_MEM" \
