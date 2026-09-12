@@ -31,7 +31,7 @@ GRID = "#e4e3de"
 BLUE = "#2a78d6"
 ORANGE = "#eb6834"
 
-COND = "linerate_93mpps"   # 8 TX cores, 16M flows, 100 GbE line rate
+COND = "linerate_2tx_instr"   # 2 TX gen at line rate, float stats, instrumented
 GEN_CEILING = 93.28        # Mpps offered: physical line rate for 110-byte frames
 
 plt.rcParams.update({
@@ -156,12 +156,16 @@ def main():
     # The curves share the 64-packet plateau at low q and converge near zero at
     # high q, so anchor each label at its own uncrowded point rather than at a
     # common x or at the line ends.
-    for mode, color, anchor_q in (("dramblast", BLUE, 5), ("maglev", ORANGE, 3)):
+    # dramblast is labelled below-left of its q=4 point: the wedge under the
+    # descending blue curve is empty there, whereas the orange curve sweeps
+    # through everything to the right of it.
+    for mode, color, aq, dx, dy, ha in (("dramblast", BLUE, 4, -10, -20, "right"),
+                                        ("maglev", ORANGE, 3, 9, 8, "left")):
         qs, ys = series(new, mode, "rx_batch")
         line(ax, qs, ys, color, mode)
-        i = qs.index(anchor_q)
+        i = qs.index(aq)
         ax.annotate(mode, (qs[i], ys[i]), textcoords="offset points",
-                    xytext=(9, 9), fontsize=9, color=INK_2, ha="left")
+                    xytext=(dx, dy), fontsize=9, color=INK_2, ha=ha)
     style(ax, "...because each poll returns fewer packets",
           "RX/TX queue pairs  (-q)", "Average RX burst size  (packets)")
     ax.set_xlim(0.7, 10.6)
@@ -172,10 +176,10 @@ def main():
                  fontsize=14.5, color=INK, x=0.055, ha="left", y=0.98,
                  fontweight="medium")
     fig.text(0.055, 0.915,
-             "Line-rate load spread over more queues. dramblast rises 3.2x, maglev 1.3x — isolating a per-burst, "
+             "Line-rate load spread over more queues. dramblast rises 3.2x, maglev 1.3x — isolating a per-burst,\n"
              "not per-packet, cost. TSC is invariant at 2.1 GHz here, so ticks are time, not core cycles.",
-             fontsize=9.5, color=INK_2, ha="left")
-    fig.tight_layout(rect=(0, 0, 1, 0.90))
+             fontsize=9.5, color=INK_2, ha="left", va="top", linespacing=1.5)
+    fig.tight_layout(rect=(0, 0, 1, 0.875))
     out2 = DOCS / "per_packet_cost.png"
     fig.savefig(out2, dpi=200)
     print(f"wrote {out2}")

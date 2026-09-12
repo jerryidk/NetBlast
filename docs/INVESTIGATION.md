@@ -300,6 +300,42 @@ decided in advance:
 Control 3 is the load-bearing one: it converts "we saw no effect" into "we saw no
 effect and we know we could have."
 
+#### Pre-registered: what would downgrade the hoist from proof to corroboration
+
+The removal arm is only clean if the hoist removes the *mechanism* and not
+merely *some code*. A peer session's prefetch-removal control was airtight
+because its instruction count was unchanged across the manipulation
+(9,915,528,371 vs 9,915,527,336); mine cannot be that clean, because removing an
+`aligned_alloc`/`free` pair necessarily removes instructions and may let GCC
+reorder around the now loop-invariant pointer.
+
+So the threshold is fixed **here, before the experiment runs**, since choosing it
+afterwards would mean choosing it in full knowledge of which answer it licenses:
+
+* **Primary criterion — the delta must have the right shape, not merely the right
+  size.** A genuine per-burst removal must reduce instructions per packet
+  *proportionally to 1/batch*: near-invisible at q=1 (batch 64, where the cost is
+  amortised 64-fold) and large at q=9-10 (batch 3-7). If instructions per packet
+  instead fall roughly uniformly across all q, the change is code generation, not
+  mechanism removal, regardless of how the timing moved.
+* **Secondary criterion — a fixed bound at the amortised end.** If instructions
+  per packet at **q=1** change by more than **2%**, treat the hoist as having
+  altered the per-packet code path and **downgrade it from proof to
+  corroboration**, leaving the amplification arm to carry the result.
+
+Both arms report instruction counts, and both criteria are evaluated before the
+timing result is interpreted.
+
+This guard exists because of a repeated pattern in this investigation: a wrong
+method that yields a right-looking number is the hardest error to catch, since
+plausibility is what stops the checking. Three instances so far — the `C = 66`
+ticks per burst that matched a hot-tcache `aligned_alloc`+`free` to the
+nanosecond while the same model fitted a *larger* per-burst cost to the mode with
+no allocation; the peer session's stale output file reporting a plausible 0.3%
+change for a run that never happened; and its tick-to-cycle factor of 1.762
+derived from `scaling_cur_freq`, which landed within 1.3% of the truth by an
+invalid method.
+
 The two curves cross at q=7: maglev is ~1.9x more expensive per packet at low
 queue counts, dramblast ~1.35x more expensive by q=10. A constant offset would
 not do that.

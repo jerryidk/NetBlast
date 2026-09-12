@@ -42,6 +42,12 @@ for MODE in "${MODES[@]}"; do
     CORE_LIST=$(seq -s, 0 2 $(( q * 2 )))
     LOG="$OUT_DIR/${TAG}_${MODE}_q${q}.log"
 
+    # Fail loudly rather than silently reporting a stale or missing result:
+    # delete the log first so a crashed run cannot leave the previous run's
+    # numbers in place, and refuse to proceed without the binary.
+    [ -x ./build/l2fwd ] || { echo "FATAL: ./build/l2fwd missing or not executable" >&2; exit 1; }
+    rm -f "$LOG"
+
     HP1G=/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages
     HP_BEFORE=$(cat $HP1G)
 
@@ -67,16 +73,35 @@ for MODE in "${MODES[@]}"; do
     # count from 16 to 8. maglev uses plain aligned_alloc (maglev.c:43) and must
     # leave it at 16 -- so the two modes are each other's control in one sweep.
     #
-    # FREQ: the TSC here is invariant at 2.1 GHz while cores boost to 3.7, so
+    # FREQ: the TSC here is invariant at 2.1 GHz while cores boost to ~3.7, so
     # "Cycle per fwd packet" is really TSC ticks, i.e. time. As q rises more
     # cores go busy and all-core turbo drops, which inflates ticks/packet
-    # independently of any real per-packet work. Median over the ACTIVE cores,
-    # not one core: turbo bins can differ per core under all-core load.
-    sleep "${SAMPLE_AT:-15}"
+    # independently of any real per-packet work.
+    #
+    # Measured with perf, NOT sysfs. `scaling_cur_freq` under intel_pstate is
+    # useless here: sampled while this sweep was busy-polling CPUs 0-14, an IDLE
+    # core read 3.63-3.70 GHz -- indistinguishable from the busy ones -- while
+    # perf counted 506k cycles/s on that same core, i.e. halted. It reports the
+    # P-state request, not per-core delivery. (cpuinfo_cur_freq does not exist
+    # under intel_pstate in active mode, so there is no sysfs fallback.)
+    #
+    # cycles/wall-time per core IS the delivered frequency here, with no
+    # task-clock ratio needed, because DPDK busy-polls: the workers sit at 100%
+    # with no populate phase or idle time to contaminate the average.
+    # Worker cores only -- lcore 0 runs the stats loop, not forwarding.
+    sleep "${SAMPLE_AT:-12}"
     HP_DURING=$(cat $HP1G)
-    FREQ_KHZ=$(for c in $(echo "$CORE_LIST" | tr ',' ' '); do
-                   cat /sys/devices/system/cpu/cpu$c/cpufreq/scaling_cur_freq 2>/dev/null
-               done | sort -n | awk '{a[NR]=$1} END{if(NR)print a[int((NR+1)/2)]}')
+
+    WORKER_CPUS=$(echo "$CORE_LIST" | cut -d, -f2-)
+    NWORKERS=$(echo "$WORKER_CPUS" | tr ',' '\n' | grep -c .)
+    PERF_WINDOW=${PERF_WINDOW:-8}
+    CYCLES=$(sudo perf stat -e cycles -C "$WORKER_CPUS" -x, -- \
+                 sleep "$PERF_WINDOW" 2>&1 | awk -F, '/cycles/{print $1; exit}')
+    if [ -n "${CYCLES:-}" ] && [ "$CYCLES" -gt 0 ] 2>/dev/null; then
+        FREQ_MHZ=$(( CYCLES / PERF_WINDOW / NWORKERS / 1000000 ))
+    else
+        FREQ_MHZ=NA
+    fi
 
     wait $RUN_PID
 
@@ -92,7 +117,7 @@ for MODE in "${MODES[@]}"; do
     printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s cyc=%-6s batch=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz %s\n" \
       "$q" "$CORE_LIST" "${MIN:-NA}" "${MAX:-NA}" "${AVG:-NA}" \
       "${CYC:-NA}" "${BAT:-NA}" "${MIS:-NA}" \
-      "${HP_BEFORE:-NA}" "${HP_DURING:-NA}" "$(( ${FREQ_KHZ:-0} / 1000 ))" "$ERR"
+      "${HP_BEFORE:-NA}" "${HP_DURING:-NA}" "${FREQ_MHZ:-NA}" "$ERR"
   done
 done
 

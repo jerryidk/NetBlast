@@ -5,6 +5,8 @@ Parses the per-run logs written by sweep.sh.
 Usage: python3 extract_results.py <log_dir> ../docs/results_reproduced.json
 
 Conditions:
+  linerate_2tx_instr logs tagged "instr"  -- 2 TX gen, line rate, post-7ebf038 (float stats),
+                                            plus per-run 1 GiB hugepage and delivered-frequency samples
   linerate_93mpps  logs tagged "linerate" -- generator -l 0-16 (8 TX cores), 100 GbE line rate
   linerate_2tx_gen logs tagged "gen2tx"   -- generator -l 0-4  (2 TX cores), 100 GbE line rate
   capped_72mpps    logs tagged "sweep"    -- generator -l 0-2  (1 TX core),  72 Mpps
@@ -35,7 +37,8 @@ pats = {
 # those, excluding the cold first sample: immune to all three defects.
 SAMPLE_RE = re.compile(r"^([0-9.]+) Mpps", re.M)
 # condition -> log filename prefix
-CONDS = {"linerate_93mpps": "linerate", "linerate_2tx_gen": "gen2tx", "capped_72mpps": "sweep"}
+CONDS = {"linerate_2tx_instr": "instr", "linerate_93mpps": "linerate",
+         "linerate_2tx_gen": "gen2tx", "capped_72mpps": "sweep"}
 
 out = {}
 for cond, prefix in CONDS.items():
