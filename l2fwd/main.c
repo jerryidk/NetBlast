@@ -163,7 +163,7 @@ void print_port_stats(uint16_t portid) {
 }
 
 uint32_t SAMPLE_SIZE = 0;
-uint32_t *samples;
+double *samples;
 #define TOTAL_SAMPLES 32
 
 uint64_t total_packets_fwded_prev = 0;
@@ -226,8 +226,8 @@ static void print_final_stats() {
   }
 
   // Initialize min and max to the first element in the array
-  uint64_t min = samples[0];
-  uint64_t max = samples[0];
+  double min = samples[0];
+  double max = samples[0];
   double sum =
       0.0; // Use double to prevent integer overflow and get an accurate average
 
@@ -248,8 +248,8 @@ static void print_final_stats() {
   double avg = sum / SAMPLE_SIZE;
 
   // Print the results
-  printf("Minimum: %lu\n", min);
-  printf("Maximum: %lu\n", max);
+  printf("Minimum: %.2f\n", min);
+  printf("Maximum: %.2f\n", max);
   printf("Average: %.2f\n", avg);
 }
 
@@ -660,7 +660,7 @@ int main(int argc, char **argv) {
   else if (l2fwd_dramblast_enabled)
     dramblast_init();
 
-  samples = malloc(TOTAL_SAMPLES * sizeof(uint32_t));
+  samples = malloc(TOTAL_SAMPLES * sizeof(double));
   sleep(5);
 
   RTE_ETH_FOREACH_DEV(portid) {
