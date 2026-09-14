@@ -1982,3 +1982,57 @@ arm afterwards for twenty seconds, with the same binary, flag and machine state
 that the flag does what it says, and it is not evidence about those specific
 runs. The distinction is recorded rather than smoothed over, because the point
 of this section is that a verifier which overstates its coverage is the problem.
+
+### 5.17 The fixes, and a self-inflicted detour worth recording
+
+Four defects found by the adversarial review of this session's own code (§5.10)
+were held back until every arm had been measured, so that the whole dataset
+would correspond to one committed tree. It does: commit `96e6eea`, binary md5
+`ecd94f3ecf801b4daaef7f3d3b188788`, archived at `~/sweeps/l2fwd.measured`.
+Nothing in the matrix ran the fixed code.
+
+The one that matters is **F4**. The amplification arm allocates and frees a
+scratch buffer N times per burst, and the obvious way to stop the compiler
+deleting a pair it can prove is dead — a store into the buffer before freeing it
+— *does not work*. GCC 11 removes a store to an object that is about to be
+freed. Disassembling the shipped binary showed exactly that: the store was gone
+and the `aligned_alloc`/`free` pair survived only because the compiler happened
+to be conservative about the call. `-fallocation-dce` is on by default at `-O2`
+and one toolchain bump from eliding the pair outright, at which point the arm
+would report that an allocator round trip costs nothing — the precise wrong
+answer it exists to rule out, with no symptom anywhere. The buffer's pointer now
+escapes into an empty `asm` with no memory clobber; a clobber would force spills
+around the loop and change the cost being measured. The other three are
+validation: `-Q 1` passed, left the queue empty at the first pop and fed an
+unmasked index into a 512-bit load; `-A` accepted any negative value and all of
+them silently selected the hoisted arm; and the hoisted buffer's size was a bare
+`64` repeated from `main.c`'s `MAX_PKT_BURST`, now tied to it by a
+`_Static_assert`.
+
+All four verify: the tree builds clean under `-Werror`, `check_codegen.sh` still
+finds both `aligned_alloc` calls, the `free` and all four software prefetches,
+and `-Q 1`, `-Q 2`, `-A 99` and `-A -5` are each rejected with the intended
+message.
+
+**The detour.** Building them nearly did not happen, because `meson` was "not
+found", and earlier in the session `matplotlib` and `numpy` had been "not
+installed" — which was written up as another session having removed them from a
+shared machine, a dependency-free SVG plotter was written to work around it, and
+a commit message recorded the claim. All of that was wrong. This project's
+toolchain lives in a nix dev shell: `nix develop` provides meson 0.60.3,
+ninja 1.10.2, matplotlib 3.5.1 and gcc 10.3.0, and `l2fwd/README.md` says so on
+line 8. Running from a plain shell makes every one of them look uninstalled, and
+worse, makes `/usr/bin/gcc` (11.x, system glibc) look like the project compiler
+— which is what it linked against before failing on `GLIBC_PRIVATE` symbols and
+revealing the mistake.
+
+Two things follow, and only the second is interesting. The figure work was not
+wasted: the SVG plotter is kept, because the report draws every other chart the
+same way and a figure that needs no environment is one fewer thing to be wrong
+about. The real lesson is that *"the tool is missing" is a claim about the
+environment, and it was made without checking the environment* — the same shape
+as every measurement error in this log, where a number was read correctly and
+compared against the wrong reference. Here a `command not found` was read
+correctly and attributed to the wrong cause, and unlike a measurement error it
+came with a confident story about a third party. The correction is recorded in
+the commit that made it and here, rather than quietly rewritten.
