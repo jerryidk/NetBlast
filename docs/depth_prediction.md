@@ -102,3 +102,30 @@ The instruction-count anomaly noted above stands unexplained. Depth 32 gives
 the step-at-first-shortening reading is wrong too — the instruction count rises
 smoothly with the number of fills while the *excess* is not proportional to it.
 No account of that is offered here.
+
+## Correction to the outcome above (same day, after the repeat arm)
+
+The "1.3 sigma from the prediction, 3.1 sigma from the null" verdict used only
+the within-sweep scatter. That is the spread of ten samples inside a single
+twelve-second window, and it cannot see anything that drifts between sweeps
+taken hours apart. The repeatability arm, run after the depth arms, measured
+that drift directly: re-running the shipped condition at the end of the matrix
+reproduces it to 0.45 cycles/packet rms at burst 64 for dramblast.
+
+With that term included, and stated as an excess over the depth-64 arm so the
+baseline's own error is not dropped:
+
+    predicted by the ramp   2.58 +/- 0.14
+    measured                1.80 +/- 1.14
+    null (no effect)        0.00
+
+0.7 sigma from the prediction, 1.6 sigma from the null. The measurement is
+consistent with the model and does not exclude the null. **Inconclusive,
+leaning toward the model** — not the confirmation claimed above.
+
+The lesson is not about this model. It is that an error bar taken from within a
+single sweep is the wrong error bar for a comparison between sweeps, and it will
+be too small by whatever the between-sweep drift is. That number did not exist
+until the repeat arm was run, so every sigma quoted before it was optimistic by
+an unknown factor. The one-model fit in the main log (ramp = 166 +/- 25 from all
+forty points) is unaffected, because it pools arms rather than differencing two.

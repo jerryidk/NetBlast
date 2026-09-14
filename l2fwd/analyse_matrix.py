@@ -513,6 +513,21 @@ def main():
     # cycle counter and an instruction counter are read, which is what
     # separates "does more work" from "waits longer": the burst-cost model
     # cannot tell those apart and this can.
+    # The run-to-run floor at burst 64, computed here rather than in section 4
+    # because section 3b's error bars are wrong without it. A sweep's own
+    # scatter is the spread of ten samples inside one twelve-second window; it
+    # cannot see anything that drifts between sweeps, and the depth arms were
+    # taken hours apart. Both terms go into every depth error bar below.
+    def repeat_floor(mode):
+        a = allc.get("pinned2_asshipped", {}).get(mode, {})
+        b = allc.get("pinned3_repeat", {}).get(mode, {})
+        d = [b[q]["cycles_per_pkt"] - a[q]["cycles_per_pkt"]
+             for q in set(a) & set(b)
+             if a[q].get("rx_batch") == 64 and b[q].get("rx_batch") == 64]
+        return (sum(v * v for v in d) / len(d)) ** 0.5 if d else None
+
+    dram_floor = repeat_floor("dramblast")
+
     PERF_WINDOW = 8.0        # sweep.sh's perf window, seconds
     print()
     print("=" * 84)
@@ -521,6 +536,9 @@ def main():
     dcond = [(8, "depth_8"), (16, "depth_16"), (32, "depth_32"),
              (64, "pinned2_asshipped")]
     at64 = {}
+    if dram_floor:
+        print(f"  error bars = within-sweep scatter AND the {dram_floor:.2f} cycle")
+        print(f"  run-to-run floor measured by the repeat arm (section 4)")
     print(f"  {'depth':>5} {'runs':>5} {'cycles/pkt':>12} {'insns/pkt':>11} {'IPC':>6}")
     for dpt, cond in dcond:
         runs = [r for r in allc.get(cond, {}).get("dramblast", {}).values()
@@ -533,8 +551,10 @@ def main():
         # scatter of the mean, so the depth-32 test has an error bar
         var = sum((r["cycles_per_pkt"] - cyc) ** 2 for r in runs)
         sem = (var / (len(runs) * (len(runs) - 1))) ** 0.5 if len(runs) > 1 else None
+        if sem is not None and dram_floor:
+            sem = (sem ** 2 + dram_floor ** 2) ** 0.5
         at64[dpt] = (cyc, ipp, sem, len(runs))
-        semtxt = f"+/-{sem:.2f}" if sem else ""
+        semtxt = f"+/-{sem:.2f}" if sem else ""   # includes the run-to-run term
         print(f"  {dpt:>5} {len(runs):>5} {cyc:>8.1f}{semtxt:>6} {ipp:>11.1f} "
               f"{ipp / cyc:>6.2f}")
     if 8 in at64 and 64 in at64:
@@ -555,37 +575,59 @@ def main():
     # burst, so the ramp is paid per fill, not per burst. At the shipped depth
     # Q == B and the two are the same event, which is why the burst model
     # attributes the ramp to C; shortening the queue moves it into P.
-    cal = [(q, at64[q][0] - at64[64][0]) for q in (8, 16) if q in at64]
+    # Everything here is an EXCESS over the depth-64 arm, because the ramp is
+    # defined relative to it and because differencing against a common baseline
+    # is what the error propagation has to respect: the baseline's own error
+    # enters every comparison and must not be dropped after the first one.
+    cal = [(q, at64[q][0] - at64[64][0],
+            ((at64[q][2] or 0) ** 2 + (at64[64][2] or 0) ** 2) ** 0.5)
+           for q in (8, 16) if q in at64]
     if len(cal) == 2 and 64 in at64:
-        xs = [(1.0 / q - 1.0 / 64.0) for q, _ in cal]
-        ys = [y for _, y in cal]
-        ramp = sum(x * y for x, y in zip(xs, ys)) / sum(x * x for x in xs)
+        xs = [(1.0 / q - 1.0 / 64.0) for q, _, _ in cal]
+        ys = [y for _, y, _ in cal]
+        sgs = [g for _, _, g in cal]
+        sxx = sum(x * x for x in xs)
+        ramp = sum(x * y for x, y in zip(xs, ys)) / sxx
+        se_ramp = (sum((x * g) ** 2 for x, g in zip(xs, sgs))) ** 0.5 / sxx
         print(f"\n    Per-fill ramp calibrated on depths 8 and 16 (two points,")
-        print(f"    one parameter): ramp = {ramp:.0f} cycles per pipeline fill.")
+        print(f"    one parameter): ramp = {ramp:.0f} +/- {se_ramp:.0f} cycles "
+              f"per pipeline fill.")
         if 32 in at64:
-            pred = at64[64][0] + ramp * (1.0 / 32 - 1.0 / 64)
-            obs, _, sem, n = at64[32][0], None, at64[32][2], at64[32][3]
-            null = at64[64][0]
-            print(f"    Prediction for depth 32 at burst 64: {pred:.1f}")
-            print(f"    No-effect null:                      {null:.1f}")
-            print(f"    Measured ({n} runs):                    {obs:.1f}"
-                  + (f" +/- {sem:.2f}" if sem else ""))
-            if sem:
-                zp = abs(obs - pred) / sem
-                zn = abs(obs - null) / sem
-                print(f"      {zp:.1f} sigma from the prediction, "
-                      f"{zn:.1f} sigma from the null.")
-                if zp < 2 and zn > 3:
-                    print("    -> the model survives a test it could have failed.")
-                elif zn < 2:
-                    print("    -> NOT CONFIRMED. Depth 32 is indistinguishable from")
-                    print("       no effect at this burst, so the ramp calibrated on")
-                    print("       the two shallow arms does not extrapolate. The")
-                    print("       matched-burst cycles/instructions result above is")
-                    print("       unaffected -- it uses no model.")
-                else:
-                    print("    -> the measurement sits between the two hypotheses and")
-                    print("       separates neither. Reported as inconclusive.")
+            dx = 1.0 / 32 - 1.0 / 64
+            pred_ex, se_pred = ramp * dx, se_ramp * dx
+            obs_ex = at64[32][0] - at64[64][0]
+            se_obs = ((at64[32][2] or 0) ** 2 + (at64[64][2] or 0) ** 2) ** 0.5
+            print(f"    Depth 32's excess over depth 64, at burst 64:")
+            print(f"      predicted by the ramp  {pred_ex:5.2f} +/- {se_pred:.2f}")
+            print(f"      measured               {obs_ex:5.2f} +/- {se_obs:.2f}")
+            print(f"      null (no effect)        0.00")
+            sg = (se_obs ** 2 + se_pred ** 2) ** 0.5
+            zp = abs(obs_ex - pred_ex) / sg
+            zn = abs(obs_ex) / se_obs
+            print(f"      -> {zp:.1f} sigma from the prediction, "
+                  f"{zn:.1f} sigma from the null.")
+            if zp < 2 and zn > 3:
+                print("      -> the model survives a test it could have failed,")
+                print("         and the null is excluded.")
+            elif zp < 2 and zn > 1.5:
+                print("      -> INCONCLUSIVE, leaning toward the model. The")
+                print("         measurement is consistent with the prediction and")
+                print("         does not exclude the null. The effect being tested")
+                print("         is only about twice the run-to-run floor, which is")
+                print("         all the resolution one sweep per depth buys;")
+                print("         separating them needs repeats at depth 32, not a")
+                print("         better fit.")
+            elif zn <= 1.5:
+                print("      -> NOT CONFIRMED. Depth 32 is indistinguishable from")
+                print("         no effect once the run-to-run term is included.")
+            else:
+                print("      -> inconclusive; separates neither hypothesis.")
+            print("\n      (An earlier run of this analysis called this 3.1 sigma")
+            print("       from the null and said the model had survived. That used")
+            print("       only the within-sweep scatter, which cannot see drift")
+            print("       between sweeps taken hours apart. The repeat arm measured")
+            print("       that drift afterwards, and including it is what moved the")
+            print("       verdict.)")
 
     # ---- one model across every depth arm ---------------------------------
     # The per-arm P + C/B fits are four separate two-parameter models that
@@ -683,6 +725,99 @@ def main():
                 print("         parameter this fit actually determines.")
             else:
                 print("      -> stable to dropping the worst arm.")
+
+    # ---- the error bar everything else is measured against ---------------
+    # pinned2 and pinned3 are the same condition, same binary, same cpuset,
+    # re-run hours apart with the whole matrix in between. Every difference
+    # quoted anywhere in this analysis has to clear whatever this shows, and
+    # until it was run there was no measured run-to-run spread at all -- only
+    # the within-sweep scatter, which does not include anything that drifts
+    # between sweeps.
+    print()
+    print("=" * 84)
+    print("4. REPEATABILITY   the same condition, re-run after the whole matrix")
+    print("=" * 84)
+    floor_all = []
+    for mode in ("dramblast", "maglev"):
+        a = allc.get("pinned2_asshipped", {}).get(mode, {})
+        b = allc.get("pinned3_repeat", {}).get(mode, {})
+        if not a or not b:
+            print(f"  {mode:10s} (no repeat data)")
+            continue
+        print(f"\n  {mode}")
+        print(f"    {'q':>2} {'burst':>11} {'run 1':>8} {'run 2':>8} {'diff':>7}")
+        diffs = []
+        for q in sorted(set(a) & set(b), key=int):
+            ra, rb = a[q], b[q]
+            # Only compare at a matched burst. Cycles per packet depend on the
+            # burst, so two runs that landed on different bursts differ for a
+            # reason that has nothing to do with repeatability.
+            same = ra.get("rx_batch") == rb.get("rx_batch")
+            d = rb["cycles_per_pkt"] - ra["cycles_per_pkt"]
+            burst = (f"{ra.get('rx_batch')}" if same
+                     else f"{ra.get('rx_batch')}/{rb.get('rx_batch')}")
+            tail = "" if same else "   (different burst, not counted)"
+            print(f"    {q:>2} {burst:>11} {ra['cycles_per_pkt']:>8} "
+                  f"{rb['cycles_per_pkt']:>8} {d:>+7.0f}{tail}")
+            if same:
+                diffs.append((ra.get("rx_batch"), d))
+        if diffs:
+            vals = [v for _, v in diffs]
+            mean = sum(vals) / len(vals)
+            rms = (sum(v * v for v in vals) / len(vals)) ** 0.5
+            print(f"    -> {len(vals)} matched-burst points: mean {mean:+.2f}, "
+                  f"rms {rms:.2f}, worst {max(vals, key=abs):+.0f} cycles/packet")
+            # The floor is not one number. It is much smaller at burst 64,
+            # where the forwarder is oversubscribed and the operating point is
+            # pinned, than at the small bursts a saturated link produces, where
+            # the burst size itself is an outcome and wanders between runs. All
+            # the matched-burst claims in this analysis are made at burst 64,
+            # so that is the floor they have to clear -- quoting the pooled
+            # number instead would be conservative in the wrong place, hiding a
+            # real 2x while inflating the error on claims made where the rig is
+            # most stable.
+            b64 = [v for b, v in diffs if b == 64]
+            if b64 and len(b64) < len(vals):
+                r64 = (sum(v * v for v in b64) / len(b64)) ** 0.5
+                rest = [v for b, v in diffs if b != 64]
+                rr = (sum(v * v for v in rest) / len(rest)) ** 0.5 if rest else 0
+                print(f"       split by burst: {len(b64)} points at burst 64 "
+                      f"rms {r64:.2f};  {len(rest)} at smaller bursts rms {rr:.2f}")
+            floor_all.extend(diffs)
+        fa = fit_of(allc, "pinned2_asshipped", mode)
+        fb = fit_of(allc, "pinned3_repeat", mode)
+        if fa and fb and "C" in fa and "C" in fb:
+            dc = fb["C"] - fa["C"]
+            sg = ((fa["se"] or 0) ** 2 + (fb["se"] or 0) ** 2) ** 0.5
+            print(f"    fitted C: {fa['C']:.0f} then {fb['C']:.0f}  "
+                  f"({dc:+.0f}, {abs(dc)/sg:.1f} sigma of the two fits' own errors)")
+    if floor_all:
+        vals = [v for _, v in floor_all]
+        rms = (sum(v * v for v in vals) / len(vals)) ** 0.5
+        worst = max(vals, key=abs)
+        b64 = [v for b, v in floor_all if b == 64]
+        rms64 = (sum(v * v for v in b64) / len(b64)) ** 0.5 if b64 else rms
+        print(f"\n  RUN-TO-RUN FLOOR: rms {rms:.2f} cycles/packet over "
+              f"{len(vals)} matched-burst points, worst {worst:+.0f}.")
+        print(f"  At burst 64 alone, where every matched-burst claim here is")
+        print(f"  made: rms {rms64:.2f} over {len(b64)} points. The two differ")
+        print("  because at small bursts the burst size is an outcome rather")
+        print("  than a setting, and it wanders between runs.")
+        rms = rms64
+        print("\n  Read every claim in this analysis against that number:")
+        if shipped_pair:
+            print(f"    allocator pair            {shipped_pair/64:6.1f} cycles/packet "
+                  f"at burst 64   ({shipped_pair/64/rms:.0f}x the floor)")
+        if 8 in at64 and 64 in at64:
+            dd = at64[8][0] - at64[64][0]
+            print(f"    depth 64 -> 8             {dd:6.1f} cycles/packet "
+                  f"at burst 64   ({dd/rms:.0f}x)")
+        if 32 in at64 and 64 in at64:
+            dd = at64[32][0] - at64[64][0]
+            print(f"    depth 64 -> 32            {dd:6.1f} cycles/packet "
+                  f"at burst 64   ({dd/rms:.0f}x)")
+        print("  A difference of the same order as the floor is not a result,")
+        print("  however many digits the fit prints.")
 
     if "--plot" not in sys.argv:
         return

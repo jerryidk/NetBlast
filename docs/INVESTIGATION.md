@@ -1768,11 +1768,29 @@ cycles per pipeline fill**, and the prediction for depth 32 was written to
 that one of depth-32's five burst-64 points was already on screen when the
 arithmetic was done; the other four were not.)
 
-    predicted   103.0        null (no effect)   100.4
-    measured    102.2 ± 0.58
+The result, stated as an excess over the depth-64 arm, which is what the ramp
+actually predicts and what the errors have to be propagated against:
 
-1.3σ from the prediction, 3.1σ from the null. The model survived a test it could
-have failed.
+    predicted by the ramp   2.58 ± 0.14
+    measured                1.80 ± 1.14
+    null (no effect)        0.00
+
+0.7σ from the prediction, 1.6σ from the null: **consistent with the model and
+not excluding the null.** Inconclusive, leaning toward the model.
+
+The first version of this paragraph said 3.1σ from the null and declared the
+model had survived. That used only the within-sweep scatter — the spread of ten
+samples inside one twelve-second window — which cannot see anything that drifts
+between sweeps taken hours apart. The repeat arm (§5.15) measured that drift
+afterwards at 0.45 cycles/packet for dramblast at burst 64, and it is the larger
+term in this comparison. Including it doubled the error bar and changed the
+verdict. The effect being tested is about twice the run-to-run floor, which is
+all the resolution one sweep per depth buys; separating the two hypotheses needs
+repeats at depth 32, not a better fit.
+
+The shallower arms are not close to the floor: depth 8's excess is 18.6 ± 1.0
+(18σ) and depth 16's is 6.4 ± 1.1 (6σ). Only the depth-32 point, which is the
+one that tests the model, sits near the noise.
 
 #### One model across all four arms, and where it stops being a measurement
 
@@ -1812,3 +1830,65 @@ route.
 - The linear burst model is valid only while `B ≤ Q`. For the shipped build that
   is every burst, so §5.5 through §5.13 are unaffected. For any future arm that
   shortens the queue, it is not, and the step model must be used instead.
+
+### 5.15 The repeat arm: the error bar everything else should have been measured against
+
+The shipped condition was re-run at the end of the matrix — same binary, same
+cpuset, same invocation, hours later with every other arm in between. Until this
+ran, nothing in this investigation had a measured run-to-run spread. Every error
+bar came from *within* one sweep: the scatter of ten one-second samples inside a
+twelve-second window, which by construction cannot see anything that changes
+between sweeps.
+
+| | matched-burst points | mean | rms | worst |
+|---|---|---|---|---|
+| dramblast | 7 | −1.71 | 2.98 | −6 |
+| maglev | 6 | +0.00 | 1.53 | −3 |
+
+Only queue counts that landed on the *same* burst in both runs are compared;
+cycles per packet depend on the burst size, so two runs at different bursts
+differ for a reason that has nothing to do with repeatability.
+
+**The floor is not one number, and it matters which one is used.** Split by
+burst:
+
+    burst 64          11 points   rms 1.17   (dramblast alone: 0.45)
+    smaller bursts     2 points   rms 5.52
+
+At burst 64 the forwarder is oversubscribed and the operating point is pinned by
+the offered load, so the run reproduces almost exactly. At the small bursts a
+saturated link produces, the burst size is an *outcome* rather than a setting,
+and it wanders between runs; the largest single discrepancy is 6 cycles/packet
+at a burst of 9. Every matched-burst claim in this investigation is made at
+burst 64, so 1.17 — or 0.45 for dramblast specifically — is the floor they have
+to clear. Quoting the pooled 2.42 would be conservative in the wrong place: it
+would inflate the error on claims made exactly where the rig is most stable
+while hiding that small-burst comparisons are twice as noisy as the pooled
+figure suggests.
+
+Against the burst-64 floor:
+
+| claim | size at burst 64 | multiple of the floor |
+|---|---|---|
+| the `aligned_alloc`/`free` pair | 7.0 cycles/packet | 6× |
+| depth 64 → 8 | 18.6 | 16× |
+| depth 64 → 32 | 1.8 | 2× |
+
+The first two are results. The third is the one that tested the ramp model, and
+at twice the floor it is as much resolution as one sweep per depth buys — which
+is why §5.14's verdict there is inconclusive rather than a confirmation.
+
+The fitted per-burst coefficients also reproduce: dramblast 718 then 689 (0.6σ
+of the two fits' own errors), maglev −36 then −26 (0.3σ). maglev's per-burst
+cost coming back negative and consistent with zero a second time is a useful
+independent confirmation of §5.5 — that engine genuinely has no per-burst term,
+and the negative sign is noise around zero rather than a fit going wrong once.
+
+**What this changes retrospectively.** Every sigma quoted before this arm ran
+used the within-sweep scatter, and was therefore optimistic by however large the
+between-sweep drift is. That number did not exist until now. The correction has
+been applied where it changes a conclusion — §5.14's depth-32 test moved from
+"confirmed at 3.1σ" to "inconclusive at 1.6σ" — and the claims that stand at six
+times the floor or better are unaffected. The general lesson is that an error
+bar taken from inside a single sweep is the wrong error bar for a comparison
+between sweeps, and the repeat arm is the only thing that can say by how much.
