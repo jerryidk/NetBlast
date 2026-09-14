@@ -91,9 +91,10 @@ footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);
   <p class="eyebrow">NetBlast &middot; l2fwd on Intel E810-C, 100 GbE</p>
   <h1>Why the forwarder looked like it fell off a cliff</h1>
   <p class="lede">The reported collapse at specific queue-pair counts was a
-  harness bug. Underneath it there is a real, much smaller queue-count effect —
-  and measuring it properly turns out to say something precise about what the
-  two lookup engines are actually trading against each other.</p>
+  harness bug. Underneath it there is a real, much smaller queue-count effect,
+  and taking it apart says something precise about what the two lookup engines
+  trade against each other — and reverses one of this investigation's own
+  earlier conclusions.</p>
 </header>
 
 <main>
@@ -124,6 +125,21 @@ footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);
   retires about 40% more instructions per packet, at more than twice the
   instructions-per-cycle. Doing more, faster, to wait less is the
   trade.</p></div>
+
+  <div class="finding"><span class="n">04</span><p><b>Most of that per-burst
+  cost is one call to <code>aligned_alloc</code>.</b> Sweeping the number of
+  round trips the burst performs prices one at <b>447 cycles</b> — 60% of the
+  whole per-burst figure, against an earlier estimate of <em>at most 11%</em>
+  taken from a published number rather than measured. The 64-byte alignment
+  request, which buys nothing, is what routes the call off glibc's fast
+  path.</p></div>
+
+  <div class="finding"><span class="n">05</span><p><b>The prefetch pipeline is
+  worth about 165 cycles each time it fills, and it hides latency rather than
+  removing work.</b> Shortening it eightfold costs 4.1% more instructions per
+  packet but 18.5% more cycles. That per-fill price was calibrated on two depths
+  and then predicted a third before it was run: predicted +2.58 cycles per
+  packet, measured +2.23 ± 0.15 over three repeats, no-effect excluded.</p></div>
 </div>
 </section>
 
