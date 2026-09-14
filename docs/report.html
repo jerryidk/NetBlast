@@ -61,6 +61,7 @@ figcaption{font-size:14px;line-height:1.5;color:var(--ink-2);margin-top:12px;
 .tick{font-size:11px;fill:var(--ink-2)}
 .axis{font-size:12px;fill:var(--ink-2);font-weight:600}
 .barlab{font-size:13px;fill:var(--ink);font-weight:600}
+.inbar{font-size:12.5px;fill:#fff;font-weight:600;font-family:"IBM Plex Mono",monospace}
 .legend{display:flex;flex-wrap:wrap;gap:8px 22px;font-family:Archivo,sans-serif;
   font-size:13px;color:var(--ink-2);margin:6px 0 0}
 .key{display:inline-flex;align-items:center;gap:7px}
@@ -182,7 +183,7 @@ two equations and two unknowns.</p>
 
 <div class="wide">
 <figure>
-  <svg viewBox="0 0 720 210" role="img" aria-label="CPU work versus exposed memory stall per packet"><text x="120" y="43" text-anchor="end" class="barlab">dramblast / packet</text><rect x="132" y="22" width="57.4" height="34" fill="var(--a)" rx="1"/><rect x="189.4" y="22" width="18.1" height="34" fill="var(--b)" rx="1"/><text x="195.4" y="71" class="tick">72 cycles of work</text><text x="215.5" y="43" class="tick">23 stall</text><text x="120" y="97" text-anchor="end" class="barlab">maglev / packet</text><rect x="132" y="76" width="61.0" height="34" fill="var(--a)" rx="1"/><rect x="193.0" y="76" width="68.5" height="34" fill="var(--b)" rx="1"/><text x="199.0" y="125" class="tick">77 cycles of work</text><text x="269.5" y="97" class="tick">86 stall</text><text x="120" y="151" text-anchor="end" class="barlab">dramblast / burst</text><rect x="132" y="130" width="437.0" height="34" fill="var(--a)" rx="1"/><rect x="569.0" y="130" width="73.7" height="34" fill="var(--b)" rx="1"/><text x="575.0" y="179" class="tick">551 cycles of work</text><text x="650.7" y="151" class="tick">93 stall</text></svg>
+  <svg viewBox="0 0 720 242" role="img" aria-label="Share of each cost that is CPU work versus exposed memory stall"><text x="154" y="51" text-anchor="end" class="barlab">dramblast / packet</text><rect x="168" y="26" width="349.6" height="40" fill="var(--a)"/><rect x="517.6" y="26" width="110.4" height="40" fill="var(--b)"/><text x="178" y="51" class="inbar">72 cyc work</text><text x="527.6" y="51" class="inbar">23 cyc stall</text><text x="398" y="83" text-anchor="middle" class="tick">24% of 95 cycles is waiting on memory</text><text x="154" y="121" text-anchor="end" class="barlab">maglev / packet</text><rect x="168" y="96" width="216.8" height="40" fill="var(--a)"/><rect x="384.8" y="96" width="243.2" height="40" fill="var(--b)"/><text x="178" y="121" class="inbar">77 cyc work</text><text x="394.8" y="121" class="inbar">86 cyc stall</text><text x="398" y="153" text-anchor="middle" class="tick">53% of 163 cycles is waiting on memory</text><text x="154" y="191" text-anchor="end" class="barlab">dramblast / burst</text><rect x="168" y="166" width="393.6" height="40" fill="var(--a)"/><rect x="561.6" y="166" width="66.4" height="40" fill="var(--b)"/><text x="178" y="191" class="inbar">551 cyc work</text><text x="636" y="191" class="tick">93 stall</text><text x="398" y="223" text-anchor="middle" class="tick">14% of 645 cycles is waiting on memory</text></svg>
   <div class="legend">
     <span class="key"><span class="sw" style="background:var(--a)"></span>CPU work</span>
     <span class="key"><span class="sw" style="background:var(--b)"></span>exposed memory stall</span>
@@ -213,7 +214,38 @@ sweeping the number of allocator round trips makes the per-burst cost a straight
 line whose slope is what a round trip costs on this machine, while changing the
 prefetch pipeline depth moves a pipeline cost and cannot move an allocator one.
 </div>
+</section>
 
+
+<section class="wrap">
+<h2>The same number, arrived at twice</h2>
+<p>The split above is inferred from how the cost responds to the clock. The
+processor will also tell you directly: it counts the cycles in which nothing
+executes because an L3 miss is outstanding. Two methods, no shared
+assumptions.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>engine</th><th class="num">cycles/pkt</th><th class="num">IPC</th>
+<th class="num">memory share, two clocks</th>
+<th class="num">memory share, stall counter</th></tr></thead>
+<tbody><tr><td>dramblast</td><td class='num'>101</td><td class='num'>3.03</td><td class='num'>17.5%</td><td class='num'>0.9%</td></tr><tr><td>maglev</td><td class='num'>168</td><td class='num'>1.45</td><td class='num'>56.4%</td><td class='num'>51.9%</td></tr></tbody>
+</table></div>
+<p>For maglev they agree. That is the strongest corroboration here: the
+clock-arm method's entire premise is that a cost which does not scale with core
+frequency is memory, and a hardware counter that knows nothing about that
+premise says the same thing.</p>
+<p>For dramblast they disagree twentyfold — and <em>that</em> is the result. The
+stall counter measures cycles thrown away waiting, and dramblast throws away
+almost none: it runs at an IPC of 3.03 because the prefetch pipeline has always
+queued other work. The clock method measures everything whose duration is fixed
+in nanoseconds rather than cycles, which includes waiting <em>and</em> any
+throughput limit in the memory hierarchy. So the prefetch pipeline does not
+remove dramblast's memory traffic. It converts that traffic from latency into
+throughput — and the two measurements diverging is how you tell those two
+regimes apart.</p>
+</section>
+
+
+<section class="wrap">
 <h2>How much of this is the measurement rig</h2>
 <p>Two properties of the machine turned out to matter more than expected, and
 both are recorded as conditions of the experiment rather than corrected away.</p>
@@ -229,7 +261,9 @@ hugepages to 2 MiB pages. That is 8 TLB entries against 4096. Every comparison
 between them was therefore a comparison of algorithm <em>and</em> address
 translation at once — a confound found by looking for one, not by it causing
 trouble.</p>
+</section>
 
+<section class="wrap">
 <footer>
 Measured on a single-socket Intel Xeon Gold 5512U with an E810-C 100 GbE NIC,
 DPDK 21.11, against a hardware generator holding 93.28 Mpps of 110-byte frames

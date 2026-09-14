@@ -138,26 +138,123 @@ def chart_burst(fits, pts_by):
 
 
 def chart_split(rows):
-    """Stacked work-versus-stall bars, in cycles at 2.1 GHz."""
-    W, H = 720, 210
-    L, R, T, B = 132, 16, 22, 40
-    total = max(w + s for _, w, s in rows) * 1.12
-    X = lambda v: L + v / total * (W - L - R)
-    bh, gap = 34, 20
-    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="CPU work versus exposed '
-         f'memory stall per packet">']
+    """Work against exposed stall, each bar normalised to its own total.
+
+    A shared absolute scale would be misleading here rather than merely ugly:
+    the per-burst cost is about seven times the per-packet one, so on one scale
+    the two per-packet bars collapse to slivers and the comparison the figure
+    exists to make -- what FRACTION of each cost is waiting -- becomes
+    unreadable. Each bar is therefore its own 100%, with the absolute cycle
+    counts written on it."""
+    W = 720
+    L, R, T = 168, 92, 26
+    bh, gap = 40, 30
+    H = T + len(rows) * (bh + gap) + 6
+    span = W - L - R
+    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Share of each cost '
+         f'that is CPU work versus exposed memory stall">']
     for i, (label, work, stall) in enumerate(rows):
+        total = work + stall
         yy = T + i * (bh + gap)
-        p.append(f'<text x="{L-12}" y="{yy+bh/2+4:.0f}" text-anchor="end" class="barlab">{esc(label)}</text>')
-        p.append(f'<rect x="{L}" y="{yy}" width="{X(work)-L:.1f}" height="{bh}" fill="var(--a)" rx="1"/>')
-        p.append(f'<rect x="{X(work):.1f}" y="{yy}" width="{X(work+stall)-X(work):.1f}" '
-                 f'height="{bh}" fill="var(--b)" rx="1"/>')
-        p.append(f'<text x="{X(work)/1+6:.1f}" y="{yy+bh+15:.0f}" class="tick">'
-                 f'{work:.0f} cycles of work</text>')
-        p.append(f'<text x="{X(work+stall)+8:.1f}" y="{yy+bh/2+4:.0f}" class="tick">'
-                 f'{stall:.0f} stall</text>')
+        wpx = span * work / total
+        p.append(f'<text x="{L-14}" y="{yy+bh/2+5:.0f}" text-anchor="end" '
+                 f'class="barlab">{esc(label)}</text>')
+        p.append(f'<rect x="{L}" y="{yy}" width="{wpx:.1f}" height="{bh}" '
+                 f'fill="var(--a)"/>')
+        p.append(f'<rect x="{L+wpx:.1f}" y="{yy}" width="{span-wpx:.1f}" '
+                 f'height="{bh}" fill="var(--b)"/>')
+        # Work label inside its own block; stall label inside if it fits, else
+        # outside to the right, so a 14% sliver never gets text written over it.
+        p.append(f'<text x="{L+10}" y="{yy+bh/2+5:.0f}" class="inbar">'
+                 f'{work:.0f} cyc work</text>')
+        spx = span - wpx
+        if spx > 96:
+            p.append(f'<text x="{L+wpx+10:.1f}" y="{yy+bh/2+5:.0f}" class="inbar">'
+                     f'{stall:.0f} cyc stall</text>')
+        else:
+            p.append(f'<text x="{W-R+8}" y="{yy+bh/2+5:.0f}" class="tick">'
+                     f'{stall:.0f} stall</text>')
+        p.append(f'<text x="{L+span/2:.0f}" y="{yy+bh+17:.0f}" text-anchor="middle" '
+                 f'class="tick">{stall/total*100:.0f}% of {total:.0f} cycles is '
+                 f'waiting on memory</text>')
     p.append("</svg>")
     return "".join(p)
+
+
+PERF_WINDOW = 8.0  # seconds, matches sweep.sh
+
+
+def tlb_cycles_per_pkt(rec):
+    """Cycles this run spent walking page tables, per forwarded packet.
+
+    dtlb_walk_active counts cycles, not walks, so it is directly comparable to
+    the per-packet cost without assuming a latency per walk. perf counted it
+    across the worker cores for PERF_WINDOW seconds while the port forwarded
+    steady_mpps; both are totals over the same window and the same set of
+    cores, so the ratio is per-packet without needing the core count.
+    """
+    w = rec.get("pmu_dtlb_walk_active")
+    m = rec.get("steady_mpps")
+    if w is None or not m:
+        return None
+    return w / (m * 1e6 * PERF_WINDOW)
+
+
+def chart_crossover(rows):
+    """P per packet for each mode on each page backing, with the page-walk share.
+
+    rows: [(mode, backing label, P cycles, tlb cycles or None)]
+    """
+    W = 720
+    L, R, T = 150, 74, 24
+    bh, gap, grp = 26, 9, 20
+    n = len(rows)
+    H = T + n * (bh + gap) + grp + 10
+    xmax = max(r[2] for r in rows) * 1.18
+    X = lambda v: L + v / xmax * (W - L - R)
+    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Per-packet cost of '
+         f'each mode on each page backing">']
+    y = T
+    prev = None
+    for mode, lab, P, tlb in rows:
+        if prev is not None and mode != prev:
+            y += grp
+        prev = mode
+        col = "var(--a)" if mode == "dramblast" else "var(--b)"
+        p.append(f'<text x="{L-12}" y="{y+bh/2+4:.0f}" text-anchor="end" '
+                 f'class="barlab">{esc(mode)} &#183; {esc(lab)}</text>')
+        p.append(f'<rect x="{L}" y="{y}" width="{X(P)-L:.1f}" height="{bh}" fill="{col}"/>')
+        if tlb and tlb > 0.5:
+            p.append(f'<rect x="{L}" y="{y}" width="{X(tlb)-L:.1f}" height="{bh}" '
+                     f'fill="var(--ink)" opacity="0.45"/>')
+        note = f"{P:.0f}" + (f"   ({tlb:.0f} in page walks)" if tlb and tlb > 0.5 else "")
+        p.append(f'<text x="{X(P)+9:.1f}" y="{y+bh/2+4:.0f}" class="tick">{note}</text>')
+        y += bh + gap
+    p.append("</svg>")
+    return "".join(p)
+
+
+def crossover_rows(allc):
+    """[(mode, label, P, tlb)] for whichever crossover conditions exist."""
+    spec = [("dramblast", "1 GiB pages", "pinned2_asshipped"),
+            ("dramblast", "2 MiB THP", "xover_dram_thp2m"),
+            ("dramblast", "4 KiB pages", "xover_dram_4k"),
+            ("maglev", "1 GiB pages", "xover_mag_1g"),
+            ("maglev", "2 MiB THP", "pinned2_asshipped"),
+            ("maglev", "4 KiB pages", "xover_mag_4k")]
+    out = []
+    for mode, lab, cond in spec:
+        d = allc.get(cond, {}).get(mode, {})
+        pts = series({mode: d}, mode)
+        f = lsq(pts)
+        if not f:
+            continue
+        # Page-walk cycles are read at the largest burst available, where the
+        # per-burst term is smallest and P dominates -- the same cell the bar
+        # length is dominated by.
+        best = max(d.values(), key=lambda r: r.get("rx_batch", 0))
+        out.append((mode, lab, f[0], tlb_cycles_per_pkt(best)))
+    return out
 
 
 CSS = """
@@ -219,6 +316,7 @@ figcaption{font-size:14px;line-height:1.5;color:var(--ink-2);margin-top:12px;
 .tick{font-size:11px;fill:var(--ink-2)}
 .axis{font-size:12px;fill:var(--ink-2);font-weight:600}
 .barlab{font-size:13px;fill:var(--ink);font-weight:600}
+.inbar{font-size:12.5px;fill:#fff;font-weight:600;font-family:"IBM Plex Mono",monospace}
 .legend{display:flex;flex-wrap:wrap;gap:8px 22px;font-family:Archivo,sans-serif;
   font-size:13px;color:var(--ink-2);margin:6px 0 0}
 .key{display:inline-flex;align-items:center;gap:7px}
@@ -279,6 +377,109 @@ def main():
 
     dwork, dns, dfrac = decompose(dP, fits[("dramblast", "turbo")][0], fp, ft)
     mwork, mns, mfrac = decompose(mP, fits[("maglev", "turbo")][0], fp, ft)
+
+    # The crossover section appears only once its conditions have been measured.
+    # An unmeasured section is omitted rather than stubbed: a page that shows a
+    # placeholder where a result belongs invites the reader to supply their own.
+    # Independent check on the memory share: the PMU counts cycles stalled with
+    # an L3 miss outstanding, which is the same quantity the clock arms infer.
+    check = []
+    N = allc.get("pinned2_asshipped", {})
+    for mode in ("dramblast", "maglev"):
+        pr, tr = P.get(mode, {}).get("1"), T.get(mode, {}).get("1")
+        nr = N.get(mode, {}).get("1")
+        if not (pr and tr and nr and nr.get("pmu_stalls_l3_miss")):
+            continue
+        cp = pr["cycles_per_pkt"] * pr["freq_mhz"] / TSC_MHZ
+        ct = tr["cycles_per_pkt"] * tr["freq_mhz"] / TSC_MHZ
+        t_ns = (ct - cp) / ((tr["freq_mhz"] - pr["freq_mhz"]) / 1000.0)
+        clock_share = t_ns * pr["freq_mhz"] / 1000.0 / cp * 100
+        pk = nr["steady_mpps"] * 1e6 * PERF_WINDOW
+        pmu_share = nr["pmu_stalls_l3_miss"] / pk / nr["cycles_per_pkt"] * 100
+        ipc = nr["insns"] / (nr["freq_mhz"] * 1e6 * PERF_WINDOW)
+        check.append((mode, pr["cycles_per_pkt"], ipc, clock_share, pmu_share))
+
+    check_html = ""
+    if len(check) == 2:
+        rows_html = "".join(
+            f"<tr><td>{esc(m)}</td><td class='num'>{tk}</td><td class='num'>{ipc:.2f}</td>"
+            f"<td class='num'>{cs:.1f}%</td><td class='num'>{ps:.1f}%</td></tr>"
+            for m, tk, ipc, cs, ps in check)
+        check_html = f"""
+<section class="wrap">
+<h2>The same number, arrived at twice</h2>
+<p>The split above is inferred from how the cost responds to the clock. The
+processor will also tell you directly: it counts the cycles in which nothing
+executes because an L3 miss is outstanding. Two methods, no shared
+assumptions.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>engine</th><th class="num">cycles/pkt</th><th class="num">IPC</th>
+<th class="num">memory share, two clocks</th>
+<th class="num">memory share, stall counter</th></tr></thead>
+<tbody>{rows_html}</tbody>
+</table></div>
+<p>For maglev they agree. That is the strongest corroboration here: the
+clock-arm method's entire premise is that a cost which does not scale with core
+frequency is memory, and a hardware counter that knows nothing about that
+premise says the same thing.</p>
+<p>For dramblast they disagree twentyfold — and <em>that</em> is the result. The
+stall counter measures cycles thrown away waiting, and dramblast throws away
+almost none: it runs at an IPC of 3.03 because the prefetch pipeline has always
+queued other work. The clock method measures everything whose duration is fixed
+in nanoseconds rather than cycles, which includes waiting <em>and</em> any
+throughput limit in the memory hierarchy. So the prefetch pipeline does not
+remove dramblast's memory traffic. It converts that traffic from latency into
+throughput — and the two measurements diverging is how you tell those two
+regimes apart.</p>
+</section>
+"""
+
+    xrows = crossover_rows(allc)
+    crossover_html = ""
+    if len(xrows) >= 4:
+        by = {(m, l): (P, t) for m, l, P, t in xrows}
+        d1 = by.get(("dramblast", "1 GiB pages"), (None,))[0]
+        d4 = by.get(("dramblast", "4 KiB pages"), (None,))[0]
+        m2 = by.get(("maglev", "2 MiB THP"), (None,))[0]
+        m1 = by.get(("maglev", "1 GiB pages"), (None,))[0]
+        gap = m2 - d1 if (m2 and d1) else None
+        moved = (m2 - m1) if (m2 and m1) else None
+        share = f"{moved/gap*100:.0f}%" if (moved and gap) else "?"
+        crossover_html = f"""
+<section class="wrap">
+<h2>Was it ever about page size?</h2>
+<p>The two engines do not only differ in how they look a key up. They differ in
+how their table is mapped: dramblast takes 8 GiB of 1 GiB hugepages, eight TLB
+entries; maglev's ordinary allocation is promoted by transparent hugepages to
+2 MiB pages, four thousand and ninety-six of them against a translation buffer
+that holds about two thousand. Every comparison between the two was therefore a
+comparison of algorithm <em>and</em> address translation at once. So each engine
+was run on the other's page size, and on 4 KiB pages, which neither ships
+with.</p>
+</section>
+
+<div class="wide">
+<figure>
+  {chart_crossover(xrows)}
+  <div class="legend">
+    <span class="key"><span class="sw" style="background:var(--a)"></span>dramblast</span>
+    <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
+    <span class="key"><span class="sw" style="background:var(--ink);opacity:.45"></span>cycles spent walking page tables</span>
+  </div>
+  <figcaption>Per-packet cost on each backing, with the measured page-walk
+  cycles shown inside each bar. Page-walk cycles are counted directly
+  (<span class="mono">dtlb_walk_active</span>), not inferred from a miss rate
+  multiplied by an assumed latency.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>Giving maglev dramblast's 1 GiB pages moves its per-packet cost by
+{abs(moved):.0f} cycles — {share} of the {abs(gap):.0f}-cycle gap between the two
+engines. Address translation is a real cost and it is not the explanation. The
+prefetch pipeline is.</p>
+</section>
+"""
 
     html = f"""<title>The Burst-Size Crossover</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -413,7 +614,11 @@ sweeping the number of allocator round trips makes the per-burst cost a straight
 line whose slope is what a round trip costs on this machine, while changing the
 prefetch pipeline depth moves a pipeline cost and cannot move an allocator one.
 </div>
+</section>
 
+{check_html}
+{crossover_html}
+<section class="wrap">
 <h2>How much of this is the measurement rig</h2>
 <p>Two properties of the machine turned out to matter more than expected, and
 both are recorded as conditions of the experiment rather than corrected away.</p>
@@ -429,7 +634,9 @@ hugepages to 2 MiB pages. That is 8 TLB entries against 4096. Every comparison
 between them was therefore a comparison of algorithm <em>and</em> address
 translation at once — a confound found by looking for one, not by it causing
 trouble.</p>
+</section>
 
+<section class="wrap">
 <footer>
 Measured on a single-socket Intel Xeon Gold 5512U with an E810-C 100 GbE NIC,
 DPDK 21.11, against a hardware generator holding 93.28 Mpps of 110-byte frames

@@ -1370,3 +1370,57 @@ back; the hoisted buffer's size was a bare literal decoupled from
 `MAX_PKT_BURST`, so raising that constant would have overflowed a heap buffer in
 that one arm and read as a hoisting result.
 
+
+### 5.11 An independent check on the memory share, and what its disagreement means
+
+The decomposition in §5.6 infers the memory-bound share from how a cost responds
+to the core clock. That inference can be checked directly, because the PMU
+counts the cycles in which the core is stalled with an L3 miss outstanding
+(`CYCLE_ACTIVITY.STALLS_L3_MISS`) and the cycles in which a page-table walk is
+in flight (`DTLB_LOAD_MISSES.WALK_ACTIVE`). Both are counted per run alongside
+cycles and instructions.
+
+At a full 64-packet burst:
+
+| mode | ticks/pkt | IPC | memory share, two clock arms | memory share, L3-stall counter | page-walk cycles/pkt | LLC load misses/pkt |
+|---|---|---|---|---|---|---|
+| dramblast (1 GiB pages) | 101 | 3.03 | 17.5% | **0.9%** | 0.0 | 0.007 |
+| maglev (2 MiB THP) | 168 | 1.45 | 56.4% | **51.9%** | 25.6 | 0.879 |
+
+**For maglev the two methods agree** — 56.4% against 51.9%, from a frequency
+sweep and a hardware counter that share no assumptions. That is the strongest
+corroboration in this document: the clock-arm method's whole premise is that a
+cost which does not scale with core frequency is memory, and here an independent
+counter says the same thing to within five points.
+
+**For dramblast they disagree by a factor of twenty, and the disagreement is the
+result.** `STALLS_L3_MISS` counts cycles in which *no* micro-operation executes
+while an L3 miss is outstanding. dramblast is essentially never in that state —
+0.9 cycles per packet out of 101, at an IPC of 3.03. The core always has other
+work, because the software prefetch pipeline has run ahead and queued it. Yet
+the clock-arm method still finds 17.5% of the cost failing to scale with core
+frequency.
+
+Both numbers are right, and they measure different things. The stall counter
+measures *exposed latency*: cycles thrown away waiting. The clock-arm method
+measures everything whose duration is fixed in nanoseconds rather than cycles,
+which includes exposed latency **and** any throughput limit in the memory
+hierarchy — a mesh running at its own fixed 2.5 GHz, fill-buffer occupancy,
+DRAM bandwidth. dramblast has almost no exposed latency and a real throughput
+cost; maglev has overwhelmingly exposed latency.
+
+That is the mechanism stated precisely: **the prefetch pipeline does not remove
+dramblast's memory traffic, it converts that traffic from latency into
+throughput.** The two measurements agreeing for maglev and diverging for
+dramblast is not a discrepancy to be reconciled — it is how the two regimes are
+told apart.
+
+One counter needs a caveat before anyone reads it as a miss rate. dramblast
+records 0.007 LLC load misses per packet while reading a random 64-byte line out
+of an 8 GiB table on every packet, which is impossible taken at face value.
+`LLC-load-misses` counts *demand* loads; dramblast's table lines are brought in
+by `_mm_prefetch`, so by the time the demand load issues the line is already
+resident and no miss is recorded. The DRAM traffic is real and this counter
+cannot see it. maglev, which has no prefetching, shows 0.879 per packet — close
+to one line per lookup, which is what the algorithm says it should be.
+

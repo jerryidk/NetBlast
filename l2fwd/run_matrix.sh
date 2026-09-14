@@ -35,9 +35,14 @@
 #             less latency is hidden. If C is the allocator, depth cannot touch
 #             it. The two knobs cannot mimic each other, which is the point.
 #
-# The allocator and depth blocks use a reduced queue list: fitting P and C needs
-# a spread of burst sizes, not every queue count, and q in {1,4,7,8,9,10} spans
-# batch 64 down to 8. That is 6 runs per condition instead of 10.
+# All blocks sweep the full queue range. A reduced list was tempting -- fitting
+# P and C needs a spread of BURST sizes, not every queue count -- but the burst
+# size at a given q is not a property of q: it is set by how fast the forwarder
+# drains its queues. The allocator and depth arms are deliberately slower than
+# the baseline, so they stay oversubscribed further up the sweep and sit at
+# larger bursts at the same q. A queue list chosen from the baseline's burst
+# sizes would therefore compress those arms' x-range exactly where the slope is
+# determined, and C is the coefficient the whole block exists to measure.
 #
 # Usage: ./run_matrix.sh [block ...]      (default: all blocks, in order)
 #   e.g. ./run_matrix.sh control crossover
@@ -56,10 +61,14 @@ BLOCKS=("${@:-control crossover alloc depth}")
 run() {  # run <tag> <mode> <extra args...>
   local tag=$1 mode=$2; shift 2
   echo "### $tag  mode=$mode  extra='$*'  $(date -u +%H:%M:%S)"
-  L2FWD_EXTRA="$*" ./sweep.sh "$OUT/$tag" "$tag" "$mode" 2>&1 | tee "$OUT/$tag.out"
+  # Per-MODE output file. `tee "$OUT/$tag.out"` truncates, so the control block --
+  # the only one that runs two modes under one tag -- silently threw away the
+  # first mode's summary lines, and with them the per-run frequency and
+  # instruction counts that live only on those lines. The per-run .log files
+  # survived, so nothing was lost that could not be recovered from the top-level
+  # transcript, but the sidecar this file exists to be was empty for one mode.
+  L2FWD_EXTRA="$*" ./sweep.sh "$OUT/$tag" "$tag" "$mode" 2>&1 | tee "$OUT/${tag}_${mode}.out"
 }
-
-FEW="1 4 7 8 9 10"
 
 for b in "${BLOCKS[@]}"; do
  case $b in
@@ -74,14 +83,14 @@ for b in "${BLOCKS[@]}"; do
     ( run xmag1g  maglev    -B 1g )
     ( export SAMPLE_AT=${SAMPLE_AT_4K:-24}; run xmag4k  maglev    -B 4k ) ;;
   alloc)
-    ( export QUEUES="$FEW"; run ahoist dramblast -A -1 )
-    ( export QUEUES="$FEW"; run a2     dramblast -A 2 )
-    ( export QUEUES="$FEW"; run a4     dramblast -A 4 )
-    ( export QUEUES="$FEW"; run a8     dramblast -A 8 ) ;;
+    ( run ahoist dramblast -A -1 )
+    ( run a2     dramblast -A 2 )
+    ( run a4     dramblast -A 4 )
+    ( run a8     dramblast -A 8 ) ;;
   depth)
-    ( export QUEUES="$FEW"; run d8  dramblast -Q 8 )
-    ( export QUEUES="$FEW"; run d16 dramblast -Q 16 )
-    ( export QUEUES="$FEW"; run d32 dramblast -Q 32 ) ;;
+    ( run d8  dramblast -Q 8 )
+    ( run d16 dramblast -Q 16 )
+    ( run d32 dramblast -Q 32 ) ;;
   *) echo "unknown block: $b" >&2; exit 1 ;;
  esac
 done
