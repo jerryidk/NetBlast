@@ -334,6 +334,15 @@ the machine in a state where the existing measurement became interpretable. The
 earlier `C = 66` matching an allocator round trip "to the nanosecond" was the
 plausibility trap this document has now recorded three times.
 
+> **REVERSED by §5.13, and the reversal is the more useful finding.** The
+> 20-40 ns reference is the wrong reference: this call asks for 64-byte
+> alignment, which in glibc 2.33 never reaches the tcache fast path and goes
+> through `_int_memalign` under the arena lock instead. Measured directly rather
+> than argued from a published constant, one pair costs **462-527 cycles —
+> 64-73% of the per-burst cost, not 11%.** Everything in this subsection is left standing
+> because how it was wrong matters: the measurement was correct and was compared
+> against the wrong reference, which no amount of measurement hygiene catches.
+
 **Consequence for the experiment design.** A plain hoist is now a *weak* test: if
 the allocator is ~11% of `C`, removing it should move `C` by ~80 cycles, against
 a 7% estimator spread of ~50. That is marginal. The **amplification arm** becomes
@@ -343,6 +352,13 @@ cycles, far above the noise floor, and it calibrates the allocator's true
 per-burst contribution on this machine rather than relying on a literature value
 for the tcache path. The hoist then becomes the confirmation, with the
 amplification arm supplying the expected effect size.
+
+> **Also wrong, per §5.13.** The hoist was not weak — it resolved the allocator
+> immediately, at 8.25 ticks per packet at burst 64, which is 527 ± 48 cycles
+> per burst and many times the run-to-run floor §5.15 later measured. The
+> `~60 cycles per pair` expectation understated the truth by a factor of eight
+> (an incremental pair costs about 509). The amplification arm earned its place
+> as a calibration, not because the hoist lacked power.
 
 #### Controls the experiment must carry
 
@@ -1042,7 +1058,10 @@ questions turned out to matter.
    look like the whole per-burst cost came from turbo-era data whose delivered
    clock was never recorded; refitted on the pinned arm the per-burst cost is
    ~645 cycles, against 20-40 ns for a hot-tcache round trip, so a plain hoist
-   would move ~10% of it and could not distinguish "small" from "zero". §5.9
+   would move ~10% of it and could not distinguish "small" from "zero".
+   **(That rationale was wrong twice over, per §5.13: the per-burst cost is ~718
+   on the binary every later arm used, and the tcache reference does not apply
+   to a 64-byte-aligned request at all. The hoist was run, and it worked.)** §5.9
    replaces it with an amplification sweep (`-A N`), which measures what a pair
    costs on this machine instead of assuming a literature value, paired with a
    pipeline-depth sweep (`-Q`) that the allocator cannot mimic.
@@ -1068,18 +1087,33 @@ questions turned out to matter.
 
 ### Still genuinely open
 
-- **What the ~645 cycles of per-burst work actually are.** Known: it is 86%
-  executed instructions rather than waiting (§5.6), it is resolved at sixteen
-  standard errors, and maglev has no equivalent. The two candidates are the
-  allocator round trip and the batching machinery itself; `-A` and `-Q` separate
-  them and cannot mimic each other.
+- **What the smallest distinguishable step of this rig is, everywhere else.**
+  §5.13 records a result that stood for six hours, survived peer review, and was
+  entirely an artefact of `Cycle per fwd packet` being printed as an integer —
+  64 cycles per burst at a 64-packet burst. The same counter underlies every
+  matched-burst number in this document. The ones that matter are all many ticks
+  and are unaffected, but no systematic sweep of "which claims here are within a
+  tick or two" has been done.
+- ~~**What the ~645 cycles of per-burst work actually are.**~~ **RESOLVED by
+  §5.13 and §5.14.** Both knobs were run. Of the 718 cycles the refactored
+  binary shows, roughly **500** (462-527, §5.13) is the `aligned_alloc`/`free`
+  pair and **~165** is the prefetch pipeline's per-fill ramp, which together
+  account for most of it; what is left for the RX and TX burst calls themselves
+  is small and not separately resolved. What is still open is narrower: why a
+  once-per-burst allocation moves the *per-packet* coefficient at all (§5.13).
+  Cache and TLB pollution from the allocator's own chunk walking is the obvious
+  candidate and has not been measured.
 - **Why the refactored binary is 6% faster per packet** (§5.10). Behaviour is
   identical and the difference has the same sign at every queue count, so it is
   codegen; which change, exactly, has not been chased. It matters only as a
   reminder that a binary is a variable.
-- **Whether the cross-core page-table contention seen on 4 KiB pages** (§5.12)
-  is really last-level-cache pressure from the page table's own working set.
-  The size and the page-size dependence both fit, but nothing has measured it
+- ~~**Whether the cross-core page-table contention seen on 4 KiB pages**~~
+  **ANSWERED by §5.18, from counters already in the logs.** Walks per packet are
+  flat at 0.99 across every queue count and instructions per packet are flat
+  too; what rises is walk *duration*, 19-28% from one core to six or ten. The
+  same binary on 1 GiB pages takes no walks and shows no core-count effect at
+  all. What remains unmeasured is which shared structure is contended:
+  last-level-cache pressure from the page table's own working set fits
   directly.
 - **Whether any of this transfers off this machine.** Every number here is from
   one Xeon Gold 5512U with idle states disabled and the uncore locked at
@@ -1219,9 +1253,16 @@ stall.
 
 And the cost of that hiding is **not** waiting. `C` decomposes as 551 cycles of
 executed work against 44 ns of stall — 86% CPU work. This kills the hypothesis
-that the per-burst cost is unhidden DRAM latency at the start of a short burst
-(a pipeline ramp), which predicted the opposite. What 551 cycles of executed work
-per burst actually *is* remains open; §5.9 is the experiment that settles it.
+that the per-burst cost is *predominantly* unhidden DRAM latency at the start of
+a short burst.
+
+> **Read with §5.13 and §5.14, which settle what those 551 cycles are.** About
+> 500 of them are `_int_memalign` and `free` — executed work, entirely
+> consistent with the 86% here. But the pipeline ramp is **not** dead: §5.14
+> measures it at ~165 cycles per fill and shows it is latency rather than work,
+> since shortening the pipeline eightfold costs 4.1% more instructions against
+> 18.5% more cycles. An aggregate "86% executed work" conceals a smaller
+> latency-bound component; it does not exclude one.
 
 This decomposition is done on the **fitted coefficients**, not point by point,
 and that is deliberate. The two arms never sit at the same burst size where an
@@ -1378,6 +1419,12 @@ kernel for every run rather than trusted. The 99.3%/99.98% figures above came
 from that sampler on its first run, which is the sort of thing only visible once
 the real quantity is being measured.
 
+> **Not true as written — see §5.16.** The sampler filtered on `Rss > 1 GiB`, and
+> hugetlb pages never appear in `Rss`. At the time this was written every
+> 1 GiB-backed run was therefore skipped: the as-shipped dramblast control, the
+> whole allocator block and the whole depth block. The THP arms, which is what
+> this paragraph was written about, were covered throughout.
+
 **A guard against the compiler had itself been compiled away.** The
 amplification arm adds N `aligned_alloc`/`free` pairs per burst; a store into
 the scratch buffer was supposed to stop the compiler discarding them. GCC 11
@@ -1473,6 +1520,14 @@ declined one leaves no error: the 4 KiB arms recorded 0.00 GiB of
 process's own `smaps_rollup` (`l2fwd/verify_backing.py`). The 1 GiB arms are
 covered by the hugepage pool count instead, which drops 16 → 7 free pages for
 the 8 GiB table.
+
+> **One exception, found later (§5.16):** maglev on 1 GiB — the arm this
+> comparison rests on — was not sampled by the `smaps_rollup` watcher during its
+> measurement runs, because that watcher's filter excluded every hugetlb-backed
+> process. It was re-verified afterwards by re-launching the same binary with
+> the same flag (9.95 GiB `Private_Hugetlb`, zero THP), which is strong evidence
+> that the flag does what it says and is not evidence about those specific runs.
+> The pool count of 16 → 7 free pages did cover them at the time.
 
 Cost at q=1 — one worker, a full 64-packet burst — in core cycles per packet:
 
@@ -1586,44 +1641,80 @@ nothing that 16-byte alignment does not.
 Five arms, each a full ten-run queue sweep, differing only in how many
 `aligned_alloc`/`free` round trips the burst path performs.
 
-The comparison is made at **q=1**, where every arm sits at a full 64-packet
-burst. This matters: adding allocator pairs makes the forwarder slower, which
-makes it stay oversubscribed further up the sweep, which changes the burst sizes
-it reaches — so the arms are not at comparable bursts anywhere else, and fitting
-each arm over its own burst range compares conditions that differ in two things
-at once. At a matched burst, the difference in cost per packet multiplied by 64
-*is* the difference in cost per burst, with no model in between.
+The comparison is made at a **matched burst of 64 and a matched queue count**.
+Both halves matter. Adding allocator pairs makes the forwarder slower, so it
+stays oversubscribed further up the sweep and reaches different burst sizes —
+fitting each arm over its own burst range would compare conditions differing in
+two things at once. And at a matched burst the cost still varies slightly with
+queue count, reproducibly, so the difference is taken at each queue count and
+then averaged rather than read off a single one.
 
-| pairs per burst | core cycles/packet | vs hoisted | × 64 = per burst |
+| pairs per burst | matched q | tick differences vs hoisted | cycles per burst |
 |---|---|---|---|
-| 0 (hoisted) | 90.8 | — | — |
-| 1 (as shipped) | 97.8 | 7.0 | **447** |
-| 3 | 114.7 | 23.9 | 1532 |
-| 5 | 130.7 | 39.9 | 2554 |
-| 9 | 162.6 | 71.8 | 4597 |
+| 1 (as shipped) | 1, 2, 3, 4 | 7, 9, 7, 10 | **527 ± 48** |
+| 3 | 1, 2, 3, 4 | 24, 25, 24, 27 | 1596 ± 45 |
+| 5 | 1, 2, 3, 4 | 40, 40, 40, 42 | 2586 ± 32 |
+| 9 | 1, 2, 3, 4 | 72, 73, 71, 75 | 4645 ± 55 |
 
-**The one round trip the shipped code performs costs 447 cycles — 213 ns.** That
-is 447 by this route and 462 by differencing the two fitted per-burst
-coefficients: two independent estimates agreeing to 3%, the second at 10.6σ.
+**The one round trip the shipped code performs costs about 500 cycles.** Two
+estimators that share no algebra: 527 ± 48 at matched burst and queue count, and
+462 ± 44 by differencing the two fitted per-burst coefficients. They agree to
+1.0σ. Quote it as **462-527 cycles, roughly 240 ns** — three significant figures
+are not available from this instrument, for a reason that turns out to matter a
+great deal (below).
 
-The multi-pair arms are extremely well behaved, and the right way to say so is
-not "total ÷ pairs", which is an average and therefore converges on the
-asymptotic slope as the count grows whatever the low-count behaviour is. The two
-*consecutive* slopes are independent of each other:
-
-    3 -> 5 pairs:  510.78 cycles per pair
-    5 -> 9 pairs:  510.78 cycles per pair
-    line through them:  +0.0 + 510.78 x pairs
-
-The intercept is zero to within 0.0 cycles. That is a structural check rather
-than a goodness-of-fit number: *k* pairs cost exactly *k* times one pair with
-nothing left over, which is what an additive per-pair cost requires and what a
-fixed overhead plus a per-pair cost would violate.
-
-So the allocator is **60-64% of the per-burst cost**, against the "at most ~11%"
+So the allocator is **64-73% of the per-burst cost**, against the "at most ~11%"
 this document previously claimed. The remainder — the batching machinery itself
 — is measured directly by the hoisted arm at **256 ± 13 cycles per burst**,
 rather than extrapolated from a fitted intercept.
+
+The amplification arms give an incremental pair at **509 cycles**, with
+consecutive slopes of 495 (3→5) and 515 (5→9). Extrapolating that line down to
+one pair predicts 562 against the 527 measured — 0.7σ apart, **not resolved**.
+Within this experiment the shipped pair and an incremental pair cost the same.
+
+#### The version of this section that stood for six hours, and why it was wrong
+
+The three paragraphs above replace a considerably more confident set of claims,
+and the way those failed is the most transferable thing in this document.
+
+The earlier reading took the comparison at **q = 1 alone**. It reported the
+shipped pair at **447** cycles, an incremental pair at **510.78**, the two
+consecutive slopes agreeing to **0.00 cycles**, and the line's intercept at
+**0.0** — which was written up as a *structural* check (*k* pairs cost exactly
+*k* times one pair) and then, when the shipped pair came out 64 cycles below the
+line, as an allocator **load effect**: a lone pair being cheaper than one of
+several in flight. A reviewer on the peer session pushed hard on the framing and
+improved it, and the improved version was still built on sand.
+
+None of it survives. `l2fwd` prints "Cycle per fwd packet" as an **integer**, so
+at a 64-packet burst **one printed tick is 64 cycles per burst**. Two
+consequences:
+
+- The tick differences at q=1 are 24, 40 and 72. `40 − 24 = 16` and
+  `72 − 40 = 32`, which is exactly twice it, and the pair counts are 3, 5, 9 —
+  gaps of 2 and 4. So after *any* common scaling the two "independent"
+  consecutive slopes are identically equal and the intercept is identically
+  zero. **The agreement was arithmetic, not measurement.** Using each run's own
+  measured frequency instead of a single rounded one already splits them to
+  511.18 and 510.92.
+- 447 against 511 is **one tick**. And 7 is the smallest of the four matched
+  tick differences (7, 9, 7, 10); q=1 is the queue count where the gap happens
+  to be least. The "load effect" was a single integer, chosen — unknowingly —
+  from the low end.
+
+The error class is new to this document and worth naming: **precision claimed
+beyond the instrument's resolution, where the excess precision then generated a
+mechanism.** Everything downstream was internally consistent, the peer review
+made it more rigorous rather than less, and it was all describing rounding. The
+defence is not more careful reasoning about the numbers; it is asking what the
+smallest distinguishable step of the instrument is *before* interpreting a
+difference, and this instrument's step is 64 cycles per burst.
+
+It was caught by asking a second agent to re-derive the headline numbers from
+the raw logs without using any of the analysis code, which reproduced 447 and
+510.78 exactly, and then said that it could only reproduce them from a single
+run each.
 
 #### Three things that had to be got right, and one that was got wrong
 
@@ -1643,7 +1734,8 @@ the model had stopped applying — the others being the 4 KiB crossover arm
 (§5.12) and maglev's per-burst slope, which is indistinguishable from zero.
 
 **The two estimators disagree and the disagreement is reported.** An incremental
-pair costs 511 cycles at matched burst and 365 from the weighted fit. The reason
+pair costs about 509 cycles at matched burst and 365 from the weighted fit. The
+reason
 is visible in `P`, which is not constant across the arms (89.3, 87.7, 96.9,
 99.5): the matched-burst route multiplies the whole per-packet difference by 64
 and so charges that drift to the per-burst term, while the fit separates them
@@ -1656,49 +1748,39 @@ Note that `P` *is* flat across the two arms that carry the headline — 89.3
 hoisted against 87.7 as shipped — so the structural check holds exactly where
 the claim lives and weakens only where the calibration lives.
 
-#### The shipped pair is cheaper, and not for the reason first given
+#### The three explanations that were offered for a rounding error
 
-Extrapolating the multi-pair line down to one pair predicts 510.8 cycles. The
-measured value is 446.9 — **63.8 cycles, 12.5%, below the line.** So the lone
-pair really is cheaper, and two successive explanations for it were wrong.
+Kept in full, because the sequence is the lesson. Extrapolating the multi-pair
+line down to one pair predicted 510.8 against a measured 446.9, a gap of 63.8
+cycles, and three separate accounts of that gap were written:
 
-The first draft said the shipped pair must cost *more* than an incremental one,
-because its `free` is a whole batch away from its `alloc` while the amplification
-pairs are back-to-back. That had the sign backwards.
+1. *The shipped pair must cost more,* because its `free` sits a whole batch away
+   from its `alloc` while the amplification pairs run back to back. This had the
+   sign backwards and was retracted the same day.
+2. *The first pair is intrinsically cheap and later ones cost 511.* Ruled out by
+   the data: if pair #1 were 447 and every later pair 511, the model would miss
+   the 3-, 5- and 9-pair arms by +64 each, a constant, so the discount does not
+   persist into them.
+3. *Pair cost depends on how many are in flight, not on which one it is* — an
+   allocator load effect, more live chunks and a larger free-list working set.
+   This was the version that survived peer review and stood for six hours.
 
-The second said the first pair is intrinsically cheap and later ones cost 511.
-**The data rule that out.** If pair #1 were 447 and every later pair 511, the
-multi-pair totals would have to be:
+All three were explaining **one printed tick**. The gap of 63.8 cycles is 64
+cycles, which is exactly one integer step of the cycle counter at a 64-packet
+burst, and it came from the single queue count where the difference is smallest.
+Note that account 3 *correctly refuted* account 2 using the constant +64 miss —
+and that constant was the tick itself, visible in plain sight as the same number
+three times, read as a physical constant rather than as the quantisation it was.
 
-| pairs | model | measured | miss |
-|---|---|---|---|
-| 3 | 1468 | 1532 | +64 |
-| 5 | 2490 | 2554 | +64 |
-| 9 | 4533 | 4597 | +64 |
-
-A constant miss at every arm. The discount does not persist into them, which
-means that in an arm with three or more pairs **every** pair costs 511 —
-including the first. There is no privileged first pair.
-
-What survives is a statement about *how many*, not *which one*: **a lone
-`alloc`/`free` pair costs 447 cycles; with three or more in flight each costs
-511.** That is an allocator state or load effect — more live chunks, more
-splitting work, a larger free-list working set — and the mechanism is not
-established here.
-
-It has a direct consequence for which number to quote. The shipped configuration
-performs exactly one pair, so **447 is the figure that describes it**. 511 is
-the cost in a regime the shipped code is never in, and calibrating the shipped
-pair from the amplification slope would overstate it by 14%. The removal
-estimate (462, differencing shipped against hoisted) agrees with 447 to 3% and
-depends on none of this; those two are the pair of numbers this result rests on,
-and both avoid the amplified regime entirely.
-
+Measured at every matched queue count instead of one, the shipped pair is
+527 ± 48 and the extrapolated incremental pair 562: **0.7σ apart, not
+resolved.** There is no first-pair effect, no load effect, and nothing to
+explain.
 
 ### 5.14 The prefetch pipeline depth: the model was the wrong shape, and saying so fixes two things
 
-The per-burst cost was decomposed into an allocator part (447 cycles, §5.13) and
-a remainder of about 271. The remainder was supposed to be the prefetch
+The per-burst cost was decomposed into an allocator part (462-527 cycles, §5.13)
+and a remainder of about 200. The remainder was supposed to be the prefetch
 pipeline's fill-and-drain ramp. The test was to shorten the pipeline, which
 `-Q` now does: `dramblast_queue_depth` sets `find_queue_size`, the push loop
 bounds against it (`dramblast.c:142`), and the four arms run at depth 8, 16, 32
@@ -1739,7 +1821,7 @@ Fitting `P + C/B` to each arm separately gives:
 | 32 | 91.2 | 733.7 ± 18 | 0.995 |
 | 64 | 87.7 | 717.6 ± 42 | 0.974 |
 
-Depth 8's `C` is **375, below the 447-cycle allocator pair** — and that pair runs
+Depth 8's `C` is **375, below the ~500-cycle allocator pair** — and that pair runs
 once per burst at every depth, because the buffer is sized by the burst length
 and not by the queue depth (`dramblast.c:243`). A per-burst term cannot be
 smaller than a cost the burst pays unconditionally. At 1.5σ this is not a
@@ -1833,13 +1915,13 @@ Fitting `W + ramp·ceil(B/Q)/B + K/B` to all forty points at once:
 
 `K` is the striking one. Nothing in this fit knows about the allocator — this
 experiment varied the queue depth and never varied the number of `alloc`/`free`
-pairs — and yet `K` lands 1.0σ from the 447 cycles the amplification sweep
+pairs — and yet `K` lands within 1σ of the ~500 cycles the amplification sweep
 measured for that pair directly.
 
 **That agreement does not survive a sensitivity check, and it is reported
 anyway.** Refitting without the depth-8 arm, which is the arm the step model
 describes worst (residual rms 9.1 against 3.3-5.0 for the others), moves `K` to
-589 ± 30 — a 2.6σ shift, and 4.7σ from the allocator's 447. A parameter that
+589 ± 30 — a 2.6σ shift, and well away from the allocator's ~500. A parameter that
 moves that far when the noisiest arm is dropped is not a measurement. So the
 convergence is suggestive and no more; what this fit actually determines is the
 ramp, which barely moves (166 ± 25 with all four arms, 142 ± 31 without depth 8)
@@ -1854,9 +1936,10 @@ route.
 - The remaining ~271 cycles of the shipped per-burst cost is **not** all ramp,
   because at the shipped depth the ramp is paid exactly once per burst and is
   therefore already inside that number — the ramp and the allocator together
-  account for roughly 447 + 165 = 612 of the 718 measured, leaving about 106
+  account for roughly 500 + 165 = 665 of the 718 measured, leaving of order 50
   cycles of genuinely per-burst work (the RX and TX burst calls themselves)
-  unattributed.
+  unattributed — which is inside this instrument's resolution and should not be
+  treated as a measured quantity.
 - The linear burst model is valid only while `B ≤ Q`. For the shipped build that
   is every burst, so §5.5 through §5.13 are unaffected. For any future arm that
   shortens the queue, it is not, and the step model must be used instead.
@@ -1902,11 +1985,15 @@ Against the burst-64 floor:
 |---|---|---|
 | the `aligned_alloc`/`free` pair | 7.0 cycles/packet | 6× |
 | depth 64 → 8 | 18.6 | 16× |
-| depth 64 → 32 | 1.8 | 2× |
+| depth 64 → 32 | 1.8 (2.23 ± 0.15 from §5.14's repeats) | 2× (5× on the repeats) |
 
-The first two are results. The third is the one that tested the ramp model, and
-at twice the floor it is as much resolution as one sweep per depth buys — which
-is why §5.14's verdict there is inconclusive rather than a confirmation.
+The first two are results. The third is why **one sweep per depth could not
+decide the ramp model** — at twice the floor, that is all the resolution a single
+sweep buys. §5.14 settled it a different way, with three interleaved paired
+repeats: +2.23 ± 0.15, a 95% interval of [+1.61, +2.86], containing the
+prediction and excluding the null. The repeats also put the effect itself at
+2.23 rather than the single sweep's 1.8 — five times the dramblast floor rather
+than four.
 
 The fitted per-burst coefficients also reproduce: dramblast 718 then 689 (0.6σ
 of the two fits' own errors), maglev −36 then −26 (0.3σ). maglev's per-burst
@@ -1917,9 +2004,10 @@ and the negative sign is noise around zero rather than a fit going wrong once.
 **What this changes retrospectively.** Every sigma quoted before this arm ran
 used the within-sweep scatter, and was therefore optimistic by however large the
 between-sweep drift is. That number did not exist until now. The correction has
-been applied where it changes a conclusion — §5.14's depth-32 test moved from
-"confirmed at 3.1σ" to "inconclusive at 1.6σ" — and the claims that stand at six
-times the floor or better are unaffected. The general lesson is that an error
+been applied where it changes a conclusion — §5.14's single-sweep depth-32 test
+moved from "confirmed at 3.1σ" to inconclusive, and had to be settled by repeats
+instead — and the claims that stand at six times the floor or better are
+unaffected. The general lesson is that an error
 bar taken from inside a single sweep is the wrong error bar for a comparison
 between sweeps, and the repeat arm is the only thing that can say by how much.
 

@@ -60,46 +60,44 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
       = 462 cycles for the one round trip the code actually performs, 10.6 sigma
       = 64.4% of the per-burst cost; 256 cycles are something else
 
-    At a MATCHED 64-packet burst (q=1), no fit involved:
-       pairs   cyc/pkt  vs hoisted  x64 per burst  per pair
-           0      90.8         0.0              0         0
-           1      97.8         7.0            447       447
-           3     114.7        23.9           1532       511
-           5     130.7        39.9           2554       511
-           9     162.6        71.8           4597       511
+    At a MATCHED burst of 64 AND a matched queue count, no fit:
+       pairs        matched q           tick diffs     cycles/burst
+           1     [1, 2, 3, 4]        [7, 9, 7, 10]      527 +/-48   
+           3     [1, 2, 3, 4]     [24, 25, 24, 27]     1596 +/-45   
+           5     [1, 2, 3, 4]     [40, 40, 40, 42]     2586 +/-32   
+           9     [1, 2, 3, 4]     [72, 73, 71, 75]     4645 +/-55   
 
-      Consecutive slopes between multi-pair arms (independent of
-      each other, unlike total/pairs):
-        3 -> 5 pairs: 510.78 cycles per pair
-        5 -> 9 pairs: 510.78 cycles per pair
-      line through the multi-pair arms: +0.0 + 510.78 * pairs
-      -> the intercept is zero to within 0.0 cycles, which is
-         the structural check: k pairs cost exactly k times one pair,
-         with nothing left over, as an additive per-pair cost requires.
+      One printed tick at burst 64 = 64 cycles per burst.
+      Every number in the column above is a mean of small integers,
+      so nothing here is meaningful to better than a few tens of
+      cycles however many digits a fit prints.
 
-      Extrapolated to the shipped arm: 510.8, measured 446.9
-      -> the lone shipped pair is -63.8 cycles (-12.5%) below the line.
+      Consecutive slopes between multi-pair arms:
+        3 -> 5 pairs: 495 cycles per pair
+        5 -> 9 pairs: 515 cycles per pair
+      weighted line through them: +54 + 509 * pairs
 
-      But this is NOT a privileged first pair. If pair #1 were
-      intrinsically 447 and every later pair 511, the
-      multi-pair totals would have to be:
-        3 pairs: model 1468  measured 1532  off by +64
-        5 pairs: model 2490  measured 2554  off by +64
-        9 pairs: model 4533  measured 4597  off by +64
-      A constant miss at every arm. The discount does not persist,
-      so in an arm with three or more pairs EVERY pair costs
-      511 including the first.
+      Extrapolated to one pair: 562
+      Measured for the shipped single pair: 527 +/- 48
+      -> -36 cycles apart, 0.7 sigma of the
+         measurement's own error.
+         NOT RESOLVED. The shipped pair and an incremental
+         one cost the same within this experiment's
+         resolution, and no first-pair or load effect can
+         be claimed from it.
 
-      Honest statement: a LONE pair costs 447 cycles; with three
-      or more in flight each costs 511. Pair cost depends on how
-      many pairs there are, not on which one it is -- an allocator
-      state or load effect (more live chunks, more splitting, a
-      larger free-list working set), not a position effect.
-
-      CONSEQUENCE: the shipped configuration has exactly one pair,
-      so 447 is the number to quote. 511 belongs to a regime
-      the shipped code is never in, and calibrating the shipped
-      pair from it would overstate by 14%.
+      SUPERSEDES an earlier reading of this same data. Taken at
+      q=1 alone the shipped pair came out at 447 against an
+      incremental 510.78, the two consecutive slopes agreed to
+      0.00 cycles and the line's intercept was 0.0 -- which was
+      written up as a structural check and as a load effect.
+      It was neither. The tick differences at q=1 are 24, 40 and
+      72; 40-24 = 16 and 72-40 = 32, exactly twice it, so after
+      any common scaling the two slopes are identically equal and
+      the intercept is identically zero. The agreement was
+      arithmetic, not measurement. And 447 against 511 is one
+      printed tick, from the single queue count where the
+      difference happens to be smallest.
 
     (excluded from the line: pairs=[8] -- that arm is so slow it
      never left a 64-packet burst, so its own slope is not measurable)
@@ -120,7 +118,7 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
     -> an INCREMENTAL pair costs 365 cycles = 174 ns
 
     The two estimators disagree on the incremental pair --
-    511 cycles from the matched-burst slopes against 365
+    509 cycles from the matched-burst slopes against 365
     from the fit -- and the
     reason is visible in P, which is not constant across the arms:
       -1:89  +0:88  +2:97  +4:99
@@ -129,16 +127,21 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
     per-packet difference by 64 and so charges that rise to the
     per-burst term; the fit separates them but pays for it with a
     model. The truth is bracketed, not pinned: an incremental pair
-    costs between 365 and 511 cycles.
+    costs between 365 and 509 cycles.
     Why P moves at all is not established. A once-per-burst
     allocation should not touch per-packet cost; cache and TLB
     pollution from the allocator's own chunk walking is the
     obvious candidate and has not been measured.
 
-    NONE OF THIS MOVES THE HEADLINE. The shipped pair is 447
-    cycles by matched burst and 462 by the fit difference, and the
-    non-allocator remainder is measured directly at 256 +/- 13.
-    The allocator is ~60-64% of the per-burst cost on either route.
+    NONE OF THIS MOVES THE HEADLINE, which is the SHIPPED pair,
+    measured two ways that share no algebra:
+      matched burst and matched queue count:  527 +/- 48
+      differencing the two fitted C's:        462 +/- 44
+    They agree to 1.0 sigma. Quote it as ~494 cycles,
+    or 462-527; three significant figures are not available
+    from an integer tick counter.
+    That is 64-73% of the 718-cycle per-burst cost, against the
+    'at most 11%' this investigation previously claimed.
 
     non-allocator per-burst cost, measured directly by the
     hoisted arm: 256 +/- 13 cycles
@@ -170,21 +173,26 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
     alloc/free pair runs per burst at EVERY depth -- the buffer is
     sized by the burst length, not by the queue depth (dramblast.c
     :243), so the -Q knob does not change what is allocated. That
-    makes 447 cycles a FLOOR under C at every depth, and the
-    remaining 271 of the shipped C (718) is all the
+    makes 527 cycles a FLOOR under C at every depth, and the
+    remaining 191 of the shipped C (718) is all the
     pipeline ramp can possibly own.
 
     The test is a floor, not a spread: C may rise with depth
     without limit, but no arm's C may fall below the allocator's
     own per-burst cost.
-      depth  8: C =  375.4 +/- 49   below the floor by 72 (1.5 sigma)
+      depth  8: C =  375.4 +/- 49   below the floor by 151 (3.1 sigma)
       depth 16: C =  646.5 +/- 18   OK
       depth 32: C =  733.7 +/- 18   OK
       depth 64: C =  717.6 +/- 42   OK
-    -> not falsified, but the headroom is gone: at the
-       shallowest depth the non-allocator part of C is
-       consistent with zero, which is what a ramp that
-       scales with queue depth would look like.
+    -> FALSIFIED, and section 3d says which assumption broke.
+       A per-burst term cannot be smaller than a cost the
+       burst pays unconditionally, so the shallow arm's fitted
+       C is not a per-burst term. The pipeline fills
+       ceil(B/Q) times per burst, so a line in 1/B is
+       mis-specified wherever B > Q -- which is most of the
+       depth-8 arm and none of the shipped one. This test was
+       written before that was understood and is left in
+       because it is what pointed at it.
 
 ====================================================================================
 3b. DEPTH AT A MATCHED BURST   cycles vs instructions, no fit
@@ -257,8 +265,8 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
     K is the interesting one. Nothing in this fit knows about the
     allocator -- the queue depth was varied, the number of
     alloc/free pairs was not -- yet K = 477 lands on the
-    447 cycles the amplification sweep measured for that
-    pair directly: 1.0 sigma apart.
+    527 cycles the amplification sweep measured for that
+    pair directly: 1.6 sigma apart.
 
     per-arm residual rms (the step model's own fit quality):
       Q= 8  n=10  rms  9.11  worst -27.53
@@ -319,7 +327,7 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
   than a setting, and it wanders between runs.
 
   Read every claim in this analysis against that number:
-    allocator pair               7.0 cycles/packet at burst 64   (6x the floor)
+    allocator pair               8.2 cycles/packet at burst 64   (7x the floor)
     depth 64 -> 8               18.6 cycles/packet at burst 64   (16x)
     depth 64 -> 32               1.8 cycles/packet at burst 64   (2x)
   A difference of the same order as the floor is not a result,

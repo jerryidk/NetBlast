@@ -297,72 +297,94 @@ def main():
     # multiplied by 64 IS the difference in cost per burst, with no model in
     # between. This is the third time in this investigation that holding burst
     # size fixed has beaten fitting it out.
-    print("\n    At a MATCHED 64-packet burst (q=1), no fit involved:")
-    print(f"      {'pairs':>6} {'cyc/pkt':>9} {'vs hoisted':>11} {'x64 per burst':>14} {'per pair':>9}")
-    base_cyc, per_pair_vals, q1pts = None, [], []
-    for n, cond in [(0, "alloc_hoisted"), (1, "pinned2_asshipped"), (2 + 1, "alloc_x2"),
-                    (4 + 1, "alloc_x4"), (8 + 1, "alloc_x8")]:
-        v = at_q1(allc, cond, "dramblast")
-        if v is None:
+    # Matched burst AND matched queue count, every queue count that qualifies --
+    # not q=1 alone, which is what an earlier version of this did and what made
+    # a one-tick difference look like a result.
+    #
+    # The resolution limit is the point. l2fwd prints "Cycle per fwd packet" as
+    # an INTEGER, so at a 64-packet burst one printed tick is 64 cycles per
+    # burst. A single-queue-count difference of 7 ticks therefore carries +/-64
+    # cycles of quantisation before any other error, and the four matched values
+    # here are 7, 9, 7, 10 -- q=1 is the smallest of them. Averaging over the
+    # matched queue counts is what buys resolution back; pairing at each q is
+    # what keeps the core-count effect from contaminating the difference.
+    print("\n    At a MATCHED burst of 64 AND a matched queue count, no fit:")
+    print(f"      {'pairs':>6} {'matched q':>16} {'tick diffs':>20} {'cycles/burst':>16}")
+    q1pts, q1err = [], {}
+    hoist_t = {int(q): (r["cycles_per_pkt"], r.get("rx_batch"), r.get("freq_mhz"))
+               for q, r in allc.get("alloc_hoisted", {}).get("dramblast", {}).items()}
+    for n, cond in ((1, "pinned2_asshipped"), (3, "alloc_x2"), (5, "alloc_x4"),
+                    (9, "alloc_x8")):
+        t = {int(q): (r["cycles_per_pkt"], r.get("rx_batch"), r.get("freq_mhz"))
+             for q, r in allc.get(cond, {}).get("dramblast", {}).items()}
+        qs = [q for q in sorted(set(t) & set(hoist_t))
+              if t[q][1] == 64 and hoist_t[q][1] == 64]
+        if len(qs) < 2:
             continue
-        if base_cyc is None:
-            base_cyc = v
-        d = v - base_cyc
-        pp = d * 64 / n if n else 0
-        if n > 1:
-            per_pair_vals.append(pp)
-        q1pts.append((n, d * 64))
-        print(f"      {n:>6} {v:>9.1f} {d:>11.1f} {d*64:>14.0f} {pp:>9.0f}")
-    # The per-pair numbers above are total/pairs, which is an AVERAGE and
-    # therefore converges toward the asymptotic slope as the pair count grows,
-    # whatever the low-count behaviour is. It cannot confirm a constant price.
-    # What can: the consecutive slopes between adjacent multi-pair arms, and the
-    # intercept of a line through them.
+        diffs = [t[q][0] - hoist_t[q][0] for q in qs]
+        fq = [t[q][2] / 2100.0 for q in qs if t[q][2]]
+        scale = 64.0 * (sum(fq) / len(fq) if fq else 1.0)
+        mean = sum(diffs) / len(diffs)
+        var = sum((v - mean) ** 2 for v in diffs) / (len(diffs) - 1)
+        sem = (var / len(diffs)) ** 0.5
+        q1pts.append((n, mean * scale))
+        q1err[n] = sem * scale
+        print(f"      {n:>6} {str(qs):>16} {str(diffs):>20} "
+              f"{mean*scale:>8.0f} +/-{sem*scale:<5.0f}")
+    if q1pts:
+        onetick = 64.0 * (2095.0 / 2100.0)
+        print(f"\n      One printed tick at burst 64 = {onetick:.0f} cycles per burst.")
+        print("      Every number in the column above is a mean of small integers,")
+        print("      so nothing here is meaningful to better than a few tens of")
+        print("      cycles however many digits a fit prints.")
+
     amplified_slope = None
     multi = [(n, c) for n, c in q1pts if n >= 3]
     if len(multi) >= 2:
-        print("\n      Consecutive slopes between multi-pair arms (independent of")
-        print("      each other, unlike total/pairs):")
+        print("\n      Consecutive slopes between multi-pair arms:")
         for (n0, c0), (n1, c1) in zip(multi, multi[1:]):
-            print(f"        {n0} -> {n1} pairs: {(c1 - c0) / (n1 - n0):.2f} cycles per pair")
-        nn = len(multi)
-        sx = sum(n for n, _ in multi); sy = sum(c for _, c in multi)
-        sxx = sum(n * n for n, _ in multi); sxy = sum(n * c for n, c in multi)
-        den = nn * sxx - sx * sx
+            print(f"        {n0} -> {n1} pairs: {(c1 - c0) / (n1 - n0):.0f} cycles per pair")
+        w = [1.0 / max(q1err.get(n, 1.0), 1.0) ** 2 for n, _ in multi]
+        sw = sum(w)
+        sx = sum(wi * n for wi, (n, _) in zip(w, multi))
+        sy = sum(wi * c for wi, (_, c) in zip(w, multi))
+        sxx = sum(wi * n * n for wi, (n, _) in zip(w, multi))
+        sxy = sum(wi * n * c for wi, (n, c) in zip(w, multi))
+        den = sw * sxx - sx * sx
         if den:
-            b = (nn * sxy - sx * sy) / den
-            a = (sy - b * sx) / nn
-            print(f"      line through the multi-pair arms: {a:+.1f} + {b:.2f} * pairs")
-            print(f"      -> the intercept is zero to within {abs(a):.1f} cycles, which is")
-            print("         the structural check: k pairs cost exactly k times one pair,")
-            print("         with nothing left over, as an additive per-pair cost requires.")
-            shipped = dict(q1pts).get(1)
-            if shipped:
-                pred = a + b
-                print(f"\n      Extrapolated to the shipped arm: {pred:.1f}, measured "
-                      f"{shipped:.1f}")
-                print(f"      -> the lone shipped pair is {shipped - pred:+.1f} cycles "
-                      f"({(shipped-pred)/pred*100:+.1f}%) below the line.")
-                print("\n      But this is NOT a privileged first pair. If pair #1 were")
-                print(f"      intrinsically {shipped:.0f} and every later pair {b:.0f}, the")
-                print("      multi-pair totals would have to be:")
-                for n, c in multi:
-                    model = shipped + b * (n - 1)
-                    print(f"        {n} pairs: model {model:.0f}  measured {c:.0f}  "
-                          f"off by {c - model:+.0f}")
-                print("      A constant miss at every arm. The discount does not persist,")
-                print("      so in an arm with three or more pairs EVERY pair costs")
-                print(f"      {b:.0f} including the first.")
-                print("\n      Honest statement: a LONE pair costs {:.0f} cycles; with three".format(shipped))
-                print(f"      or more in flight each costs {b:.0f}. Pair cost depends on how")
-                print("      many pairs there are, not on which one it is -- an allocator")
-                print("      state or load effect (more live chunks, more splitting, a")
-                print("      larger free-list working set), not a position effect.")
-                print("\n      CONSEQUENCE: the shipped configuration has exactly one pair,")
-                print(f"      so {shipped:.0f} is the number to quote. {b:.0f} belongs to a regime")
-                print("      the shipped code is never in, and calibrating the shipped")
-                print(f"      pair from it would overstate by {(b-shipped)/shipped*100:.0f}%.")
+            b = (sw * sxy - sx * sy) / den
+            a = (sy - b * sx) / sw
             amplified_slope = b
+            print(f"      weighted line through them: {a:+.0f} + {b:.0f} * pairs")
+            shipped = dict(q1pts).get(1)
+            se_ship = q1err.get(1)
+            if shipped and se_ship:
+                pred = a + b
+                z = abs(shipped - pred) / se_ship
+                print(f"\n      Extrapolated to one pair: {pred:.0f}")
+                print(f"      Measured for the shipped single pair: {shipped:.0f} "
+                      f"+/- {se_ship:.0f}")
+                print(f"      -> {shipped - pred:+.0f} cycles apart, {z:.1f} sigma of the")
+                print("         measurement's own error.")
+                if z < 2:
+                    print("         NOT RESOLVED. The shipped pair and an incremental")
+                    print("         one cost the same within this experiment's")
+                    print("         resolution, and no first-pair or load effect can")
+                    print("         be claimed from it.")
+                else:
+                    print("         Resolved: the two regimes genuinely differ.")
+                print("\n      SUPERSEDES an earlier reading of this same data. Taken at")
+                print("      q=1 alone the shipped pair came out at 447 against an")
+                print("      incremental 510.78, the two consecutive slopes agreed to")
+                print("      0.00 cycles and the line's intercept was 0.0 -- which was")
+                print("      written up as a structural check and as a load effect.")
+                print("      It was neither. The tick differences at q=1 are 24, 40 and")
+                print("      72; 40-24 = 16 and 72-40 = 32, exactly twice it, so after")
+                print("      any common scaling the two slopes are identically equal and")
+                print("      the intercept is identically zero. The agreement was")
+                print("      arithmetic, not measurement. And 447 against 511 is one")
+                print("      printed tick, from the single queue count where the")
+                print("      difference happens to be smallest.")
 
     if len(have) >= 3:
         # Absolute pairs executed: n+1 for n>=0, zero for the hoisted arm.
@@ -427,10 +449,28 @@ def main():
             print("    allocation should not touch per-packet cost; cache and TLB")
             print("    pollution from the allocator's own chunk walking is the")
             print("    obvious candidate and has not been measured.")
-            print("\n    NONE OF THIS MOVES THE HEADLINE. The shipped pair is 447")
-            print("    cycles by matched burst and 462 by the fit difference, and the")
-            print("    non-allocator remainder is measured directly at 256 +/- 13.")
-            print("    The allocator is ~60-64% of the per-burst cost on either route.")
+            ship = dict(q1pts).get(1)
+            se_ship = q1err.get(1)
+            fitdiff = None
+            if base_d and hoisted and "C" in base_d and "C" in hoisted:
+                fitdiff = base_d["C"] - hoisted["C"]
+                se_fd = ((base_d["se"] or 0) ** 2 + (hoisted["se"] or 0) ** 2) ** 0.5
+            print("\n    NONE OF THIS MOVES THE HEADLINE, which is the SHIPPED pair,")
+            print("    measured two ways that share no algebra:")
+            if ship and se_ship:
+                print(f"      matched burst and matched queue count:  {ship:.0f} +/- {se_ship:.0f}")
+            if fitdiff:
+                print(f"      differencing the two fitted C's:        {fitdiff:.0f} +/- {se_fd:.0f}")
+            if ship and fitdiff:
+                zz = abs(ship - fitdiff) / ((se_ship ** 2 + se_fd ** 2) ** 0.5)
+                lo, hi = min(ship, fitdiff), max(ship, fitdiff)
+                print(f"    They agree to {zz:.1f} sigma. Quote it as ~{(lo+hi)/2:.0f} cycles,")
+                print(f"    or {lo:.0f}-{hi:.0f}; three significant figures are not available")
+                print("    from an integer tick counter.")
+                if base_d and "C" in base_d:
+                    print(f"    That is {100*lo/base_d['C']:.0f}-{100*hi/base_d['C']:.0f}% of the "
+                          f"{base_d['C']:.0f}-cycle per-burst cost, against the")
+                    print("    'at most 11%' this investigation previously claimed.")
 
     # The non-allocator remainder is MEASURED, not extrapolated. The hoisted
         # arm is that quantity directly; the fitted intercept is an
@@ -476,7 +516,7 @@ def main():
         # Sharper, because the allocator share is now measured rather than
         # hypothetical: one alloc/free pair happens per burst at every depth, so
         # that part of C cannot move. Only the remainder is available to depth.
-        shipped_pair = dict(q1pts).get(1) if q1pts else None
+        shipped_pair = dict(q1pts).get(1) if q1pts else None   # matched-q estimate
         if shipped_pair and base_d:
             floor = shipped_pair
             room = base_d["C"] - floor
@@ -499,8 +539,15 @@ def main():
             if worst[1]["C"] < floor:
                 zz = (floor - worst[1]["C"]) / (worst[1]["se"] or 1.0)
                 if zz > 3:
-                    print("    -> FALSIFIED. A per-burst term cannot be smaller than a")
-                    print("       cost the burst pays unconditionally.")
+                    print("    -> FALSIFIED, and section 3d says which assumption broke.")
+                    print("       A per-burst term cannot be smaller than a cost the")
+                    print("       burst pays unconditionally, so the shallow arm's fitted")
+                    print("       C is not a per-burst term. The pipeline fills")
+                    print("       ceil(B/Q) times per burst, so a line in 1/B is")
+                    print("       mis-specified wherever B > Q -- which is most of the")
+                    print("       depth-8 arm and none of the shipped one. This test was")
+                    print("       written before that was understood and is left in")
+                    print("       because it is what pointed at it.")
                 else:
                     print("    -> not falsified, but the headroom is gone: at the")
                     print("       shallowest depth the non-allocator part of C is")

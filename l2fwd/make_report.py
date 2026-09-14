@@ -445,6 +445,33 @@ def depth_pairs(allc):
     return out
 
 
+
+def walk_rows(allc):
+    """Page-walk occupancy against queue count, at a matched 64-packet burst.
+
+    Returns {label: {q: (cycles/pkt, walk cycles/pkt, walks/pkt, insns/pkt)}}.
+    The counters were recorded alongside every run, so the 4 KiB core-count
+    effect can be taken apart without measuring anything new.
+    """
+    PW = 8.0
+    out = {}
+    for cond, mode, lab in (("xover_dram_4k", "dramblast", "dram4k"),
+                            ("xover_mag_4k", "maglev", "mag4k"),
+                            ("pinned2_asshipped", "dramblast", "dram1g")):
+        t = {}
+        for q, r in allc.get(cond, {}).get(mode, {}).items():
+            if r.get("rx_batch") != 64 or not r.get("steady_mpps"):
+                continue
+            pkts = r["steady_mpps"] * 1e6 * PW
+            t[int(q)] = (r["cycles_per_pkt"],
+                         (r.get("pmu_dtlb_walk_active") or 0) / pkts,
+                         (r.get("pmu_dtlb_walk_completed") or 0) / pkts,
+                         (r.get("insns") or 0) / pkts)
+        if t:
+            out[lab] = t
+    return out
+
+
 CSS = """
 :root{
   --ground:#f5f7f7; --panel:#ffffff; --ink:#10181a; --ink-2:#55635f;
@@ -753,6 +780,28 @@ read as evidence against the allocator instead of for it, because a constant
 taken from a paper had quietly replaced a measurement.</p>
 </section>
 """
+
+    # Numbers the prose quotes, computed rather than typed. Every one of these
+    # was a literal in an earlier draft, which is the same defect as every
+    # measurement error in this investigation: a number that no longer matches
+    # the thing it came from, with nothing to make the mismatch visible.
+    wk = walk_rows(allc)
+    d4, m4 = wk.get("dram4k", {}), wk.get("mag4k", {})
+    common_q = sorted(set(d4) & set(m4))
+    if d4 and m4 and len(common_q) >= 2:
+        q0, q1 = common_q[0], common_q[-1]
+        d4_lo, d4_hi = max(d4), max(d4)      # placeholders, replaced below
+        dram_span = (min(d4), max(d4))
+        mag_span = (min(m4), max(m4))
+        w_dram_pct = 100 * (d4[dram_span[1]][1] - d4[dram_span[0]][1]) / d4[dram_span[0]][1]
+        w_mag_pct = 100 * (m4[mag_span[1]][1] - m4[mag_span[0]][1]) / m4[mag_span[0]][1]
+        w_dram_d = d4[q1][1] - d4[q0][1]
+        w_dram_c = d4[q1][0] - d4[q0][0]
+        w_mag_d = m4[q1][1] - m4[q0][1]
+        w_mag_c = m4[q1][0] - m4[q0][0]
+        walks_flat = min(v[2] for t in (d4, m4) for v in t.values())
+    else:
+        common_q = []
 
     # The depth-32 point is the one that tests the ramp model, and one sweep
     # each could not resolve it against the run-to-run floor. These are the
