@@ -47,6 +47,13 @@ def fit_of(allc, cond, mode):
     if not d:
         return None
     pts = points(d)
+    # A condition slow enough never to reach line rate stays oversubscribed at
+    # every queue count, so its RX burst never leaves 64 and every point sits at
+    # the same x. That is a result, not missing data -- there is simply no
+    # burst-size range to fit a slope against -- so say which it is.
+    if len({p[3] for p in pts}) < 2:
+        return {"nofit": True, "n": len(pts),
+                "burst": pts[0][3] if pts else None}
     f = lsq(pts)
     if not f:
         return None
@@ -76,6 +83,10 @@ def at_q1(allc, cond, mode):
 def row(label, f):
     if f is None:
         return f"  {label:34s}  (no data)"
+    if f.get("nofit"):
+        return (f"  {label:34s}  n={f['n']}, but every run sat at burst "
+                f"{f['burst']} -- never saturated the link, so no slope is "
+                f"measurable")
     se = f"+/-{f['se']:.0f}" if f["se"] else ""
     return (f"  {label:34s}  P = {f['P']:7.1f}   C = {f['C']:8.1f} {se:>8s}"
             f"   R2 {f['r2']:.3f}  n={f['n']}")

@@ -1424,3 +1424,83 @@ resident and no miss is recorded. The DRAM traffic is real and this counter
 cannot see it. maglev, which has no prefetching, shows 0.879 per packet — close
 to one line per lookup, which is what the algorithm says it should be.
 
+
+### 5.12 The crossover: how much of the gap was ever about page size?
+
+The confound in §5.2 is now measured rather than reasoned about. Each engine was
+run on 1 GiB pages, on 2 MiB transparent hugepages, and on 4 KiB pages — the
+last a configuration neither ships with, included so that a two-point swap
+becomes a three-point trend.
+
+Every arm's backing was checked against the kernel rather than trusted from the
+flag, because `MADV_HUGEPAGE` and `MADV_NOHUGEPAGE` are both advisory and a
+declined one leaves no error: the 4 KiB arms recorded 0.00 GiB of
+`AnonHugePages` and the 2 MiB arms 8.00 GiB, in both modes, sampled from each
+process's own `smaps_rollup` (`l2fwd/verify_backing.py`). The 1 GiB arms are
+covered by the hugepage pool count instead, which drops 16 → 7 free pages for
+the 8 GiB table.
+
+Cost at q=1 — one worker, a full 64-packet burst — in core cycles per packet:
+
+| | 1 GiB | 2 MiB THP | 4 KiB |
+|---|---|---|---|
+| dramblast | **97.8** (shipped) | 101.8 (+4.0) | 116.7 (+19.0) |
+| maglev | 153.6 (−14.0) | **167.6** (shipped) | 209.5 (+41.9) |
+| gap | 55.9 | 65.8 | 92.8 |
+
+q=1 is used rather than the fitted intercept for a reason given below.
+
+**The page-size confound is real and it is a fifth of the story.** The
+as-shipped gap between the two engines is 69.8 cycles per packet. Put both on
+1 GiB pages and 55.9 cycles remain — **80% of the difference survives**.
+Address translation was a genuine confound, it was worth finding, and every
+mode-versus-mode comparison earlier in this document carried it. It is not the
+explanation.
+
+**The more interesting number is how differently the two engines respond.**
+Dropping from 1 GiB to 4 KiB costs dramblast 19.0 cycles and maglev 55.9 — very
+nearly three times as much. So the software prefetch pipeline is not only hiding
+data latency, it is hiding *page-walk* latency: the walk is triggered by the
+prefetch, early, and completes underneath subsequent work. That is why the gap
+between the engines widens as pages shrink, from 55.9 cycles at 1 GiB to 92.8 at
+4 KiB. A configuration change that hurts both engines hurts the unprefetched one
+three times harder.
+
+**Walk cycles are not walk cost.** The counters make the overlap explicit.
+maglev on 2 MiB pages spends 25.6 cycles per packet with a page walk in flight,
+yet removing the walks entirely by moving it to 1 GiB pages saves only 14.0 — so
+even the engine with no software prefetching at all overlaps about 45% of its
+page-walk time under other work. dramblast on 2 MiB pages spends **27% of all
+its core cycles** with a walk outstanding and pays 4.0 cycles per packet for it.
+`DTLB_LOAD_MISSES.WALK_ACTIVE` is an occupancy measure, not a cost, and quoting
+it as one would have overstated the page-size effect by a factor of six.
+
+#### Where the per-burst model stops applying
+
+On 4 KiB pages the per-packet cost rises with **queue count** at a constant
+64-packet burst: 117, 118, 118, 120, 126, 129 ticks across q=1..6, with the
+burst pinned at 64 throughout. No per-burst term can express that — the model
+says cost depends on burst size, and burst size is not changing.
+
+The cause has to be a shared resource, and the obvious candidate is the page
+table itself. Ten cores each walking a two-million-entry table put the page
+table's own working set into contention for the last-level cache, and page
+walks are memory accesses like any other. The effect tracks page size exactly as
+that story predicts: +12 ticks over six cores on 4 KiB, +4 on 1 GiB, +2 on
+2 MiB.
+
+So the two-parameter model quietly stops applying on that arm. Its R² falls
+0.974 → 0.933 → 0.867 across 1 GiB, 2 MiB and 4 KiB, and the fitted intercept
+stops meaning "per-packet cost" because a third, core-count-dependent term is
+being absorbed into two parameters that cannot represent it. **The fit still
+returns confident-looking values.** That is why the comparison above is made at
+q=1, which carries neither the per-burst term nor the contention term, rather
+than at the intercept.
+
+One more arm is worth reporting for what it cannot show: maglev on 4 KiB pages
+never reaches line rate at any queue count (84.3 Mpps at q=10), so it stays
+oversubscribed throughout and its RX burst never leaves 64. Every point sits at
+the same burst size, so no slope is measurable at all. That is a result about
+the configuration, not missing data, and the analysis now says so instead of
+printing an unfittable line.
+
