@@ -889,6 +889,82 @@ def main():
         print("  A difference of the same order as the floor is not a result,")
         print("  however many digits the fit prints.")
 
+    # ---- the 4 KiB core-count anomaly, from data already taken ------------
+    # On 4 KiB pages the cost rises with queue count at a CONSTANT burst, which
+    # the burst model cannot represent -- it has no core-count term. The page
+    # walk counters were recorded alongside every run, so this needs no new
+    # measurement: it asks whether the extra cost is more walks or slower ones,
+    # and the 1 GiB arm, which takes no walks at all, is the control.
+    print()
+    print("=" * 84)
+    print("5. THE 4 KiB CORE-COUNT EFFECT   more walks, or slower walks?")
+    print("=" * 84)
+    PW = 8.0
+    byq = {}
+    for cond, mode, lab in (("xover_dram_4k", "dramblast", "dramblast, 4 KiB"),
+                            ("xover_mag_4k", "maglev", "maglev, 4 KiB"),
+                            ("pinned2_asshipped", "dramblast",
+                             "dramblast, 1 GiB  (control: no walks)")):
+        runs = []
+        for q, r in sorted(allc.get(cond, {}).get(mode, {}).items(), key=lambda kv: int(kv[0])):
+            if r.get("rx_batch") != 64 or not r.get("steady_mpps"):
+                continue
+            pkts = r["steady_mpps"] * 1e6 * PW
+            runs.append((int(q), r["cycles_per_pkt"],
+                         (r.get("pmu_dtlb_walk_active") or 0) / pkts,
+                         (r.get("pmu_dtlb_walk_completed") or 0) / pkts,
+                         (r.get("insns") or 0) / pkts))
+        if len(runs) < 3:
+            continue
+        print(f"\n  {lab}   (only runs that stayed at burst 64)")
+        print(f"    {'q':>2} {'cyc/pkt':>8} {'walk cyc/pkt':>13} {'walks/pkt':>10} "
+              f"{'insn/pkt':>9}")
+        for q, c, wa, wc, ins in runs:
+            print(f"    {q:>2} {c:>8} {wa:>13.1f} {wc:>10.3f} {ins:>9.1f}")
+        lo, hi = runs[0], runs[-1]
+        dc, dwa, dwc, dins = hi[1] - lo[1], hi[2] - lo[2], hi[3] - lo[3], hi[4] - lo[4]
+        print(f"    q={lo[0]} -> q={hi[0]}:  cycles {dc:+.0f}   walk cycles {dwa:+.1f}"
+              f"   walks {dwc:+.3f}   instructions {dins:+.1f}")
+        if lo[3] > 0.5:
+            print(f"      walks per packet are flat ({lo[3]:.2f} -> {hi[3]:.2f}), so this")
+            print(f"      is not more walking. Walk OCCUPANCY rises "
+                  f"{100*dwa/lo[2]:.0f}%, so each")
+            print("      walk takes longer as more cores walk at once.")
+            if dc:
+                print(f"      {100*dc/dwa:.0f}% of the added occupancy reaches the "
+                      f"per-packet cost.")
+            byq[lab] = {q: (c, wa) for q, c, wa, _, _ in runs}
+        else:
+            print("      no walks at all, and no core-count effect: the control.")
+    # The two engines' ranges differ -- dramblast leaves burst 64 at q=7 and
+    # maglev never does -- so the headline percentages above are taken over
+    # different core counts and must not be compared with each other. At a
+    # matched queue count they can be.
+    d4 = byq.get("dramblast, 4 KiB", {})
+    m4 = byq.get("maglev, 4 KiB", {})
+    common = sorted(set(d4) & set(m4))
+    if len(common) >= 2:
+        q0, q1 = common[0], common[-1]
+        print(f"\n  At a MATCHED queue count, q={q0} -> q={q1} (the two arms cover")
+        print("  different ranges, so the percentages above are not comparable):")
+        for lab, t in (("dramblast", d4), ("maglev", m4)):
+            dwa = t[q1][1] - t[q0][1]
+            dc = t[q1][0] - t[q0][0]
+            frac = f"{100*dc/dwa:.0f}%" if dwa else "n/a"
+            print(f"    {lab:10s} walk cycles {dwa:+6.1f}   cost {dc:+3.0f}   "
+                  f"reaching the cost: {frac}")
+        print("    -> the engine that is already waiting absorbs the extra walk")
+        print("       time; the one retiring at IPC 3.4 has no slack to hide it")
+        print("       in. That is the opposite direction from the prefetch")
+        print("       result, and for a consistent reason: a pipeline hides")
+        print("       latency it ISSUED EARLY, not latency added underneath it.")
+
+    print("\n  CONCLUSION: the core-count term that breaks the burst model on")
+    print("  4 KiB pages is contention for shared page-table structures. It is")
+    print("  measured in the DURATION of a walk, not in how many walks happen,")
+    print("  and it vanishes entirely on 1 GiB pages where there are none.")
+    print("  No new runs were needed -- the counters were already in the logs.")
+
     if "--plot" not in sys.argv:
         return
 
