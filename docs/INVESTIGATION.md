@@ -1922,3 +1922,63 @@ been applied where it changes a conclusion — §5.14's depth-32 test moved from
 times the floor or better are unaffected. The general lesson is that an error
 bar taken from inside a single sweep is the wrong error bar for a comparison
 between sweeps, and the repeat arm is the only thing that can say by how much.
+
+### 5.16 The backing verifier was verifying the wrong half of the matrix
+
+`page_watch.sh` samples each live `l2fwd`'s `smaps_rollup` from outside and
+`verify_backing.py` reads its log, so that every `-B` arm can be checked against
+the backing it *actually got* rather than the one it asked for — `MADV_HUGEPAGE`
+is advisory and `MADV_NOHUGEPAGE` can fail. Both were written for §5.2's
+confound and both ran throughout.
+
+The watcher's filter was `Rss > 1 GiB`, to skip the moment between launch and
+table allocation. **Hugetlb pages are not counted in `Rss`.** They appear only in
+`Private_Hugetlb`. So every run whose table is on 1 GiB pages was skipped
+entirely: dramblast as shipped, which is the control, the whole allocator block
+and the whole depth block. Sampling a live run shows the shape plainly —
+
+    rss=24364  thp=0  hugetlb=10436608      (dramblast, as shipped)
+    rss=8412576  thp=8388608  hugetlb=2048000   (maglev, as shipped)
+
+— 24 MB of RSS against 10.4 GB of hugetlb. The log never looked broken, because
+the maglev and 2 MiB/4 KiB arms, whose pages *do* land in `Rss`, kept writing
+lines the whole time.
+
+`verify_backing.py` then turned a gap into a pass. It judges the rows it finds,
+so an arm with no samples produced no complaint, and the script printed *every
+arm got the backing it claims* having never looked at the arm that carries the
+result. **Absence of evidence was being reported as evidence.** It now carries an
+explicit list of the arms that must be present, fails on a missing one, and
+fails on one sampled too thinly to judge. Run that way it immediately named a
+second arm nobody had checked — maglev on 1 GiB, which is the arm the crossover
+conclusion rests on.
+
+This is the same failure as the `--` splitting bug in §5.10, one level up: there
+the verifier mislabelled what it had checked, here it stayed silent about what it
+had not. Both produce the same output — a clean bill of health — and both are
+worse than having no verifier, because the check is then cited as if it had
+happened.
+
+With the filter corrected, all six arms verify:
+
+| `-B` | mode | samples | THP GiB | Hugetlb GiB | wanted |
+|---|---|---|---|---|---|
+| 1g | maglev | 9 | 0.00 | 9.95 | 1 GiB hugetlb |
+| 4k | dramblast | 131 | 0.00 | 1.95 | 4 KiB |
+| 4k | maglev | 134 | 0.00 | 1.95 | 4 KiB |
+| as-shipped | dramblast | 144 | 0.00 | 9.95 | 1 GiB hugetlb |
+| as-shipped | maglev | 234 | 8.00 | 1.95 | 2 MiB THP |
+| thp2m | dramblast | 127 | 8.00 | 1.95 | 2 MiB THP |
+
+**What that table can and cannot claim.** The 1.95 GiB of hugetlb in the 4 KiB
+and 2 MiB rows is DPDK's own reservation, not the table, which is the right
+control: if the `-B` flag had silently fallen back, the table's 8 GiB would show
+up there too. But the rows differ in *when* they were taken. The 4 KiB and 2 MiB
+rows were sampled during the runs that produced the measurements. The
+as-shipped dramblast row was sampled during the depth-repeat block, which is
+itself measurement data. The maglev-on-1-GiB row was taken by re-launching that
+arm afterwards for twenty seconds, with the same binary, flag and machine state
+— which is a re-verification, not a contemporaneous one. It is strong evidence
+that the flag does what it says, and it is not evidence about those specific
+runs. The distinction is recorded rather than smoothed over, because the point
+of this section is that a verifier which overstates its coverage is the problem.
