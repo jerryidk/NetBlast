@@ -970,6 +970,24 @@ about 45% of its walking under other work. dramblast on 2 MiB pages spends 27%
 of every core cycle with a walk outstanding and pays {d2-d1:.0f} cycles for it.
 Walk occupancy is not walk cost, and reading it as cost would have overstated
 this whole section sixfold.</p>
+
+<h3>The one thing on this page the burst model cannot express</h3>
+<p>On 4 KiB pages the cost rises with the <em>number of queues</em> while the
+burst stays pinned at 64 — and the model has no term for how many cores are
+running. The counters already recorded answer what it is. Across every queue
+count, in both engines, the number of page walks per packet is flat at 0.99 and
+instructions per packet are flat too. What rises is the time each walk takes:
+walk occupancy per packet climbs 19% over six cores for dramblast and 28% over
+ten for maglev. The same binary on 1 GiB pages takes no walks at all and shows
+no core-count effect whatsoever, which is the control.</p>
+<p>So the extra cost is <b>contention for shared page-table structures</b>,
+measured in the duration of a walk rather than in how many happen. At a matched
+six queues, dramblast's walk occupancy rises 20.3 cycles per packet and 12 of
+them reach the cost; maglev's rises 11.8 and none of them do. That is the
+opposite direction from the prefetch result earlier on this page, for a reason
+that is consistent with it: a pipeline hides latency it issued early, not
+latency added underneath it, and an engine already waiting has slack to absorb
+more waiting while one retiring at three instructions per cycle does not.</p>
 </section>
 """
 
