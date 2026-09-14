@@ -54,6 +54,25 @@ def fit_of(allc, cond, mode):
     return {"P": P, "C": C, "r2": r2, "n": n, "se": se, "pts": pts}
 
 
+def at_q1(allc, cond, mode):
+    """Cost at q=1 in core cycles: one worker, a full 64-packet burst.
+
+    This is reported alongside the fit because the fit's two parameters are not
+    always enough. On 4 KiB pages the cost rises with QUEUE COUNT at constant
+    burst size -- 117 to 129 ticks across q=1..6 with the burst pinned at 64 --
+    which no per-burst term can express. Page tables are shared: ten cores each
+    walking a 2-million-entry table put the page-table working set itself into
+    contention for the last-level cache, so the cost acquires a third component
+    that scales with core count. q=1 has one worker and a full burst, so it is
+    free of both the per-burst term and the contention term, and it is the
+    honest single number for comparing backings.
+    """
+    r = allc.get(cond, {}).get(mode, {}).get("1")
+    if not r or "cycles_per_pkt" not in r or not r.get("freq_mhz"):
+        return None
+    return r["cycles_per_pkt"] * r["freq_mhz"] / 2100.0
+
+
 def row(label, f):
     if f is None:
         return f"  {label:34s}  (no data)"
@@ -109,20 +128,46 @@ def main():
     print("=" * 84)
     print("1. CROSSOVER   each mode on the other's page backing")
     print("=" * 84)
-    print(row("dramblast  1 GiB      (as shipped)", base_d))
-    print(row("dramblast  2 MiB THP  (maglev's)", g("xover_dram_thp2m", "dramblast")))
-    print(row("dramblast  4 KiB", g("xover_dram_4k", "dramblast")))
-    print(row("maglev     2 MiB THP  (as shipped)", base_m))
-    print(row("maglev     1 GiB      (dramblast's)", g("xover_mag_1g", "maglev")))
-    print(row("maglev     4 KiB", g("xover_mag_4k", "maglev")))
-    m1g, m2m = g("xover_mag_1g", "maglev"), base_m
-    if m1g and m2m:
-        closed = (m2m["P"] - m1g["P"]) / (m2m["P"] - base_d["P"]) * 100 if base_d else None
-        print(f"\n    maglev P: {m2m['P']:.1f} -> {m1g['P']:.1f} on 1 GiB pages "
-              f"({(m1g['P']-m2m['P'])/m2m['P']*100:+.1f}%)")
-        if closed is not None:
-            print(f"    that closes {closed:.0f}% of the gap to dramblast. "
-                  f"The remainder is not address translation.")
+    base_cond = "pinned2_asshipped" if "pinned2_asshipped" in allc else "pinned_2100mhz"
+    # (mode, short page label, condition, whether this is that mode's shipped default)
+    spec = [("dramblast", "1 GiB", base_cond, True),
+            ("dramblast", "2 MiB", "xover_dram_thp2m", False),
+            ("dramblast", "4 KiB", "xover_dram_4k", False),
+            ("maglev", "2 MiB", base_cond, True),
+            ("maglev", "1 GiB", "xover_mag_1g", False),
+            ("maglev", "4 KiB", "xover_mag_4k", False)]
+    q1 = {}
+    for mode, pg, cond, shipped in spec:
+        tag = f"{mode:10s} {pg:6s}" + ("(as shipped)" if shipped else "")
+        print(row(tag, g(cond, mode)))
+        v = at_q1(allc, cond, mode)
+        if v is not None:
+            q1[(mode, pg)] = v
+
+    if q1:
+        print("\n  At q=1 -- one worker, a full 64-packet burst -- so free of both the")
+        print("  per-burst term and the cross-core page-table contention:")
+        for mode, pg, _, _ in spec:
+            if (mode, pg) in q1:
+                print(f"      {mode:10s} {pg:6s}  {q1[(mode, pg)]:7.1f} core cycles/packet")
+        d1, d2 = q1.get(("dramblast", "1 GiB")), q1.get(("dramblast", "2 MiB"))
+        d4 = q1.get(("dramblast", "4 KiB"))
+        m1, m2 = q1.get(("maglev", "1 GiB")), q1.get(("maglev", "2 MiB"))
+        print()
+        if d1 and d2:
+            print(f"      dramblast, 1 GiB -> 2 MiB:  {d2 - d1:+6.1f} cycles")
+        if d1 and d4:
+            print(f"      dramblast, 1 GiB -> 4 KiB:  {d4 - d1:+6.1f} cycles")
+        if m2 and m1:
+            print(f"      maglev,    2 MiB -> 1 GiB:  {m1 - m2:+6.1f} cycles")
+        if d1 and m2:
+            print(f"\n      as-shipped gap between engines:  {m2 - d1:6.1f} cycles")
+        if d1 and m1:
+            print(f"      gap at MATCHED 1 GiB pages:      {m1 - d1:6.1f} cycles"
+                  f"   ({(m1 - d1) / (m2 - d1) * 100:.0f}% of it survives)"
+                  if m2 else "")
+            print("      -> the surviving gap is not address translation; it is the")
+            print("         prefetch pipeline.")
 
     print()
     print("=" * 84)

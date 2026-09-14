@@ -109,6 +109,7 @@ def sidecar(paths):
 
 
 SIDE = sidecar(sys.argv[3:])
+incomplete = []
 
 # Merge, do not clobber. Each invocation sees only the logs of the sweep that
 # just ran, so rebuilding the file from scratch would silently delete every
@@ -126,6 +127,16 @@ for cond, prefix in CONDS.items():
             if not log.exists():
                 continue
             txt = log.read_text(errors="replace").replace("\x1b", "")
+            # Skip a run that has not finished. l2fwd prints its final summary
+            # block (Minimum/Maximum/Average) once, after the last sample, so
+            # its absence means the process is still running or died partway.
+            # Without this check, extracting while a sweep is in flight silently
+            # admits a truncated run: the per-second lines are already there, so
+            # steady_mpps and cycles_per_pkt come out looking entirely
+            # reasonable while describing half an experiment.
+            if "Average:" not in txt:
+                incomplete.append(log.name)
+                continue
             rec = {}
             for key, pat in pats.items():
                 m = re.findall(pat, txt)
@@ -156,8 +167,12 @@ for cond, prefix in CONDS.items():
 
 OUT.write_text(json.dumps(out, indent=4) + "\n")
 print(f"wrote {OUT}")
+if incomplete:
+    print(f"  SKIPPED {len(incomplete)} unfinished run(s): "
+          + ", ".join(sorted(incomplete)[:6])
+          + (" ..." if len(incomplete) > 6 else ""))
 for cond in out:
     for mode in out[cond]:
         n = len(out[cond][mode])
-        peak = max((r["avg"] for r in out[cond][mode].values()), default=0)
+        peak = max((r.get("avg", 0) for r in out[cond][mode].values()), default=0)
         print(f"  {cond:18s} {mode:10s} {n} points, peak {peak} Mpps")
