@@ -518,8 +518,30 @@ regimes apart.</p>
         asvg, (a0, per_pair) = chart_alloc(arows)
         byn = dict(arows)                       # absolute pairs -> extra cycles/burst
         shipped_pair = byn.get(1)               # cost of the one pair the code performs
-        incr = [c / n for n, c in arows if n > 1]
-        incr_lo, incr_hi = (min(incr), max(incr)) if incr else (None, None)
+        # Consecutive slopes between the multi-pair arms. Each uses a disjoint
+        # pair of measurements, unlike total/pairs, which is an average and so
+        # converges on the slope whatever the low-count behaviour is.
+        multi = sorted((n, c) for n, c in arows if n > 1)
+        slopes = [(multi[i + 1][1] - multi[i][1]) / (multi[i + 1][0] - multi[i][0])
+                  for i in range(len(multi) - 1)]
+        incr_lo = min(slopes) if slopes else None
+        incr_hi = max(slopes) if slopes else None
+        # Line through the multi-pair arms; its intercept is the structural test.
+        if len(multi) >= 2:
+            n_ = len(multi)
+            sx = sum(n for n, _ in multi); sy = sum(c for _, c in multi)
+            sxx = sum(n * n for n, _ in multi); sxy = sum(n * c for n, c in multi)
+            m_slope = (n_ * sxy - sx * sy) / (n_ * sxx - sx * sx)
+            m_int = (sy - m_slope * sx) / n_
+        else:
+            m_slope = m_int = None
+        # The position model: first pair cheap, the rest at the asymptotic slope.
+        pos_miss = [(n, c - (shipped_pair + (n - 1) * m_slope)) for n, c in multi] \
+            if (m_slope is not None and shipped_pair is not None) else []
+        miss_rows = "".join(
+            f"<tr><td>{n}</td><td>{shipped_pair + (n - 1) * m_slope:.0f}</td>"
+            f"<td>{c:.0f}</td><td>{d:+.0f}</td></tr>"
+            for (n, c), (_, d) in zip(multi, pos_miss))
         # The non-allocator remainder is the hoisted arm's own per-burst cost,
         # measured rather than extrapolated from an intercept.
         hoist_fit = lsq(series({"dramblast": allc.get("alloc_hoisted", {}).get("dramblast", {})},
@@ -528,6 +550,12 @@ regimes apart.</p>
         shipped_fit = lsq(series({"dramblast": allc.get("pinned2_asshipped", {}).get("dramblast", {})},
                                  "dramblast"))
         shipped_C = shipped_fit[1] if shipped_fit else None
+        slope_txt = ", ".join(
+            f"{multi[i][0]}&nbsp;&rarr;&nbsp;{multi[i+1][0]} pairs gives "
+            f"{sl:.2f} cycles each" for i, sl in enumerate(slopes))
+        gap = m_slope - shipped_pair
+        gappct = 100.0 * gap / m_slope
+        overpct = 100.0 * gap / shipped_pair
         alloc_html = f"""
 <section class="wrap">
 <h2>What the per-burst cost is made of</h2>
@@ -551,14 +579,48 @@ literature says one costs somewhere else.</p>
 
 <section class="wrap">
 <p>The one round trip the code actually performs is worth
-<b>{shipped_pair:.0f} cycles</b> per burst — about 215&nbsp;nanoseconds — and
-additional ones cost {incr_lo:.0f} each, three points agreeing to the cycle.
+<b>{shipped_pair:.0f} cycles</b> per burst — about 215&nbsp;nanoseconds.
 Against a total per-burst cost of {shipped_C:.0f} cycles, that single allocation
 is roughly <b>60%</b> of it. What remains when it is removed, the batching
 machinery itself, is {remainder:.0f} cycles, measured directly by the leftmost
 point rather than extrapolated from the line through the others.</p>
 <p>An earlier draft of this investigation put the allocator at <em>at most
 11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
+
+<h3>Reading the amplified arms honestly</h3>
+<p>The arms with several pairs are very well behaved, but the tempting way to
+say so — total cost divided by number of pairs, three numbers agreeing to the
+cycle — does not survive scrutiny. That ratio is an average, so it converges on
+the asymptotic slope as the count grows no matter how the first pair behaves;
+three such numbers are not three independent confirmations of anything. The
+<em>consecutive</em> slopes are independent, because each uses a disjoint pair of
+measurements: {slope_txt}. The line through those arms is
+<span class="mono">{m_int:+.1f} + {m_slope:.2f} × pairs</span>, and the zero
+intercept is the real check — <i>k</i> pairs cost exactly <i>k</i> times one pair
+with nothing left over, which a fixed setup overhead would violate.</p>
+<p>Extrapolated down to a single pair that line predicts
+{m_slope:.0f} cycles, against {shipped_pair:.0f} measured: the lone pair is
+<b>{gap:.0f} cycles ({gappct:.0f}%) cheaper</b>. Two explanations for that were
+wrong. The first said the shipped pair must cost <em>more</em>, its
+<span class="mono">free</span> separated from its <span class="mono">alloc</span>
+by a whole batch while the amplification pairs run back to back — that had the
+sign backwards. The second said the first pair is intrinsically cheap and later
+ones cost {m_slope:.0f}. The data rule that out: if the discount belonged to
+pair&nbsp;#1 it would persist into every arm that contains one, and instead the
+model misses each of them by the same constant.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>pairs</th><th>cheap-first model</th><th>measured</th><th>miss</th></tr></thead>
+<tbody>{miss_rows}</tbody>
+</table></div>
+<p>So in an arm with three or more pairs, <em>every</em> pair costs
+{m_slope:.0f} — including the first. What survives is a statement about how
+many, not which one: <b>a lone round trip costs {shipped_pair:.0f} cycles; with
+three or more in flight each costs {m_slope:.0f}.</b> That is an allocator load
+effect — more live chunks, more splitting, a larger free-list working set — and
+its mechanism is not established here. It also settles which number describes
+the shipped code, which performs exactly one: {shipped_pair:.0f}. Calibrating
+from the amplification slope instead would overstate it by
+{overpct:.0f}%.</p>
 <p>This reverses an earlier conclusion in the investigation log, and the way it
 was wrong is worth more than the correction. The allocator had been dismissed by
 comparing the measured per-burst cost against a published figure of 20-40&nbsp;ns

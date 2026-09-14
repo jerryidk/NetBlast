@@ -280,7 +280,7 @@ def main():
     # size fixed has beaten fitting it out.
     print("\n    At a MATCHED 64-packet burst (q=1), no fit involved:")
     print(f"      {'pairs':>6} {'cyc/pkt':>9} {'vs hoisted':>11} {'x64 per burst':>14} {'per pair':>9}")
-    base_cyc, per_pair_vals = None, []
+    base_cyc, per_pair_vals, q1pts = None, [], []
     for n, cond in [(0, "alloc_hoisted"), (1, "pinned2_asshipped"), (2 + 1, "alloc_x2"),
                     (4 + 1, "alloc_x4"), (8 + 1, "alloc_x8")]:
         v = at_q1(allc, cond, "dramblast")
@@ -292,18 +292,56 @@ def main():
         pp = d * 64 / n if n else 0
         if n > 1:
             per_pair_vals.append(pp)
+        q1pts.append((n, d * 64))
         print(f"      {n:>6} {v:>9.1f} {d:>11.1f} {d*64:>14.0f} {pp:>9.0f}")
-    if per_pair_vals:
-        lo, hi = min(per_pair_vals), max(per_pair_vals)
-        print(f"      -> incremental pairs: {lo:.0f}-{hi:.0f} cycles each "
-              f"({(lo+hi)/2/2.1:.0f} ns)")
-        first = (at_q1(allc, "pinned2_asshipped", "dramblast") - base_cyc) * 64
-        print(f"      -> the SHIPPED pair: {first:.0f} cycles "
-              f"-- {'cheaper' if first < lo else 'dearer'} than an incremental one")
-        print("         by about {:.0f} cycles. Small, real, and the opposite sign".format(abs(first - (lo + hi) / 2)))
-        print("         from the separation argument, which predicted the shipped")
-        print("         pair would be DEARER because its free is a whole batch away.")
-        print("         Reported as measured; the mechanism is not established.")
+    # The per-pair numbers above are total/pairs, which is an AVERAGE and
+    # therefore converges toward the asymptotic slope as the pair count grows,
+    # whatever the low-count behaviour is. It cannot confirm a constant price.
+    # What can: the consecutive slopes between adjacent multi-pair arms, and the
+    # intercept of a line through them.
+    multi = [(n, c) for n, c in q1pts if n >= 3]
+    if len(multi) >= 2:
+        print("\n      Consecutive slopes between multi-pair arms (independent of")
+        print("      each other, unlike total/pairs):")
+        for (n0, c0), (n1, c1) in zip(multi, multi[1:]):
+            print(f"        {n0} -> {n1} pairs: {(c1 - c0) / (n1 - n0):.2f} cycles per pair")
+        nn = len(multi)
+        sx = sum(n for n, _ in multi); sy = sum(c for _, c in multi)
+        sxx = sum(n * n for n, _ in multi); sxy = sum(n * c for n, c in multi)
+        den = nn * sxx - sx * sx
+        if den:
+            b = (nn * sxy - sx * sy) / den
+            a = (sy - b * sx) / nn
+            print(f"      line through the multi-pair arms: {a:+.1f} + {b:.2f} * pairs")
+            print(f"      -> the intercept is zero to within {abs(a):.1f} cycles, which is")
+            print("         the structural check: k pairs cost exactly k times one pair,")
+            print("         with nothing left over, as an additive per-pair cost requires.")
+            shipped = dict(q1pts).get(1)
+            if shipped:
+                pred = a + b
+                print(f"\n      Extrapolated to the shipped arm: {pred:.1f}, measured "
+                      f"{shipped:.1f}")
+                print(f"      -> the lone shipped pair is {shipped - pred:+.1f} cycles "
+                      f"({(shipped-pred)/pred*100:+.1f}%) below the line.")
+                print("\n      But this is NOT a privileged first pair. If pair #1 were")
+                print(f"      intrinsically {shipped:.0f} and every later pair {b:.0f}, the")
+                print("      multi-pair totals would have to be:")
+                for n, c in multi:
+                    model = shipped + b * (n - 1)
+                    print(f"        {n} pairs: model {model:.0f}  measured {c:.0f}  "
+                          f"off by {c - model:+.0f}")
+                print("      A constant miss at every arm. The discount does not persist,")
+                print("      so in an arm with three or more pairs EVERY pair costs")
+                print(f"      {b:.0f} including the first.")
+                print("\n      Honest statement: a LONE pair costs {:.0f} cycles; with three".format(shipped))
+                print(f"      or more in flight each costs {b:.0f}. Pair cost depends on how")
+                print("      many pairs there are, not on which one it is -- an allocator")
+                print("      state or load effect (more live chunks, more splitting, a")
+                print("      larger free-list working set), not a position effect.")
+                print("\n      CONSEQUENCE: the shipped configuration has exactly one pair,")
+                print(f"      so {shipped:.0f} is the number to quote. {b:.0f} belongs to a regime")
+                print("      the shipped code is never in, and calibrating the shipped")
+                print(f"      pair from it would overstate by {(b-shipped)/shipped*100:.0f}%.")
 
     if len(have) >= 3:
         # Absolute pairs executed: n+1 for n>=0, zero for the hoisted arm.

@@ -1594,17 +1594,31 @@ each arm over its own burst range compares conditions that differ in two things
 at once. At a matched burst, the difference in cost per packet multiplied by 64
 *is* the difference in cost per burst, with no model in between.
 
-| pairs per burst | core cycles/packet | vs hoisted | × 64 = per burst | per pair |
-|---|---|---|---|---|
-| 0 (hoisted) | 90.8 | — | — | — |
-| 1 (as shipped) | 97.8 | 7.0 | 447 | **447** |
-| 3 | 114.7 | 23.9 | 1532 | 511 |
-| 5 | 130.7 | 39.9 | 2554 | **511** |
-| 9 | 162.6 | 71.8 | 4597 | **511** |
+| pairs per burst | core cycles/packet | vs hoisted | × 64 = per burst |
+|---|---|---|---|
+| 0 (hoisted) | 90.8 | — | — |
+| 1 (as shipped) | 97.8 | 7.0 | **447** |
+| 3 | 114.7 | 23.9 | 1532 |
+| 5 | 130.7 | 39.9 | 2554 |
+| 9 | 162.6 | 71.8 | 4597 |
 
-**One `aligned_alloc(64, …)`/`free` pair costs about 450 cycles — 215 ns.** The
-shipped pair is 447 by this route and 462 by differencing the two fitted
-per-burst coefficients, two estimates agreeing to 3%, the second at 10.6σ.
+**The one round trip the shipped code performs costs 447 cycles — 213 ns.** That
+is 447 by this route and 462 by differencing the two fitted per-burst
+coefficients: two independent estimates agreeing to 3%, the second at 10.6σ.
+
+The multi-pair arms are extremely well behaved, and the right way to say so is
+not "total ÷ pairs", which is an average and therefore converges on the
+asymptotic slope as the count grows whatever the low-count behaviour is. The two
+*consecutive* slopes are independent of each other:
+
+    3 -> 5 pairs:  510.78 cycles per pair
+    5 -> 9 pairs:  510.78 cycles per pair
+    line through them:  +0.0 + 510.78 x pairs
+
+The intercept is zero to within 0.0 cycles. That is a structural check rather
+than a goodness-of-fit number: *k* pairs cost exactly *k* times one pair with
+nothing left over, which is what an additive per-pair cost requires and what a
+fixed overhead plus a per-pair cost would violate.
 
 So the allocator is **60-64% of the per-burst cost**, against the "at most ~11%"
 this document previously claimed. The remainder — the batching machinery itself
@@ -1642,13 +1656,41 @@ Note that `P` *is* flat across the two arms that carry the headline — 89.3
 hoisted against 87.7 as shipped — so the structural check holds exactly where
 the claim lives and weakens only where the calibration lives.
 
-**And the thing that was got wrong.** An earlier draft explained the gap between
-the two estimators by arguing that the shipped pair must cost *more* than an
-incremental one, because its `free` is separated from its `alloc` by the whole
-batch while the amplification pairs are back-to-back in a loop. Measured at
-matched burst, the shipped pair costs 447 cycles and an incremental one 511:
-the shipped pair is **cheaper**, by 64 cycles. The argument was not merely
-unsupported, it had the sign backwards. It is recorded here as measured, with no
-replacement story, because inventing a second mechanism to explain the first
-one's failure is how this section got into trouble in the first place.
+#### The shipped pair is cheaper, and not for the reason first given
+
+Extrapolating the multi-pair line down to one pair predicts 510.8 cycles. The
+measured value is 446.9 — **63.8 cycles, 12.5%, below the line.** So the lone
+pair really is cheaper, and two successive explanations for it were wrong.
+
+The first draft said the shipped pair must cost *more* than an incremental one,
+because its `free` is a whole batch away from its `alloc` while the amplification
+pairs are back-to-back. That had the sign backwards.
+
+The second said the first pair is intrinsically cheap and later ones cost 511.
+**The data rule that out.** If pair #1 were 447 and every later pair 511, the
+multi-pair totals would have to be:
+
+| pairs | model | measured | miss |
+|---|---|---|---|
+| 3 | 1468 | 1532 | +64 |
+| 5 | 2490 | 2554 | +64 |
+| 9 | 4533 | 4597 | +64 |
+
+A constant miss at every arm. The discount does not persist into them, which
+means that in an arm with three or more pairs **every** pair costs 511 —
+including the first. There is no privileged first pair.
+
+What survives is a statement about *how many*, not *which one*: **a lone
+`alloc`/`free` pair costs 447 cycles; with three or more in flight each costs
+511.** That is an allocator state or load effect — more live chunks, more
+splitting work, a larger free-list working set — and the mechanism is not
+established here.
+
+It has a direct consequence for which number to quote. The shipped configuration
+performs exactly one pair, so **447 is the figure that describes it**. 511 is
+the cost in a regime the shipped code is never in, and calibrating the shipped
+pair from the amplification slope would overstate it by 14%. The removal
+estimate (462, differencing shipped against hoisted) agrees with 447 to 3% and
+depends on none of this; those two are the pair of numbers this result rests on,
+and both avoid the amplified regime entirely.
 

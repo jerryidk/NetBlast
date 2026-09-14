@@ -234,14 +234,48 @@ literature says one costs somewhere else.</p>
 
 <section class="wrap">
 <p>The one round trip the code actually performs is worth
-<b>447 cycles</b> per burst — about 215&nbsp;nanoseconds — and
-additional ones cost 511 each, three points agreeing to the cycle.
+<b>447 cycles</b> per burst — about 215&nbsp;nanoseconds.
 Against a total per-burst cost of 718 cycles, that single allocation
 is roughly <b>60%</b> of it. What remains when it is removed, the batching
 machinery itself, is 256 cycles, measured directly by the leftmost
 point rather than extrapolated from the line through the others.</p>
 <p>An earlier draft of this investigation put the allocator at <em>at most
 11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
+
+<h3>Reading the amplified arms honestly</h3>
+<p>The arms with several pairs are very well behaved, but the tempting way to
+say so — total cost divided by number of pairs, three numbers agreeing to the
+cycle — does not survive scrutiny. That ratio is an average, so it converges on
+the asymptotic slope as the count grows no matter how the first pair behaves;
+three such numbers are not three independent confirmations of anything. The
+<em>consecutive</em> slopes are independent, because each uses a disjoint pair of
+measurements: 3&nbsp;&rarr;&nbsp;5 pairs gives 510.78 cycles each, 5&nbsp;&rarr;&nbsp;9 pairs gives 510.78 cycles each. The line through those arms is
+<span class="mono">+0.0 + 510.78 × pairs</span>, and the zero
+intercept is the real check — <i>k</i> pairs cost exactly <i>k</i> times one pair
+with nothing left over, which a fixed setup overhead would violate.</p>
+<p>Extrapolated down to a single pair that line predicts
+511 cycles, against 447 measured: the lone pair is
+<b>64 cycles (12%) cheaper</b>. Two explanations for that were
+wrong. The first said the shipped pair must cost <em>more</em>, its
+<span class="mono">free</span> separated from its <span class="mono">alloc</span>
+by a whole batch while the amplification pairs run back to back — that had the
+sign backwards. The second said the first pair is intrinsically cheap and later
+ones cost 511. The data rule that out: if the discount belonged to
+pair&nbsp;#1 it would persist into every arm that contains one, and instead the
+model misses each of them by the same constant.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>pairs</th><th>cheap-first model</th><th>measured</th><th>miss</th></tr></thead>
+<tbody><tr><td>3</td><td>1468</td><td>1532</td><td>+64</td></tr><tr><td>5</td><td>2490</td><td>2554</td><td>+64</td></tr><tr><td>9</td><td>4533</td><td>4597</td><td>+64</td></tr></tbody>
+</table></div>
+<p>So in an arm with three or more pairs, <em>every</em> pair costs
+511 — including the first. What survives is a statement about how
+many, not which one: <b>a lone round trip costs 447 cycles; with
+three or more in flight each costs 511.</b> That is an allocator load
+effect — more live chunks, more splitting, a larger free-list working set — and
+its mechanism is not established here. It also settles which number describes
+the shipped code, which performs exactly one: 447. Calibrating
+from the amplification slope instead would overstate it by
+14%.</p>
 <p>This reverses an earlier conclusion in the investigation log, and the way it
 was wrong is worth more than the correction. The allocator had been dismissed by
 comparing the measured per-burst cost against a published figure of 20-40&nbsp;ns
