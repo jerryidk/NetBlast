@@ -14,6 +14,12 @@ Conditions (all at 100 GbE line rate unless noted):
                                                NO frequency instrumentation -- see caveat below.
   linerate_93mpps    logs tagged "linerate" -- generator -l 0-16 (8 TX cores)
   linerate_2tx_gen   logs tagged "gen2tx"   -- generator -l 0-4  (2 TX cores)
+  engine_trio        logs tagged "trio"   -- all three engines in one sitting:
+                                               dramblast, maglev, and `-m none` (the
+                                               forwarding loop's third branch,
+                                               main.c:352-357 -- same MAC write, no
+                                               lookup). The floor everything else must
+                                               be read against.
   capped_72mpps      logs tagged "sweep"    -- generator -l 0-2  (1 TX core), 72 Mpps
 
 Caveat on cycles_per_pkt across conditions
@@ -75,6 +81,9 @@ CONDS = {
     # allocator amplification: C should be linear in the number of pairs
     "alloc_hoisted": "ahoist", "alloc_x2": "a2", "alloc_x4": "a4",
     "alloc_x8": "a8",
+    # the floor: -m none, same MAC write, no lookup. Subtracting this arm is
+    # what turns a per-packet cost into a per-LOOKUP cost.
+    "engine_trio": "trio",
     # prefetch pipeline depth
     "depth_8": "d8", "depth_16": "d16", "depth_32": "d32",
     # depth 32 against the shipped 64, three interleaved repeats each, q=1..5
@@ -128,7 +137,10 @@ incomplete = []
 out = json.loads(OUT.read_text()) if OUT.exists() else {}
 for cond, prefix in CONDS.items():
     fresh = {}
-    for mode in ("maglev", "dramblast"):
+    # "none" is the floor arm (-m none). It is listed last and pruned below
+    # when empty, so that adding it does not stamp an empty "none" key onto
+    # every historical condition and make them look like they were swept for it.
+    for mode in ("maglev", "dramblast", "none"):
         fresh[mode] = {}
         for q in range(1, 11):
             # run_matrix.sh puts each arm's logs in its own subdirectory, while
@@ -178,6 +190,8 @@ for cond, prefix in CONDS.items():
                         rec["pmu_" + f[2].strip()] = int(f[0])
             if rec:
                 fresh[mode][str(q)] = rec
+    if not fresh.get("none"):
+        fresh.pop("none", None)
     if any(fresh[m] for m in fresh):
         out[cond] = fresh
 

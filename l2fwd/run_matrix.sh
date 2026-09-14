@@ -32,6 +32,18 @@
 #             control block, so every coefficient gets a run-to-run error bar
 #             and not merely a within-fit one.
 #
+#   trio      THE THREE ENGINES AGAINST THE FLOOR, in one sitting. `-m none`
+#             (main.c:438) takes the third branch of the forwarding loop
+#             (main.c:352-357): it writes the destination MAC exactly as the
+#             other two do, and skips only the lookup that produced the address.
+#             It is therefore the subtraction that turns "cycles per forwarded
+#             packet" into "cycles per LOOKUP" -- without it every per-packet
+#             number in this matrix silently includes an unknown amount of
+#             harness, and the engine gap cannot be stated as a fraction of
+#             anything. All three modes are swept under one tag, back to back,
+#             so the comparison does not span the hours that separate the
+#             historical arms; `pinned3` bounds what that would have cost.
+#
 #   d8 d16    PIPELINE DEPTH. The other candidate for C. A burst of B packets
 #   d32       can only fill min(B, depth) slots of the prefetch queue, so short
 #             bursts run a pipeline that never reaches steady state. If C is
@@ -110,6 +122,15 @@ for b in "${BLOCKS[@]}"; do
     # nothing to be compared against.
     ( run pinned3 dramblast )
     ( run pinned3 maglev ) ;;
+  trio)
+    # `none` takes no -B/-A/-Q: none of them mean anything without a table. -c
+    # is still passed by sweep.sh and is ignored, because main.c:692-697 only
+    # calls an init function when a mode is enabled, so this arm allocates no
+    # table at all -- which is the point, and is visible as hp1g=16->16 in the
+    # run's own summary line.
+    ( run trio none )
+    ( run trio dramblast )
+    ( run trio maglev ) ;;
   depth)
     ( run d8  dramblast -Q 8 )
     ( run d16 dramblast -Q 16 )

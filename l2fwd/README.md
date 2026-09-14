@@ -32,6 +32,7 @@ argv rather than in the environment, because the sweep harness launches through
 |---|---|
 | `-B <1g\|thp2m\|4k>` | page backing for the lookup table. Default is whatever the mode ships with: 1 GiB hugetlb for dramblast, transparent 2 MiB for maglev. Use this to compare the two engines on the *same* backing — as shipped they differ in address translation as well as algorithm. |
 | `-A <n>` | how many `aligned_alloc`/`free` round trips each burst performs. `0` is as shipped (exactly one), `-1` hoists the buffer to a per-core allocation made once at start-up, and `n > 0` adds `n` extra pairs. Sweeping it prices a round trip on this machine instead of quoting one from a paper. |
+| `-m none` | no lookup at all: the forwarding loop's third branch (`main.c`), which writes the destination MAC exactly as the two engines do and skips only the table. This is the floor every per-packet number is read against — without it, a cost attributed to an engine silently includes however much of the harness sits inside the timed region. Swept by the `trio` block alongside both engines. |
 | `-Q <n>` | prefetch pipeline depth, i.e. the find queue's size. Power of two, at least 4. Default 64. A burst of `B` packets fills the pipeline `ceil(B/Q)` times, so shortening it separates per-fill cost from per-burst cost — at the default they are the same event and cannot be told apart. |
 
 ## Measurement harness
@@ -41,7 +42,7 @@ Everything that produced a number lives here, not in a scratch directory.
 ```
 ./sweep.sh <outdir> <tag> <mode>     # one ten-queue sweep; QUEUES=... for a subset
 ./run_matrix.sh [block ...]          # the experiment matrix: control crossover
-                                     #   alloc depth repeat depthrep
+                                     #   alloc depth repeat depthrep trio
 python3 extract_results.py /users/sohamb/sweeps ../docs/results_reproduced.json \
         /users/sohamb/sweeps/*.out   # logs -> docs/results_reproduced.json
 python3 analyse_matrix.py [--plot]   # every result, with its own falsification test
