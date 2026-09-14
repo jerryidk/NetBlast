@@ -38,6 +38,18 @@ h2{font-size:25px;letter-spacing:-.014em;font-weight:700;margin:56px 0 14px;
    text-wrap:balance;padding-top:20px;border-top:1px solid var(--rule)}
 h3{font-size:18px;letter-spacing:-.008em;font-weight:600;margin:32px 0 8px}
 p{margin:0 0 16px}
+/* The page has never styled its own links, so every cross-reference rendered in
+   the browser's default blue on a teal-and-rust palette, and turned purple once
+   followed. Both are tokens, so they follow the theme. */
+a{color:var(--a);text-decoration:underline;text-decoration-thickness:1px;
+  text-underline-offset:2px;text-decoration-color:var(--rule)}
+a:visited{color:var(--a)}
+a:hover{text-decoration-color:var(--a)}
+a:focus-visible{outline:2px solid var(--a);outline-offset:2px;border-radius:2px}
+/* The arrows on the summary cards are navigation, not prose: no rule under
+   them, and a little weight so they read as a target. */
+.finding a{text-decoration:none;font-weight:600;padding-left:2px}
+.finding a:hover{text-decoration:underline;text-decoration-color:var(--a)}
 .eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
   color:var(--ink-2);font-weight:600;margin:0 0 14px}
 .lede{font-size:20px;line-height:1.5;color:var(--ink-2);margin:0 0 34px}
