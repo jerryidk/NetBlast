@@ -75,6 +75,19 @@ def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def ylabel(x, top, bottom, text):
+    """Rotated y-axis caption, centred on the plot area.
+
+    rotate(-90) makes text run upward from its anchor point, so anchoring at
+    the top of the plot puts the whole string above the viewBox. Every one of
+    these was clipped. Centre it and anchor in the middle instead, which is
+    also where a reader looks for it.
+    """
+    cy = (top + bottom) / 2
+    return (f'<text x="{x}" y="{cy:.1f}" text-anchor="middle" class="axis" '
+            f'transform="rotate(-90 {x} {cy:.1f})">{esc(text)}</text>')
+
+
 def chart_collapse(old, new):
     """The reported collapse, against the corrected invocation."""
     W, H = 720, 300
@@ -106,7 +119,7 @@ def chart_collapse(old, new):
             p.append(f'<circle cx="{x(q):.1f}" cy="{y(v):.1f}" r="3.4" fill="{col}" '
                      f'stroke="var(--ground)" stroke-width="1.6"/>')
     p.append(f'<text x="{L}" y="{H-6}" class="axis">RX/TX queue pairs</text>')
-    p.append(f'<text x="14" y="{T+4}" class="axis" transform="rotate(-90 14 {T+4})">Mpps</text>')
+    p.append(ylabel(16, T, H - B, "Mpps"))
     p.append("</svg>")
     return "".join(p)
 
@@ -136,7 +149,7 @@ def chart_burst(fits, pts_by):
             p.append(f'<circle cx="{X(xx):.1f}" cy="{Y(yy):.1f}" r="3.4" fill="{col}" '
                      f'stroke="var(--ground)" stroke-width="1.5"/>')
     p.append(f'<text x="{L}" y="{H-6}" class="axis">RX burst size (packets, reciprocal scale)</text>')
-    p.append(f'<text x="14" y="{T+4}" class="axis" transform="rotate(-90 14 {T+4})">core cycles / packet</text>')
+    p.append(ylabel(16, T, H - B, "core cycles / packet"))
     p.append("</svg>")
     return "".join(p)
 
@@ -210,7 +223,10 @@ def chart_crossover(rows):
     rows: [(mode, backing label, P cycles, tlb cycles or None)]
     """
     W = 720
-    L, R, T = 150, 74, 24
+    # L holds row labels up to "dramblast - 4 KiB pages"; R holds the value plus
+    # its "(nnn in page walks)" annotation, which is the longest text in the
+    # figure. Both were sized for shorter strings and clipped at the edges.
+    L, R, T = 186, 176, 24
     bh, gap, grp = 26, 9, 20
     n = len(rows)
     H = T + n * (bh + gap) + grp + 10
@@ -349,7 +365,7 @@ def chart_alloc(rows):
         p.append(f'<text x="{X(x):.1f}" y="{Y(y)-14:.1f}" text-anchor="middle" '
                  f'class="tick">{y:.0f}</text>')
     p.append(f'<text x="{L}" y="{H-6}" class="axis">aligned_alloc / free round trips per burst</text>')
-    p.append(f'<text x="14" y="{T+4}" class="axis" transform="rotate(-90 14 {T+4})">extra cycles per burst</text>')
+    p.append(ylabel(16, T, H - B, "extra cycles per burst"))
     p.append("</svg>")
     return "".join(p), (a, b) if den else (None, None)
 
@@ -561,11 +577,25 @@ TRIO_LAB = {"dramblast": "dramblast", "maglev": "maglev", "none": "no hash table
 LINE_RATE = 93.28
 
 
+def trio_legend():
+    """The figure's key, as page markup rather than as text inside the SVG.
+
+    It lives outside the drawing on purpose: the three curves meet at the
+    offered load, so nothing drawn at the end of a line can identify it.
+    """
+    keys = "".join(
+        f'<span class="key"><span class="sw" style="background:{TRIO_COL[m]}">'
+        f'</span>{TRIO_LAB[m]}</span>'
+        for m in ("dramblast", "maglev", "none"))
+    return ('<div class="legend">' + keys
+            + '<span class="key">dashed: offered load, 93.28 Mpps</span></div>')
+
+
 def chart_trio(rows):
     """Two stacked panels: delivered throughput, then per-packet cost."""
     W = 720
     PH = 258                      # panel height
-    L, R = 58, 118                # right margin holds the inline series labels
+    L, R = 58, 26
     TOP, gapY = 30, 58            # first panel's top edge, and the gap between
     # Height must clear the SECOND panel's tick row, which sits 18px below its
     # plot area, plus the shared x-axis label below that. Sizing it as
@@ -585,7 +615,6 @@ def chart_trio(rows):
             p.append(f'<text x="{L-9}" y="{Y(v)+4:.1f}" text-anchor="end" '
                      f'class="tick">{v:g}</text>')
         p.append(f'<text x="{L}" y="{top-10:.0f}" class="axis">{title}</text>')
-        labels = []
         for mode in ("maglev", "dramblast", "none"):
             t = rows.get(mode)
             if not t:
@@ -599,20 +628,6 @@ def chart_trio(rows):
                 p.append(f'<circle cx="{x(q):.1f}" cy="{Y(v):.1f}" r="3.6" '
                          f'fill="{TRIO_COL[mode]}" stroke="var(--ground)" '
                          f'stroke-width="1.6"/>')
-            lq, lv = pts[-1]
-            labels.append([Y(lv) + 4, x(lq) + 10, TRIO_COL[mode], TRIO_LAB[mode]])
-        # Series labels sit at the right-hand end of each line, which puts them
-        # on top of each other wherever the lines converge -- and in the top
-        # panel all three arms end at the offered load, so all three landed on
-        # the same pixel. Push them apart by at least one line height, keeping
-        # their order, before drawing any of them.
-        labels.sort()
-        for i in range(1, len(labels)):
-            if labels[i][0] - labels[i - 1][0] < 15:
-                labels[i][0] = labels[i - 1][0] + 15
-        for ly, lx, col, lab in labels:
-            p.append(f'<text x="{lx:.1f}" y="{ly:.1f}" class="tick" '
-                     f'fill="{col}" style="font-weight:600">{lab}</text>')
         for q in qs:
             p.append(f'<text x="{x(q):.1f}" y="{top+PH+18:.0f}" '
                      f'text-anchor="middle" class="tick">{q}</text>')
@@ -1288,18 +1303,68 @@ more waiting while one retiring at three instructions per cycle does not.</p>
         outside_rows = "".join(orows)
         outside_mu = sum(outs) / len(outs) if outs else 0.0
         outside_spread = (max(outs) - min(outs)) if outs else 0.0
+        # What the lookup actually does to the memory system, at q=1 where
+        # all three arms sit at a full burst. Both counters are per packet.
+        mrows, miss = [], {}
+        for mode in ("none", "dramblast", "maglev"):
+            r = allc["engine_trio"][mode].get("1", {})
+            if not r.get("steady_mpps"):
+                continue
+            pk = r["steady_mpps"] * 1e6 * PERF_WINDOW
+            ll = (r.get("pmu_LLC-load-misses") or 0) / pk
+            st = (r.get("pmu_stalls_l3_miss") or 0) / pk
+            miss[mode] = (ll, st, r["cycles_per_pkt"])
+            mrows.append(f"<tr><td>{TRIO_LAB[mode]}</td>"
+                         f"<td class='num'>{ll:.3f}</td>"
+                         f"<td class='num'>{st:.1f}</td>"
+                         f"<td class='num'>{r['cycles_per_pkt']}</td></tr>")
+        miss_rows = "".join(mrows)
+
         nf = fit_of(allc, "engine_trio", "none") or {}
         n_Cse, n_r2 = nf.get("se") or 0.0, nf.get("r2") or 0.0
         shipC = f_new.get("C") or dC
         trio_html = f"""
 <section class="wrap" id="floor">
-<h2>2 &middot; What forwarding costs with no lookup at all</h2>
-<p>Every per-packet number below is read out of one timed region, and that
-region contains more than the lookup. Before any of it can be attributed to an
-engine, the harness underneath has to be priced. The forwarding loop already has
-a third branch for exactly this: <span class="mono">-m none</span> writes the
-destination MAC exactly as the other two do, and skips only the lookup that
-produced the address.</p>
+<h2>2 &middot; What the table is, and what forwarding costs without it</h2>
+<p>Both engines do the same job, and it is worth being exact about what that is.
+A packet's flow key is hashed; the hash is looked up in a table of 2<sup>29</sup>
+sixteen-byte entries &mdash; 8&nbsp;GiB &mdash; and the value found is the
+destination MAC the packet is rewritten with. A miss consults a static backend
+table and inserts the result. It is a connection tracker: flow to backend, one
+lookup per packet.</p>
+<p>The <em>size</em> of that table is the workload. Against the generator's 16.8
+million flows it is 3% occupied, so the live set is about 268&nbsp;MB while this
+part has 52.5&nbsp;MiB of last-level cache, and the index is a hash, so there is
+no locality to exploit. Every packet should therefore be one random DRAM read.
+The counters agree, at one queue and a full burst:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>arm</th><th class="num">L3 load misses / packet</th>
+<th class="num">cycles stalled on an L3 miss</th>
+<th class="num">cycles / packet</th></tr></thead>
+<tbody>{miss_rows}</tbody>
+</table></div>
+<p>maglev takes {miss["maglev"][0]:.2f} last-level misses per packet and spends
+{miss["maglev"][1]:.0f} of its {miss["maglev"][2]} cycles stalled on them: one
+DRAM round trip per packet, and half the cost is waiting for it. dramblast
+reports {miss["dramblast"][0]:.3f} and {miss["dramblast"][1]:.1f}, which cannot
+be a real hit rate &mdash; the same table and the same flows would need to hit
+99.3% of the time in a cache a fifth the size of the live set. What differs is
+attribution, not traffic: dramblast's lines are fetched by
+<span class="mono">_mm_prefetch</span> ahead of the load that consumes them, and
+a software prefetch is not a demand load. The memory traffic is the same. Its
+visibility to the counter &mdash; and to the core &mdash; is not.</p>
+<p>So the hash table is not incidental to this experiment; it <em>is</em> the
+experiment. Everything below is a consequence of servicing one random DRAM
+access per packet at 93 million packets per second: the gap between the engines
+is two strategies for the same access, the page-size section exists because the
+thing being translated is 8&nbsp;GiB, the per-burst cost exists because issuing
+the access early requires batching, and the burst-size crossover is exactly
+where the price of batching passes the latency batching hides.</p>
+<p>Which leaves the denominator. Every per-packet number on this page is read
+out of one timed region, and that region contains more than the lookup. The
+forwarding loop already has a third branch for pricing it:
+<span class="mono">-m none</span> writes the destination MAC exactly as the
+other two do, and skips only the lookup that produced the address.</p>
 {snip("main.c", "uint64_t mac = 0xff;",
       "port_statistics[portid][lcore_id].fwded += nb_rx;", before=2,
       note="the forwarding loop's third branch. Same header write as the "
@@ -1314,6 +1379,7 @@ subtracting this arm is a subtraction of identical code, not of an estimate.</p>
 <div class="wide">
 <figure>
   {chart_trio(trio)}
+  {trio_legend()}
   <figcaption>All three engines swept back to back under one tag, so the
   comparison does not span the hours that separate the other arms. Top: what the
   forwarder actually delivers against a generator offering

@@ -111,9 +111,17 @@ def panel_engines(x0, allc):
         for q, v in pts:
             g.append(f'<circle cx="{x(q):.1f}" cy="{y(v):.1f}" r="3.4" '
                      f'fill="{col}"/>')
-        lq, lv = pts[-1]
-        g.append(f'<text x="{x(lq) - 6:.1f}" y="{y(lv) - 10:.1f}" class="val" '
-                 f'text-anchor="end" fill="{col}">{esc(lab)}</text>')
+    # A key in the corner, not names at the ends of the lines: all three arms
+    # finish at the offered load, so an end-of-line label sits on top of the
+    # other two and identifies none of them.
+    ly = B - 14 - 17 * (len(series) - 1)
+    for lab, col, _ in series:
+        g.append(f'<rect x="{L + 12}" y="{ly - 9:.0f}" width="16" height="4" '
+                 f'rx="2" fill="{col}"/>')
+        g.append(f'<circle cx="{L + 20}" cy="{ly - 7:.0f}" r="3.4" fill="{col}"/>')
+        g.append(f'<text x="{L + 36}" y="{ly:.0f}" class="tick" fill="{INK}">'
+                 f'{esc(lab)}</text>')
+        ly += 17
     for q in range(qlo, qhi + 1):
         g.append(f'<text x="{x(q):.1f}" y="{B + 20:.1f}" class="tick" '
                  f'text-anchor="middle">{q}</text>')
@@ -267,8 +275,10 @@ def panel_depth(x0, at64):
              f'text-anchor="middle">prefetch pipeline depth</text>')
     g.append(f'<text x="{L - 58}" y="{T - 12}" class="note" fill="{BLUE}">'
              f'cycles / packet</text>')
-    g.append(f'<text x="{R + 8}" y="{T - 12}" class="note" fill="{ORANGE}">'
-             f'instructions / packet</text>')
+    # Right-anchored: this is the rightmost panel, so a left-anchored caption
+    # at R + 8 ran past the edge of the figure and was cut in half.
+    g.append(f'<text x="{R + 8}" y="{T - 12}" class="note" text-anchor="end" '
+             f'fill="{ORANGE}">instructions / packet</text>')
     return g
 
 

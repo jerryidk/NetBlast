@@ -2397,3 +2397,72 @@ point is not decoration — a paraphrase of what a function does cannot be check
 against the tree, and this document has already recorded one case (§5.13) where
 a claim about `aligned_alloc` rested on a published constant rather than on the
 call actually being made.
+
+### 5.22 What the table is doing, and a counter that undercounts by a hundredfold
+
+Asked plainly what role the hash table plays in all this, the answer turned out
+to be worth measuring rather than asserting, and it produced a caveat about one
+of the counters this investigation has been quoting.
+
+**What the table is.** Both engines do the same job: hash the packet's flow key,
+look the hash up in a table of 2^29 sixteen-byte entries (8 GiB, `sweep.sh`
+`CAPACITY`, `dramblast.h:8-11`), take the value as the destination MAC, and on a
+miss consult a static backend table and insert. It is a connection tracker, one
+lookup per packet.
+
+**What makes it the workload is its size, not its algorithm.** 2^29 entries
+against the generator's 16.8M flows is 3% occupancy, so the live set is ~268 MB
+against this part's 52.5 MiB of L3 (`lscpu`), and the index is a hash, so there
+is no locality to exploit. Every packet should be one random DRAM read. At q=1
+and a full burst, per packet:
+
+| arm | LLC-load-misses | cycles stalled on an L3 miss | cycles/packet |
+|---|---|---|---|
+| no hash table | 0.000 | 0.0 | 5 |
+| dramblast | 0.007 | 0.8 | 98 |
+| maglev | 0.853 | 85.5 | 166 |
+
+maglev is exactly the predicted thing: ~0.85 misses per packet, and 85 of its
+166 cycles stalled waiting for them.
+
+**dramblast's 0.007 is not a hit rate, and saying why matters.** The same table
+and the same flows would require a 99.3% hit rate in a cache a fifth the size of
+the live set, which is arithmetically impossible for hash-distributed access.
+Checked as bandwidth it is worse: 0.007 x 93.26e6 x 64 B is 42 MB/s of fill
+traffic for a workload randomly touching 268 MB at 93 Mpps. The counter is not
+seeing dramblast's fills. The reason is attribution: `LLC-load-misses` counts
+demand loads, and dramblast's lines are brought in by `_mm_prefetch`
+(`dramblast.c:67`, issued in the find loop at `dramblast.c:140-150`) ahead of the
+load that consumes them.
+
+This is the same fact §5.11 recorded from the other side. There the clock-arm
+method put dramblast's memory share at 17.5% while `stalls_l3_miss` said 0.9%,
+and the conclusion was that the prefetch pipeline converts latency into
+throughput rather than removing traffic. The miss counter now says the same
+thing more bluntly: **on a software-prefetched path, both `LLC-load-misses` and
+`stalls_l3_miss` measure exposure, not traffic.** Neither can be read as "how
+much memory this engine touches", and this document should not be read as
+claiming they do anywhere.
+
+**The consequence for the rest of the investigation** is a framing rather than a
+number. The experiment is not really about hashing; it is about servicing one
+random DRAM access per packet at 93 Mpps. The engine gap is two strategies for
+that access — wait for it, or issue it early and find other work. §5.12 exists
+because the thing being translated is 8 GiB. The per-burst cost of §5.13 and
+§5.14 exists because issuing early requires batching. And the burst-size
+crossover is the point where the price of batching passes the latency batching
+hides. The report now opens section 2 with this, because a reader had no way to
+tell from the page what the table was for.
+
+**Figure fixes made at the same time**, recorded because they were invisible
+defects rather than cosmetic preferences. Three rotated y-axis captions were
+anchored at the top of their plot area; `rotate(-90)` makes text run *upward*
+from its anchor, so all three ran off the top of the viewBox and were clipped —
+"core cycles / packet" by 102 px of its 124. They are now centred on the plot
+area and anchored in the middle. The page-backing chart's row labels and its
+"(nnn in page walks)" annotations overran both margins. The three-engine chart's
+series were labelled at the ends of their lines, which cannot work when all
+three converge at the offered load; both that chart and the matrix panel now
+carry a separate key. All of these were found by extracting every `<text>` from
+the generated SVG and checking its extent against the viewBox, not by looking at
+the page — which is the only method that works on a host with no rasteriser.
