@@ -1027,31 +1027,65 @@ untouched, since they are the evidence under investigation.
 
 ## 4. Open questions
 
+Updated 2026-09-14. Items resolved during the night's work are struck through
+with what resolved them, rather than deleted, so the record shows which
+questions turned out to matter.
+
 1. ~~Generator: run as committed or scaled to 8 cores?~~ **RESOLVED** — scaled to
    `-l 0-16` (8 TX + 8 RX), which reproduces `docs/data.txt`'s 16M flows exactly
    and offers 100 GbE line rate. `pktgen/run.sh` still carries the 2-worker
    `-l 0-2`; updating it would make the committed generator match its own
    documentation, but that is a source change and has not been made.
-2. **Highest value remaining: test the allocator attribution.** Hoist the
-   `aligned_alloc`/`free` out of `dramblast_process_frames` into a per-lcore
-   scratch buffer allocated once at init (it is bounded by `MAX_PKT_BURST`), then
-   re-run the sweep. If dramblast's 3.2x collapses toward maglev's 1.3x the
-   attribution is confirmed; if it does not move, the cause is elsewhere in the
-   per-burst path and the write-up must be corrected. One run, decisive either
-   way. Source change — needs approval.
+2. ~~Highest value remaining: test the allocator attribution by hoisting the
+   `aligned_alloc`/`free` out of `dramblast_process_frames`.~~ **SUPERSEDED, and
+   the reasoning behind it was wrong.** The estimate that made the allocator
+   look like the whole per-burst cost came from turbo-era data whose delivered
+   clock was never recorded; refitted on the pinned arm the per-burst cost is
+   ~645 cycles, against 20-40 ns for a hot-tcache round trip, so a plain hoist
+   would move ~10% of it and could not distinguish "small" from "zero". §5.9
+   replaces it with an amplification sweep (`-A N`), which measures what a pair
+   costs on this machine instead of assuming a literature value, paired with a
+   pipeline-depth sweep (`-Q`) that the allocator cannot mimic.
 3. May `main.c` be modified for the measurement fixes (`samples` as `double`,
-   bound `SAMPLE_SIZE`)? Currently worked around in post-processing, which is
-   sufficient but leaves the harness itself still producing biased numbers for
-   anyone who reads its output directly.
-4. Add per-queue-count frequency sampling (median over active cores) to separate
-   real per-packet work from turbo drift across the sweep. Cheap, no source
-   change to `l2fwd` — the sweep driver can sample sysfs alongside each run.
-5. Optionally pin frequency (`scripts/constant_freq.sh`) for a clean absolute
-   cycle count. Machine-wide change; coordinate if the box is shared.
-6. Reproduce against `7e11fc8` (faithful to the data) or against a corrected HEAD
-   invocation with N+1 lcores (faithful to current code)? These measure different
-   threading models.
-7. Apply the one-line `run.sh` fix in §3.6.
+   bound `SAMPLE_SIZE`)? Still worked around in post-processing. The harness
+   itself still produces biased numbers for anyone reading its output directly,
+   which is a trap for the next person rather than for this investigation.
+4. ~~Add per-queue-count frequency sampling.~~ **RESOLVED** — `sweep.sh` measures
+   the delivered clock per run with `perf`, never from sysfs, which under
+   `intel_pstate` reports the P-state request rather than delivery (§5.3). The
+   turbo arm's clock turned out to be a machine constant here — 2993 MHz across
+   a tenfold change in busy cores — because idle states are disabled, so all 56
+   cores always count as active and the ceiling is permanently the six-plus-core
+   turbo entry.
+5. ~~Optionally pin frequency for a clean absolute cycle count.~~ **RESOLVED** —
+   done in §3.4b, and it is what made the per-burst model fit at all. The
+   earlier conclusion that the model "does not hold up" was a statement about
+   uncontrolled frequency, not about the model.
+6. Reproduce against `7e11fc8` or against a corrected HEAD invocation? Still
+   open, and still a question about which threading model is being measured
+   rather than one this data can settle.
+7. ~~Apply the one-line `run.sh` fix.~~ **RESOLVED** as commit `d68a884`.
+
+### Still genuinely open
+
+- **What the ~645 cycles of per-burst work actually are.** Known: it is 86%
+  executed instructions rather than waiting (§5.6), it is resolved at sixteen
+  standard errors, and maglev has no equivalent. The two candidates are the
+  allocator round trip and the batching machinery itself; `-A` and `-Q` separate
+  them and cannot mimic each other.
+- **Why the refactored binary is 6% faster per packet** (§5.10). Behaviour is
+  identical and the difference has the same sign at every queue count, so it is
+  codegen; which change, exactly, has not been chased. It matters only as a
+  reminder that a binary is a variable.
+- **Whether the cross-core page-table contention seen on 4 KiB pages** (§5.12)
+  is really last-level-cache pressure from the page table's own working set.
+  The size and the page-size dependence both fit, but nothing has measured it
+  directly.
+- **Whether any of this transfers off this machine.** Every number here is from
+  one Xeon Gold 5512U with idle states disabled and the uncore locked at
+  2.5 GHz. The *shape* of the result — a fixed per-burst cost against a fixed
+  per-packet one, crossing at a particular burst size — should transfer; the
+  crossing point is a property of this silicon.
 
 ---
 
