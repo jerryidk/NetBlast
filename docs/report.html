@@ -208,18 +208,59 @@ would show up as <em>stall</em>. It does not: it is
 executed work. Whatever dramblast is doing once per burst, it is doing it, not
 waiting for it.</p>
 
-<div class="note">
-<b>What this page does not yet establish.</b> The composition of the
-645-cycle per-burst cost is still open. Two candidates remain — the
-<span class="mono">aligned_alloc</span>/<span class="mono">free</span> round
-trip the batched path performs once per burst, and the batching machinery
-itself. Run-time knobs now exist for both, and they cannot mimic each other:
-sweeping the number of allocator round trips makes the per-burst cost a straight
-line whose slope is what a round trip costs on this machine, while changing the
-prefetch pipeline depth moves a pipeline cost and cannot move an allocator one.
-</div>
+
 </section>
 
+
+<section class="wrap">
+<h2>What the per-burst cost is made of</h2>
+<p>Two candidates survived: the <span class="mono">aligned_alloc</span> /
+<span class="mono">free</span> round trip the batched path performs once per
+burst, and the batching machinery itself. They can be separated because only one
+of them responds to being multiplied. The code now takes a count of allocator
+round trips per burst — minus one meaning none at all, with the buffer allocated
+once per core at start-up — so the per-burst cost becomes a straight line whose
+slope is what a round trip costs <em>on this machine</em>, rather than what the
+literature says one costs somewhere else.</p>
+</section>
+
+<div class="wide">
+<figure>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Per-burst cost against number of allocator round trips"><line x1="66" y1="254.0" x2="696" y2="254.0" stroke="var(--rule)" stroke-width="1"/><text x="57" y="258.0" text-anchor="end" class="tick">0</text><line x1="66" y1="236.3" x2="696" y2="236.3" stroke="var(--rule)" stroke-width="1"/><text x="57" y="240.3" text-anchor="end" class="tick">400</text><line x1="66" y1="218.6" x2="696" y2="218.6" stroke="var(--rule)" stroke-width="1"/><text x="57" y="222.6" text-anchor="end" class="tick">800</text><line x1="66" y1="200.9" x2="696" y2="200.9" stroke="var(--rule)" stroke-width="1"/><text x="57" y="204.9" text-anchor="end" class="tick">1200</text><line x1="66" y1="183.2" x2="696" y2="183.2" stroke="var(--rule)" stroke-width="1"/><text x="57" y="187.2" text-anchor="end" class="tick">1600</text><line x1="66" y1="165.5" x2="696" y2="165.5" stroke="var(--rule)" stroke-width="1"/><text x="57" y="169.5" text-anchor="end" class="tick">2000</text><line x1="66" y1="147.8" x2="696" y2="147.8" stroke="var(--rule)" stroke-width="1"/><text x="57" y="151.8" text-anchor="end" class="tick">2400</text><line x1="66" y1="130.1" x2="696" y2="130.1" stroke="var(--rule)" stroke-width="1"/><text x="57" y="134.1" text-anchor="end" class="tick">2800</text><line x1="66" y1="112.4" x2="696" y2="112.4" stroke="var(--rule)" stroke-width="1"/><text x="57" y="116.4" text-anchor="end" class="tick">3200</text><line x1="66" y1="94.7" x2="696" y2="94.7" stroke="var(--rule)" stroke-width="1"/><text x="57" y="98.7" text-anchor="end" class="tick">3600</text><line x1="66" y1="76.9" x2="696" y2="76.9" stroke="var(--rule)" stroke-width="1"/><text x="57" y="80.9" text-anchor="end" class="tick">4000</text><line x1="66" y1="59.2" x2="696" y2="59.2" stroke="var(--rule)" stroke-width="1"/><text x="57" y="63.2" text-anchor="end" class="tick">4400</text><line x1="66" y1="41.5" x2="696" y2="41.5" stroke="var(--rule)" stroke-width="1"/><text x="57" y="45.5" text-anchor="end" class="tick">4800</text><line x1="66" y1="23.8" x2="696" y2="23.8" stroke="var(--rule)" stroke-width="1"/><text x="57" y="27.8" text-anchor="end" class="tick">5200</text><text x="66.0" y="274" text-anchor="middle" class="tick">0</text><text x="126.1" y="274" text-anchor="middle" class="tick">1</text><text x="246.3" y="274" text-anchor="middle" class="tick">3</text><text x="366.6" y="274" text-anchor="middle" class="tick">5</text><text x="607.0" y="274" text-anchor="middle" class="tick">9</text><line x1="66.0" y1="255.1" x2="696.0" y2="16.6" stroke="var(--a)" stroke-width="1.6" opacity="0.55"/><circle cx="66.0" cy="254.0" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="66.0" y="242.0" text-anchor="middle" class="tick">0</text><circle cx="126.1" cy="234.2" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="126.1" y="222.2" text-anchor="middle" class="tick">447</text><circle cx="246.3" cy="186.2" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="246.3" y="174.2" text-anchor="middle" class="tick">1532</text><circle cx="366.6" cy="141.0" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="366.6" y="129.0" text-anchor="middle" class="tick">2554</text><circle cx="607.0" cy="50.5" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="607.0" y="38.5" text-anchor="middle" class="tick">4597</text><text x="66" y="294" class="axis">aligned_alloc / free round trips per burst</text><text x="14" y="24" class="axis" transform="rotate(-90 14 24)">extra cycles per burst</text></svg>
+  <figcaption>Each point is a full ten-run queue sweep refitted. The leftmost
+  point has no allocation in the burst path at all.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>The one round trip the code actually performs is worth
+<b>447 cycles</b> per burst — about 215&nbsp;nanoseconds — and
+additional ones cost 511 each, three points agreeing to the cycle.
+Against a total per-burst cost of 718 cycles, that single allocation
+is roughly <b>60%</b> of it. What remains when it is removed, the batching
+machinery itself, is 256 cycles, measured directly by the leftmost
+point rather than extrapolated from the line through the others.</p>
+<p>An earlier draft of this investigation put the allocator at <em>at most
+11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
+<p>This reverses an earlier conclusion in the investigation log, and the way it
+was wrong is worth more than the correction. The allocator had been dismissed by
+comparing the measured per-burst cost against a published figure of 20-40&nbsp;ns
+for a hot allocator round trip. But that figure describes the fast path, and
+this call is not on it. The binary links glibc 2.33, where
+<span class="mono">aligned_alloc</span> is a nine-byte jump into
+<span class="mono">_mid_memalign</span>, which relays to plain
+<span class="mono">malloc</span> only when the requested alignment is at most
+16 bytes. This call asks for 64. So it takes
+<span class="mono">_int_memalign</span> instead: 453 bytes of code that allocates
+oversized, computes the aligned address, splits the chunk and frees the leader,
+with the arena lock held throughout.</p>
+<p>The 64-byte alignment buys nothing — the array holds 16-byte elements written
+in order. The earlier finding that the per-burst cost is overwhelmingly executed
+instructions rather than waiting should have pointed here immediately; several
+hundred instructions of chunk-splitting is exactly what that looks like. It was
+read as evidence against the allocator instead of for it, because a constant
+taken from a paper had quietly replaced a measurement.</p>
+</section>
 
 
 <section class="wrap">

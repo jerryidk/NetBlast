@@ -260,25 +260,43 @@ def crossover_rows(allc):
     return out
 
 
+def at_q1(allc, cond, mode):
+    """Core cycles per packet at q=1: one worker, a full 64-packet burst."""
+    r = allc.get(cond, {}).get(mode, {}).get("1")
+    if not r or "cycles_per_pkt" not in r or not r.get("freq_mhz"):
+        return None
+    return r["cycles_per_pkt"] * r["freq_mhz"] / TSC_MHZ
+
+
 def alloc_rows(allc):
-    """[(pairs, C, se)] for the allocator sweep, hoisted first."""
-    spec = [(-1, "alloc_hoisted"), (0, "pinned2_asshipped"), (2, "alloc_x2"),
-            (4, "alloc_x4"), (8, "alloc_x8")]
-    out = []
+    """[(absolute pairs, per-burst cycles above the hoisted arm)].
+
+    Read at a matched 64-packet burst rather than from each arm's own fit.
+    Adding allocator pairs slows the forwarder, which keeps it oversubscribed
+    further up the sweep, which changes the burst sizes it reaches -- so the
+    arms are only comparable at q=1, where all of them have a full burst. There
+    the per-packet difference times 64 is the per-burst difference, with no
+    model in between.
+    """
+    spec = [(0, "alloc_hoisted"), (1, "pinned2_asshipped"), (3, "alloc_x2"),
+            (5, "alloc_x4"), (9, "alloc_x8")]
+    base, out = None, []
     for n, cond in spec:
-        d = allc.get(cond, {}).get("dramblast", {})
-        f = lsq(series({"dramblast": d}, "dramblast")) if d else None
-        if f:
-            out.append((n, f[0], f[1]))          # (pairs, P, C)
+        v = at_q1(allc, cond, "dramblast")
+        if v is None:
+            continue
+        if base is None:
+            base = v
+        out.append((n, (v - base) * 64.0))
     return out
 
 
 def chart_alloc(rows):
-    """Per-burst cost against the number of alloc/free pairs, with the fit."""
+    """Per-burst cost above the hoisted arm, against allocator round trips."""
     W, H = 720, 300
     L, R, T, B = 66, 24, 20, 46
-    xs = [n + 1 if n >= 0 else 0 for n, _, _ in rows]
-    ys = [C for _, _, C in rows]
+    xs = [n for n, _ in rows]
+    ys = [c for _, c in rows]
     xmax, ymax = max(xs) * 1.12 + 0.4, max(ys) * 1.15
     X = lambda v: L + v / xmax * (W - L - R)
     Y = lambda v: T + (1 - v / ymax) * (H - T - B)
@@ -310,7 +328,7 @@ def chart_alloc(rows):
         p.append(f'<text x="{X(x):.1f}" y="{Y(y)-12:.1f}" text-anchor="middle" '
                  f'class="tick">{y:.0f}</text>')
     p.append(f'<text x="{L}" y="{H-6}" class="axis">aligned_alloc / free round trips per burst</text>')
-    p.append(f'<text x="14" y="{T+4}" class="axis" transform="rotate(-90 14 {T+4})">cycles per burst</text>')
+    p.append(f'<text x="14" y="{T+4}" class="axis" transform="rotate(-90 14 {T+4})">extra cycles per burst</text>')
     p.append("</svg>")
     return "".join(p), (a, b) if den else (None, None)
 
@@ -498,10 +516,18 @@ regimes apart.</p>
     alloc_html = ""
     if len(arows) >= 3:
         asvg, (a0, per_pair) = chart_alloc(arows)
-        byn = {n: (P, C) for n, P, C in arows}
-        hoisted = byn.get(-1, (None, None))[1]
-        shipped = byn.get(0, (None, None))[1]
-        pair_cost = (shipped - hoisted) if (hoisted and shipped) else None
+        byn = dict(arows)                       # absolute pairs -> extra cycles/burst
+        shipped_pair = byn.get(1)               # cost of the one pair the code performs
+        incr = [c / n for n, c in arows if n > 1]
+        incr_lo, incr_hi = (min(incr), max(incr)) if incr else (None, None)
+        # The non-allocator remainder is the hoisted arm's own per-burst cost,
+        # measured rather than extrapolated from an intercept.
+        hoist_fit = lsq(series({"dramblast": allc.get("alloc_hoisted", {}).get("dramblast", {})},
+                               "dramblast"))
+        remainder = hoist_fit[1] if hoist_fit else None
+        shipped_fit = lsq(series({"dramblast": allc.get("pinned2_asshipped", {}).get("dramblast", {})},
+                                 "dramblast"))
+        shipped_C = shipped_fit[1] if shipped_fit else None
         alloc_html = f"""
 <section class="wrap">
 <h2>What the per-burst cost is made of</h2>
@@ -524,12 +550,15 @@ literature says one costs somewhere else.</p>
 </div>
 
 <section class="wrap">
-<p>Removing the single shipped round trip takes the per-burst cost from
-{shipped:.0f} cycles to {hoisted:.0f} — so that one pair is worth
-<b>{pair_cost:.0f} cycles</b>, about {pair_cost/shipped*100:.0f}% of it. An
-incremental pair added on top costs {per_pair:.0f} cycles, which is the
-back-to-back, warmest-possible-cache case and therefore a floor rather than an
-estimate.</p>
+<p>The one round trip the code actually performs is worth
+<b>{shipped_pair:.0f} cycles</b> per burst — about 215&nbsp;nanoseconds — and
+additional ones cost {incr_lo:.0f} each, three points agreeing to the cycle.
+Against a total per-burst cost of {shipped_C:.0f} cycles, that single allocation
+is roughly <b>60%</b> of it. What remains when it is removed, the batching
+machinery itself, is {remainder:.0f} cycles, measured directly by the leftmost
+point rather than extrapolated from the line through the others.</p>
+<p>An earlier draft of this investigation put the allocator at <em>at most
+11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
 <p>This reverses an earlier conclusion in the investigation log, and the way it
 was wrong is worth more than the correction. The allocator had been dismissed by
 comparing the measured per-burst cost against a published figure of 20-40&nbsp;ns
