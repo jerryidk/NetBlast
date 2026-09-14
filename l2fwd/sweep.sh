@@ -61,7 +61,25 @@ L2FWD_EXTRA="${L2FWD_EXTRA:-}"
 # ship on different page sizes), and stalls_l3_miss is the cycles actually spent
 # waiting on memory rather than inferred from a clock ratio. Verified to fit the
 # PMU without multiplexing on this part: all six report 100.00% enabled.
-PERF_EVENTS="${PERF_EVENTS:-cycles,instructions,dTLB-load-misses,LLC-load-misses,cpu/event=0xa3,umask=0x06,cmask=0x06,name=stalls_l3_miss/}"
+#
+# The TLB events are given as RAW ENCODINGS rather than perf's generic
+# `dTLB-load-misses` alias. perf has no JSON event file for this part (family 6
+# model 207, Emerald Rapids) -- `perf list` shows only the architectural events
+# -- so the generic alias may map to nothing useful, and on an idle core it read
+# zero where the raw counter read non-zero. A counter that silently reads zero
+# is the worst possible outcome for this experiment, because the crossover
+# predicts small TLB numbers on the 1 GiB arm and zero is not distinguishable
+# from "the alias is broken".
+#
+# dtlb_walk_active is the one that matters: it counts CYCLES spent walking page
+# tables, so it is directly comparable to the per-packet cost rather than
+# needing a latency assumed per walk. walk_completed gives the count of walks,
+# so the two together also give the average walk cost as a by-product.
+PERF_EVENTS="${PERF_EVENTS:-cycles,instructions,\
+cpu/event=0x12,umask=0x0e,name=dtlb_walk_completed/,\
+cpu/event=0x12,umask=0x10,name=dtlb_walk_active/,\
+cpu/event=0xa3,umask=0x06,cmask=0x06,name=stalls_l3_miss/,\
+LLC-load-misses}"
 CAPACITY="${CAPACITY:-536870912}"   # 2^29 entries x 16 B = 8 GiB table
 DPDK_MEM="${DPDK_MEM:-2000}"
 

@@ -4,3 +4,5 @@ result
 *.o
 .*swp
 
+__pycache__/
+*.pyc
