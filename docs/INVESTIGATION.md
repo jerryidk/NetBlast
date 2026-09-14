@@ -1148,12 +1148,12 @@ algebra, so agreement is evidence about the model rather than about convergence.
 
 | arm | mode | P (cycles/packet) | C (cycles/burst) | R² | two-point C |
 |---|---|---|---|---|---|
-| pinned 2.094 GHz | dramblast | 95.2 | **644.5 ± 55** | 0.968 | 638.5 (0.9% away) |
-| pinned 2.094 GHz | maglev | 163.4 | −44.4 ± 26 — **not resolved** | 0.166 | — |
+| pinned 2.094 GHz | dramblast | 95.2 | **644.5 ± 41** | 0.968 | 638.5 (0.9% away) |
+| pinned 2.094 GHz | maglev | 163.4 | −44.4 ± 35 — **not resolved** | 0.166 | — |
 | turbo 2.993 GHz | dramblast | 105.0 | **684.4 ± 55** | 0.951 | 638.9 (6.7% away) |
 | turbo 2.993 GHz | maglev | 200.5 | −26.9 ± 26 — **not resolved** | 0.117 | — |
 
-dramblast's slope is resolved at about twelve standard errors and two independent
+dramblast's slope is resolved at about sixteen standard errors and two independent
 estimators agree on it to 0.9% in the pinned arm. maglev's is indistinguishable
 from zero in both arms, which is not a weak result but a strong one: its cost per
 packet barely moves while its burst collapses from 64 packets to 10
@@ -1260,7 +1260,7 @@ arms reach burst 8 at different queue counts — q=10 pinned against q=8 turbo �
 they differ in worker-core count and in empty-poll rate, and the burst-size
 *distribution* behind an equal mean need not match. The honest reading is that
 `C` carries an additional systematic uncertainty of several percent beyond the
-±55 cycles of fit error, on top of which the turbo arm's burst-4 point is
+±41 cycles of fit error, on top of which the turbo arm's burst-4 point is
 non-monotone (535.6 instructions per packet against 552.1 at burst 7). `C` is
 resolved well enough to distinguish "large" from "zero", which is what §5.5
 claims; it is not resolved well enough to support a precise value, and no
