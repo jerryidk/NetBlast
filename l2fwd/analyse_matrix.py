@@ -109,7 +109,26 @@ def fit_of(allc, cond, mode):
     if not f:
         return None
     P, C, r2, worst, n, se = f
-    return {"P": P, "C": C, "r2": r2, "n": n, "se": se, "pts": pts}
+    # Standard error of the fitted cost AT a given burst, with the P-C
+    # covariance included. Quoting P and C separately understates how well the
+    # curve itself is known, because the two are strongly anti-correlated: a
+    # fit can be badly split between them and still predict the measured costs
+    # tightly. Every cross-arm comparison below is made on this quantity rather
+    # than on C alone.
+    sx = sum(q[0] for q in pts); sxx = sum(q[0] ** 2 for q in pts)
+    den = n * sxx - sx * sx
+    ss_res = sum((q[1] - (P + C * q[0])) ** 2 for q in pts)
+    s2 = ss_res / (n - 2) if n > 2 else 0.0
+    var_P = s2 * sxx / den if den else 0.0
+    var_C = s2 * n / den if den else 0.0
+    cov = -s2 * sx / den if den else 0.0
+    se_at = {}
+    for B in (64, 32, 16, 9):
+        v = var_P + var_C / (B * B) + 2.0 * cov / B
+        se_at[B] = v ** 0.5 if v > 0 else 0.0
+    return {"P": P, "C": C, "r2": r2, "n": n, "se": se, "pts": pts,
+            "se_at": se_at, "cov_pc": cov / (var_P * var_C) ** 0.5
+            if var_P > 0 and var_C > 0 else None}
 
 
 def at_q1(allc, cond, mode):
@@ -299,6 +318,7 @@ def main():
     # whatever the low-count behaviour is. It cannot confirm a constant price.
     # What can: the consecutive slopes between adjacent multi-pair arms, and the
     # intercept of a line through them.
+    amplified_slope = None
     multi = [(n, c) for n, c in q1pts if n >= 3]
     if len(multi) >= 2:
         print("\n      Consecutive slopes between multi-pair arms (independent of")
@@ -342,6 +362,7 @@ def main():
                 print(f"      so {shipped:.0f} is the number to quote. {b:.0f} belongs to a regime")
                 print("      the shipped code is never in, and calibrating the shipped")
                 print(f"      pair from it would overstate by {(b-shipped)/shipped*100:.0f}%.")
+            amplified_slope = b
 
     if len(have) >= 3:
         # Absolute pairs executed: n+1 for n>=0, zero for the hoisted arm.
@@ -390,8 +411,10 @@ def main():
         ps = [(n, f["P"]) for n, f in usable]
         if len(ps) >= 2:
             dP = ps[-1][1] - ps[0][1]
-            print(f"\n    The two estimators disagree on the incremental pair -- 511")
-            print(f"    cycles at matched burst against {b:.0f} from the fit -- and the")
+            amp = amplified_slope if amplified_slope else float("nan")
+            print(f"\n    The two estimators disagree on the incremental pair --")
+            print(f"    {amp:.0f} cycles from the matched-burst slopes against {b:.0f}")
+            print(f"    from the fit -- and the")
             print(f"    reason is visible in P, which is not constant across the arms:")
             print("      " + "  ".join(f"{n:+d}:{P:.0f}" for n, P in ps))
             print(f"    P rises {dP:.0f} cycles from the hoisted arm to the deepest")
@@ -399,7 +422,7 @@ def main():
             print("    per-packet difference by 64 and so charges that rise to the")
             print("    per-burst term; the fit separates them but pays for it with a")
             print("    model. The truth is bracketed, not pinned: an incremental pair")
-            print(f"    costs between {b:.0f} and 511 cycles.")
+            print(f"    costs between {b:.0f} and {amp:.0f} cycles.")
             print("    Why P moves at all is not established. A once-per-burst")
             print("    allocation should not touch per-packet cost; cache and TLB")
             print("    pollution from the allocator's own chunk walking is the")
@@ -427,13 +450,62 @@ def main():
     print(row("depth = 64  (as shipped)", base_d))
     ds = [(d, g(c, "dramblast")) for d, c in ((8, "depth_8"), (16, "depth_16"),
                                               (32, "depth_32"))] + [(64, base_d)]
-    ds = [(d, f) for d, f in ds if f]
+    ds = [(d, f) for d, f in ds if f and "C" in f]
     if len(ds) >= 3:
         lo, hi = ds[0], ds[-1]
         print(f"\n    depth {lo[0]} -> {hi[0]}:  P {lo[1]['P']:.1f} -> {hi[1]['P']:.1f}"
               f"   C {lo[1]['C']:.1f} -> {hi[1]['C']:.1f}")
+        # Model-free companion. The P/C split is correlated (r ~ -0.7 here), so
+        # a claim about C alone is fragile; the cost evaluated at a matched
+        # burst is not, and a genuine slope difference shows up as the two
+        # curves crossing. Errors propagated WITH the covariance.
+        print("\n    Model-free check -- cost at matched burst, since P and C are")
+        print("    strongly anti-correlated in this fit and a claim about either")
+        print("    alone is fragile. A real slope difference shows up as a crossing:")
+        hdr = "      " + "".join(f"{'B=%d' % b:>14}" for b in (64, 32, 16, 9))
+        print(hdr)
+        for dpt, f in ds:
+            cells = []
+            for B in (64, 32, 16, 9):
+                v = f["P"] + f["C"] / B
+                sg = f.get("se_at", {}).get(B)
+                cells.append(f"{v:8.1f}+/-{sg:<4.1f}" if sg else f"{v:8.1f}     ")
+            print(f"   d{dpt:<3}" + "".join(f"{c:>14}" for c in cells))
         print("    A pipeline-ramp C must fall with depth while P rises.")
         print("    An allocator C must be flat in depth.")
+        # Sharper, because the allocator share is now measured rather than
+        # hypothetical: one alloc/free pair happens per burst at every depth, so
+        # that part of C cannot move. Only the remainder is available to depth.
+        shipped_pair = dict(q1pts).get(1) if q1pts else None
+        if shipped_pair and base_d:
+            floor = shipped_pair
+            room = base_d["C"] - floor
+            print(f"\n    Sharper, using the measured allocator cost. Exactly one")
+            print(f"    alloc/free pair runs per burst at EVERY depth -- the buffer is")
+            print(f"    sized by the burst length, not by the queue depth (dramblast.c")
+            print(f"    :243), so the -Q knob does not change what is allocated. That")
+            print(f"    makes {floor:.0f} cycles a FLOOR under C at every depth, and the")
+            print(f"    remaining {room:.0f} of the shipped C ({base_d['C']:.0f}) is all the")
+            print(f"    pipeline ramp can possibly own.")
+            print(f"\n    The test is a floor, not a spread: C may rise with depth")
+            print(f"    without limit, but no arm's C may fall below the allocator's")
+            print(f"    own per-burst cost.")
+            for dpt, f in ds:
+                z = (floor - f["C"]) / (f["se"] or 1.0)
+                mark = ("OK" if f["C"] >= floor else
+                        f"below the floor by {floor - f['C']:.0f} ({z:.1f} sigma)")
+                print(f"      depth {dpt:>2}: C = {f['C']:6.1f} +/- {f['se']:.0f}   {mark}")
+            worst = min(ds, key=lambda t: t[1]["C"])
+            if worst[1]["C"] < floor:
+                zz = (floor - worst[1]["C"]) / (worst[1]["se"] or 1.0)
+                if zz > 3:
+                    print("    -> FALSIFIED. A per-burst term cannot be smaller than a")
+                    print("       cost the burst pays unconditionally.")
+                else:
+                    print("    -> not falsified, but the headroom is gone: at the")
+                    print("       shallowest depth the non-allocator part of C is")
+                    print("       consistent with zero, which is what a ramp that")
+                    print("       scales with queue depth would look like.")
 
     if "--plot" not in sys.argv:
         return

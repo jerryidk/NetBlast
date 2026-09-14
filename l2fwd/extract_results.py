@@ -125,7 +125,15 @@ for cond, prefix in CONDS.items():
     for mode in ("maglev", "dramblast"):
         fresh[mode] = {}
         for q in range(1, 11):
-            log = SP / f"{prefix}_{mode}_q{q}.log"
+            # run_matrix.sh puts each arm's logs in its own subdirectory, while
+            # the earlier single-arm sweeps wrote them flat. Accept either, so
+            # one extractor invocation covers the whole tree instead of needing
+            # to be re-run once per arm with a different root (which is how the
+            # depth arms were silently missing from the first analysis).
+            name = f"{prefix}_{mode}_q{q}.log"
+            log = SP / name
+            if not log.exists():
+                log = SP / prefix / name
             if not log.exists():
                 continue
             txt = log.read_text(errors="replace").replace("\x1b", "")
