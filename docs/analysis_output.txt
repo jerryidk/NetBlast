@@ -1,0 +1,388 @@
+====================================================================================
+CONTROL   the -B/-A/-Q build with no flags must reproduce the original
+====================================================================================
+  dramblast, as shipped               P =    87.7   C =    717.6    +/-42   R2 0.974  n=10
+  maglev, as shipped                  P =   163.0   C =    -36.1    +/-19   R2 0.321  n=10
+
+    dramblast vs the pre-refactor arm
+      P    95.2 ->    87.7   -7.6 cycles (-8.0%)
+      C   644.5 ->   717.6   +73.1 cycles = 1.2 sigma of the combined fit error  (not significant)
+      at burst 64:  105.3 ->   98.9 cycles/packet (-6.1%)
+      at burst  8:  175.8 ->  177.4 cycles/packet (+0.9%)
+
+    maglev vs the pre-refactor arm
+      P   163.4 ->   163.0   -0.4 cycles (-0.3%)
+      C   -44.4 ->   -36.1   +8.3 cycles = 0.2 sigma of the combined fit error  (not significant)
+      at burst 64:  162.7 ->  162.4 cycles/packet (-0.2%)
+      at burst  8:  157.8 ->  158.5 cycles/packet (+0.4%)
+
+    Read every row below against `pinned2_asshipped`, never against the
+    pre-refactor arm: the two binaries are not interchangeable.
+
+====================================================================================
+1. CROSSOVER   each mode on the other's page backing
+====================================================================================
+  dramblast  1 GiB (as shipped)       P =    87.7   C =    717.6    +/-42   R2 0.974  n=10
+  dramblast  2 MiB                    P =    92.9   C =    694.8    +/-66   R2 0.933  n=10
+  dramblast  4 KiB                    P =   116.2   C =    532.2    +/-74   R2 0.867  n=10
+  maglev     2 MiB (as shipped)       P =   163.0   C =    -36.1    +/-19   R2 0.321  n=10
+  maglev     1 GiB                    P =   149.9   C =    -22.6    +/-25   R2 0.090  n=10
+  maglev     4 KiB                    n=10, but every run sat at burst 64 -- never saturated the link, so no slope is measurable
+
+  At q=1 -- one worker, a full 64-packet burst -- so free of both the
+  per-burst term and the cross-core page-table contention:
+      dramblast  1 GiB      97.8 core cycles/packet
+      dramblast  2 MiB     101.8 core cycles/packet
+      dramblast  4 KiB     116.7 core cycles/packet
+      maglev     2 MiB     167.6 core cycles/packet
+      maglev     1 GiB     153.6 core cycles/packet
+      maglev     4 KiB     209.5 core cycles/packet
+
+      dramblast, 1 GiB -> 2 MiB:    +4.0 cycles
+      dramblast, 1 GiB -> 4 KiB:   +19.0 cycles
+      maglev,    2 MiB -> 1 GiB:   -14.0 cycles
+
+      as-shipped gap between engines:    69.8 cycles
+      gap at MATCHED 1 GiB pages:        55.9 cycles   (80% of it survives)
+      -> the surviving gap is not address translation; it is the
+         prefetch pipeline.
+
+====================================================================================
+2. ALLOCATOR   C against the number of aligned_alloc/free pairs per burst
+====================================================================================
+  pairs = -1  (hoisted)               P =    89.3   C =    255.7    +/-13   R2 0.981  n=10
+  pairs = +0                          P =    87.7   C =    717.6    +/-42   R2 0.974  n=10
+  pairs = +2                          P =    96.9   C =   1330.5    +/-73   R2 0.976  n=10
+  pairs = +4                          P =    99.5   C =   2066.1    +/-56   R2 0.994  n=10
+  pairs = +8                          P =   147.8   C =   1173.8   +/-324   R2 0.622  n=10
+
+    shipped pair, by removing it:  C 256 (hoisted) -> 718 (as shipped)
+      = 462 cycles for the one round trip the code actually performs, 10.6 sigma
+      = 64.4% of the per-burst cost; 256 cycles are something else
+
+    At a MATCHED 64-packet burst (q=1), no fit involved:
+       pairs   cyc/pkt  vs hoisted  x64 per burst  per pair
+           0      90.8         0.0              0         0
+           1      97.8         7.0            447       447
+           3     114.7        23.9           1532       511
+           5     130.7        39.9           2554       511
+           9     162.6        71.8           4597       511
+
+      Consecutive slopes between multi-pair arms (independent of
+      each other, unlike total/pairs):
+        3 -> 5 pairs: 510.78 cycles per pair
+        5 -> 9 pairs: 510.78 cycles per pair
+      line through the multi-pair arms: +0.0 + 510.78 * pairs
+      -> the intercept is zero to within 0.0 cycles, which is
+         the structural check: k pairs cost exactly k times one pair,
+         with nothing left over, as an additive per-pair cost requires.
+
+      Extrapolated to the shipped arm: 510.8, measured 446.9
+      -> the lone shipped pair is -63.8 cycles (-12.5%) below the line.
+
+      But this is NOT a privileged first pair. If pair #1 were
+      intrinsically 447 and every later pair 511, the
+      multi-pair totals would have to be:
+        3 pairs: model 1468  measured 1532  off by +64
+        5 pairs: model 2490  measured 2554  off by +64
+        9 pairs: model 4533  measured 4597  off by +64
+      A constant miss at every arm. The discount does not persist,
+      so in an arm with three or more pairs EVERY pair costs
+      511 including the first.
+
+      Honest statement: a LONE pair costs 447 cycles; with three
+      or more in flight each costs 511. Pair cost depends on how
+      many pairs there are, not on which one it is -- an allocator
+      state or load effect (more live chunks, more splitting, a
+      larger free-list working set), not a position effect.
+
+      CONSEQUENCE: the shipped configuration has exactly one pair,
+      so 447 is the number to quote. 511 belongs to a regime
+      the shipped code is never in, and calibrating the shipped
+      pair from it would overstate by 14%.
+
+    (excluded from the line: pairs=[8] -- that arm is so slow it
+     never left a 64-packet burst, so its own slope is not measurable)
+
+    weighted fit   C = 262 + 365 * pairs
+     pairs     measured      line   residual   sigma
+         0    255.7 +/-13       261.9       -6.3    -0.5
+         1    717.6 +/-42       627.4       90.2     2.2
+         3   1330.5 +/-73      1358.2      -27.7    -0.4
+         5   2066.1 +/-56      2089.0      -22.9    -0.4
+    chi-square 5.3 on 2 dof   p = 0.07235
+    -> consistent with one price per pair
+       (R-squared is deliberately not quoted for this regression.
+        With this few points and this x-range it is near-1 whatever
+        happens, and it says nothing about whether the residuals
+        are consistent with the error bars -- which is the only
+        question that matters here.)
+    -> an INCREMENTAL pair costs 365 cycles = 174 ns
+
+    The two estimators disagree on the incremental pair --
+    511 cycles from the matched-burst slopes against 365
+    from the fit -- and the
+    reason is visible in P, which is not constant across the arms:
+      -1:89  +0:88  +2:97  +4:99
+    P rises 10 cycles from the hoisted arm to the deepest
+    usable one. The matched-burst estimator multiplies the whole
+    per-packet difference by 64 and so charges that rise to the
+    per-burst term; the fit separates them but pays for it with a
+    model. The truth is bracketed, not pinned: an incremental pair
+    costs between 365 and 511 cycles.
+    Why P moves at all is not established. A once-per-burst
+    allocation should not touch per-packet cost; cache and TLB
+    pollution from the allocator's own chunk walking is the
+    obvious candidate and has not been measured.
+
+    NONE OF THIS MOVES THE HEADLINE. The shipped pair is 447
+    cycles by matched burst and 462 by the fit difference, and the
+    non-allocator remainder is measured directly at 256 +/- 13.
+    The allocator is ~60-64% of the per-burst cost on either route.
+
+    non-allocator per-burst cost, measured directly by the
+    hoisted arm: 256 +/- 13 cycles
+    (NOT the fitted intercept -- that is an extrapolation, and
+     where the line is rejected it is a wrong one.)
+
+====================================================================================
+3. DEPTH   P and C against the prefetch pipeline depth
+====================================================================================
+  depth = 8                           P =   115.8   C =    375.4    +/-49   R2 0.882  n=10
+  depth = 16                          P =    97.5   C =    646.5    +/-18   R2 0.994  n=10
+  depth = 32                          P =    91.2   C =    733.7    +/-18   R2 0.995  n=10
+  depth = 64  (as shipped)            P =    87.7   C =    717.6    +/-42   R2 0.974  n=10
+
+    depth 8 -> 64:  P 115.8 -> 87.7   C 375.4 -> 717.6
+
+    Model-free check -- cost at matched burst, since P and C are
+    strongly anti-correlated in this fit and a claim about either
+    alone is fragile. A real slope difference shows up as a crossing:
+                B=64          B=32          B=16           B=9
+   d8     121.7+/-2.6    127.5+/-2.3    139.3+/-2.5    157.5+/-4.1 
+   d16    107.6+/-0.7    117.7+/-0.6    137.9+/-0.8    169.4+/-1.5 
+   d32    102.7+/-0.7    114.1+/-0.6    137.1+/-0.7    172.7+/-1.4 
+   d64     98.9+/-1.8    110.1+/-1.5    132.5+/-1.6    167.4+/-3.2 
+    A pipeline-ramp C must fall with depth while P rises.
+    An allocator C must be flat in depth.
+
+    Sharper, using the measured allocator cost. Exactly one
+    alloc/free pair runs per burst at EVERY depth -- the buffer is
+    sized by the burst length, not by the queue depth (dramblast.c
+    :243), so the -Q knob does not change what is allocated. That
+    makes 447 cycles a FLOOR under C at every depth, and the
+    remaining 271 of the shipped C (718) is all the
+    pipeline ramp can possibly own.
+
+    The test is a floor, not a spread: C may rise with depth
+    without limit, but no arm's C may fall below the allocator's
+    own per-burst cost.
+      depth  8: C =  375.4 +/- 49   below the floor by 72 (1.5 sigma)
+      depth 16: C =  646.5 +/- 18   OK
+      depth 32: C =  733.7 +/- 18   OK
+      depth 64: C =  717.6 +/- 42   OK
+    -> not falsified, but the headroom is gone: at the
+       shallowest depth the non-allocator part of C is
+       consistent with zero, which is what a ramp that
+       scales with queue depth would look like.
+
+====================================================================================
+3b. DEPTH AT A MATCHED BURST   cycles vs instructions, no fit
+====================================================================================
+  error bars = within-sweep scatter AND the 0.45 cycle
+  run-to-run floor measured by the repeat arm (section 4)
+  depth  runs   cycles/pkt   insns/pkt    IPC
+      8     5    119.0+/-0.55       414.0   3.48
+     16     5    106.8+/-0.58       411.9   3.86
+     32     5    102.2+/-0.73       405.0   3.96
+     64     5    100.4+/-0.87       397.8   3.96
+
+    depth 64 -> 8 at a matched burst of 64:
+      instructions per packet  +4.1%
+      cycles       per packet  +18.5%
+      IPC  3.96 -> 3.48
+    -> a shallower prefetch pipeline does not make the forwarder
+       do meaningfully more work. It makes it wait. This is the
+       load-bearing depth result and it survives without the
+       burst-cost model, which cannot separate the two.
+
+    Per-fill ramp calibrated on depths 8 and 16 (two points,
+    one parameter): ramp = 165 +/- 9 cycles per pipeline fill.
+    Depth 32's excess over depth 64, at burst 64:
+      predicted by the ramp   2.58 +/- 0.14
+      measured                1.80 +/- 1.14
+      null (no effect)        0.00
+      -> 0.7 sigma from the prediction, 1.6 sigma from the null.
+      -> INCONCLUSIVE, leaning toward the model. The
+         measurement is consistent with the prediction and
+         does not exclude the null. The effect being tested
+         is only about twice the run-to-run floor, which is
+         all the resolution one sweep per depth buys;
+         separating them needs repeats at depth 32, not a
+         better fit.
+
+      (An earlier run of this analysis called this 3.1 sigma
+       from the null and said the model had survived. That used
+       only the within-sweep scatter, which cannot see drift
+       between sweeps taken hours apart. The repeat arm measured
+       that drift afterwards, and including it is what moved the
+       verdict.)
+
+====================================================================================
+3c. DEPTH 32 vs 64, DECIDED   three interleaved repeats at burst 64
+====================================================================================
+   repeat   depth 32   depth 64    excess
+        1     102.00      99.80     +2.20   (5 and 5 queue counts)
+        2     102.00      99.50     +2.50   (5 and 4 queue counts)
+        3     101.50      99.50     +2.00   (4 and 4 queue counts)
+
+  paired mean excess  +2.23 cycles/packet
+  sd of the 3 pairs   0.25   standard error 0.15
+  95% interval (t, 2 dof)  [+1.61, +2.86]
+
+  ramp model predicts +2.58   null predicts 0.00
+  -> the interval contains the prediction and EXCLUDES the
+     null. The per-fill ramp model is confirmed at depth 32,
+     on a test that could have gone the other way.
+
+====================================================================================
+3d. ONE MODEL ACROSS ALL DEPTHS   W + ramp*ceil(B/Q)/B + K/B
+====================================================================================
+  n=40 points from four depth arms, three parameters
+    steady per-packet work   W    =   91.4 +/- 2.0 cycles
+    cost of one pipeline fill ramp =    166 +/- 25 cycles
+    per-burst constant        K    =    477 +/- 30 cycles
+    residual rms 6.25 cycles over a 98-172 range
+
+    K is the interesting one. Nothing in this fit knows about the
+    allocator -- the queue depth was varied, the number of
+    alloc/free pairs was not -- yet K = 477 lands on the
+    447 cycles the amplification sweep measured for that
+    pair directly: 1.0 sigma apart.
+
+    per-arm residual rms (the step model's own fit quality):
+      Q= 8  n=10  rms  9.11  worst -27.53
+      Q=16  n=10  rms  3.62  worst  +7.05
+      Q=32  n=10  rms  5.00  worst +11.19
+      Q=64  n=10  rms  4.85  worst  -9.55
+
+    Sensitivity -- refit without the arm the step model fits worst:
+      without Q=8:  W = 88.9 +/- 1.3   ramp = 142 +/- 31   K = 589 +/- 30   rms 3.33
+      K moves by +112 cycles, 2.6 sigma.
+      -> K IS NOT STABLE. The agreement with the measured
+         allocator pair holds only with the shallowest arm
+         included, and that arm is the one the step model
+         describes worst. Report the convergence as
+         suggestive, not as a second measurement of the
+         allocator. The ramp, which barely moves, is the
+         parameter this fit actually determines.
+
+====================================================================================
+4. REPEATABILITY   the same condition, re-run after the whole matrix
+====================================================================================
+
+  dramblast
+     q       burst    run 1    run 2    diff
+     1          64       98       98      +0
+     2          64      102      102      +0
+     3          64      100      100      +0
+     4          64      100       99      -1
+     5          64      102      102      +0
+     6       38/62      106      103      -3   (different burst, not counted)
+     7       16/27      122      118      -4   (different burst, not counted)
+     8       15/18      134      136      +2   (different burst, not counted)
+     9          11      156      151      -5
+    10           9      172      166      -6
+    -> 7 matched-burst points: mean -1.71, rms 2.98, worst -6 cycles/packet
+       split by burst: 5 points at burst 64 rms 0.45;  2 at smaller bursts rms 5.52
+    fitted C: 718 then 689  (-28, 0.6 sigma of the two fits' own errors)
+
+  maglev
+     q       burst    run 1    run 2    diff
+     1          64      168      168      +0
+     2          64      165      167      +2
+     3          64      166      166      +0
+     4          64      162      163      +1
+     5          64      163      163      +0
+     6          64      163      160      -3
+     7       63/16      160      159      -1   (different burst, not counted)
+     8       49/47      158      151      -7   (different burst, not counted)
+     9        17/5      158      158      +0   (different burst, not counted)
+    10         5/7      157      160      +3   (different burst, not counted)
+    -> 6 matched-burst points: mean +0.00, rms 1.53, worst -3 cycles/packet
+    fitted C: -36 then -26  (+10, 0.3 sigma of the two fits' own errors)
+
+  RUN-TO-RUN FLOOR: rms 2.42 cycles/packet over 13 matched-burst points, worst -6.
+  At burst 64 alone, where every matched-burst claim here is
+  made: rms 1.17 over 11 points. The two differ
+  because at small bursts the burst size is an outcome rather
+  than a setting, and it wanders between runs.
+
+  Read every claim in this analysis against that number:
+    allocator pair               7.0 cycles/packet at burst 64   (6x the floor)
+    depth 64 -> 8               18.6 cycles/packet at burst 64   (16x)
+    depth 64 -> 32               1.8 cycles/packet at burst 64   (2x)
+  A difference of the same order as the floor is not a result,
+  however many digits the fit prints.
+
+====================================================================================
+5. THE 4 KiB CORE-COUNT EFFECT   more walks, or slower walks?
+====================================================================================
+
+  dramblast, 4 KiB   (only runs that stayed at burst 64)
+     q  cyc/pkt  walk cyc/pkt  walks/pkt  insn/pkt
+     1      117         107.3      0.992     398.7
+     2      118         108.3      0.992     398.6
+     3      118         111.2      0.991     398.2
+     4      120         116.1      0.992     398.9
+     5      126         119.7      0.995     398.6
+     6      129         127.6      0.988     397.1
+    q=1 -> q=6:  cycles +12   walk cycles +20.3   walks -0.004   instructions -1.6
+      walks per packet are flat (0.99 -> 0.99), so this
+      is not more walking. Walk OCCUPANCY rises 19%, so each
+      walk takes longer as more cores walk at once.
+      59% of the added occupancy reaches the per-packet cost.
+
+  maglev, 4 KiB   (only runs that stayed at burst 64)
+     q  cyc/pkt  walk cyc/pkt  walks/pkt  insn/pkt
+     1      210         101.7      0.995     285.8
+     2      207         100.1      0.991     285.6
+     3      208         102.1      0.995     285.7
+     4      208         104.9      0.994     285.6
+     5      209         108.3      0.994     285.7
+     6      210         113.5      0.991     285.6
+     7      211         116.7      0.992     285.4
+     8      213         120.1      1.000     285.5
+     9      214         128.0      0.988     286.2
+    10      214         129.8      0.974     286.0
+    q=1 -> q=10:  cycles +4   walk cycles +28.1   walks -0.021   instructions +0.2
+      walks per packet are flat (0.99 -> 0.97), so this
+      is not more walking. Walk OCCUPANCY rises 28%, so each
+      walk takes longer as more cores walk at once.
+      14% of the added occupancy reaches the per-packet cost.
+
+  dramblast, 1 GiB  (control: no walks)   (only runs that stayed at burst 64)
+     q  cyc/pkt  walk cyc/pkt  walks/pkt  insn/pkt
+     1       98           0.0      0.000     398.8
+     2      102           0.0      0.000     398.1
+     3      100           0.0      0.000     398.1
+     4      100           0.0      0.000     398.4
+     5      102           0.0      0.000     395.9
+    q=1 -> q=5:  cycles +4   walk cycles +0.0   walks +0.000   instructions -2.9
+      no walks at all, and no core-count effect: the control.
+
+  At a MATCHED queue count, q=1 -> q=6 (the two arms cover
+  different ranges, so the percentages above are not comparable):
+    dramblast  walk cycles  +20.3   cost +12   reaching the cost: 59%
+    maglev     walk cycles  +11.8   cost  +0   reaching the cost: 0%
+    -> the engine that is already waiting absorbs the extra walk
+       time; the one retiring at IPC 3.4 has no slack to hide it
+       in. That is the opposite direction from the prefetch
+       result, and for a consistent reason: a pipeline hides
+       latency it ISSUED EARLY, not latency added underneath it.
+
+  CONCLUSION: the core-count term that breaks the burst model on
+  4 KiB pages is contention for shared page-table structures. It is
+  measured in the DURATION of a walk, not in how many walks happen,
+  and it vanishes entirely on 1 GiB pages where there are none.
+  No new runs were needed -- the counters were already in the logs.
