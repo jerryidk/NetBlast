@@ -579,6 +579,7 @@ def main():
     # defined relative to it and because differencing against a common baseline
     # is what the error propagation has to respect: the baseline's own error
     # enters every comparison and must not be dropped after the first one.
+    ramp_pred = None
     cal = [(q, at64[q][0] - at64[64][0],
             ((at64[q][2] or 0) ** 2 + (at64[64][2] or 0) ** 2) ** 0.5)
            for q in (8, 16) if q in at64]
@@ -589,6 +590,7 @@ def main():
         sxx = sum(x * x for x in xs)
         ramp = sum(x * y for x, y in zip(xs, ys)) / sxx
         se_ramp = (sum((x * g) ** 2 for x, g in zip(xs, sgs))) ** 0.5 / sxx
+        ramp_pred = ramp * (1.0 / 32 - 1.0 / 64)
         print(f"\n    Per-fill ramp calibrated on depths 8 and 16 (two points,")
         print(f"    one parameter): ramp = {ramp:.0f} +/- {se_ramp:.0f} cycles "
               f"per pipeline fill.")
@@ -628,6 +630,74 @@ def main():
             print("       between sweeps taken hours apart. The repeat arm measured")
             print("       that drift afterwards, and including it is what moved the")
             print("       verdict.)")
+
+    # ---- the depth-32 test, decided by repeats rather than by a fit -------
+    # Three interleaved sweeps of each arm at burst 64. The statistic is the
+    # PAIRED difference within each repeat: the arms were run alternately, so a
+    # pairing removes any drift common to a pair, and the spread of the three
+    # paired differences is an honest error bar that needs no assumption about
+    # which sources of variation the sweep did or did not see.
+    pairs = []
+    for i in (1, 2, 3):
+        def armmean(cond):
+            runs = [r for r in allc.get(cond, {}).get("dramblast", {}).values()
+                    if r.get("rx_batch") == 64]
+            return (sum(r["cycles_per_pkt"] for r in runs) / len(runs),
+                    len(runs)) if runs else None
+        a = armmean(f"depth_32_r{i}")
+        b = armmean(f"depth_64_r{i}")
+        if a and b:
+            pairs.append((i, a[0], b[0], a[0] - b[0], a[1], b[1]))
+    if len(pairs) >= 2:
+        print()
+        print("=" * 84)
+        print("3d. DEPTH 32 vs 64, DECIDED   three interleaved repeats at burst 64")
+        print("=" * 84)
+        print(f"  {'repeat':>7} {'depth 32':>10} {'depth 64':>10} {'excess':>9}")
+        for i, a, b, d, na, nb in pairs:
+            print(f"  {i:>7} {a:>10.2f} {b:>10.2f} {d:>+9.2f}   "
+                  f"({na} and {nb} queue counts)")
+        ds = [d for _, _, _, d, _, _ in pairs]
+        n = len(ds)
+        m = sum(ds) / n
+        sd = (sum((v - m) ** 2 for v in ds) / (n - 1)) ** 0.5 if n > 1 else 0.0
+        sem = sd / n ** 0.5
+        # t rather than z: three paired differences is two degrees of freedom,
+        # and a normal quantile would understate the interval by about a third.
+        tcrit = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571}.get(n - 1, 2.0)
+        print(f"\n  paired mean excess  {m:+.2f} cycles/packet")
+        print(f"  sd of the {n} pairs   {sd:.2f}   standard error {sem:.2f}")
+        print(f"  95% interval (t, {n-1} dof)  [{m - tcrit*sem:+.2f}, "
+              f"{m + tcrit*sem:+.2f}]")
+        # The prediction carried forward from the calibration above, which used
+        # only the depth-8 and depth-16 arms, so it is independent of every
+        # number in this block.
+        pred = ramp_pred
+        if pred is not None:
+            print(f"\n  ramp model predicts {pred:+.2f}   null predicts 0.00")
+            inside_pred = m - tcrit * sem <= pred <= m + tcrit * sem
+            inside_null = m - tcrit * sem <= 0.0 <= m + tcrit * sem
+            if inside_pred and not inside_null:
+                print("  -> the interval contains the prediction and EXCLUDES the")
+                print("     null. The per-fill ramp model is confirmed at depth 32,")
+                print("     on a test that could have gone the other way.")
+            elif inside_null and not inside_pred:
+                print("  -> the interval contains the null and EXCLUDES the")
+                print("     prediction. The ramp calibrated on the two shallow arms")
+                print("     does not extrapolate to depth 32, so the per-fill cost")
+                print("     is not constant in the depth. The matched-burst")
+                print("     cycles-vs-instructions result is unaffected: it uses no")
+                print("     model.")
+            elif inside_pred and inside_null:
+                print("  -> the interval contains BOTH. Still inconclusive, now with")
+                print("     a measured error bar rather than an assumed one. Three")
+                print("     repeats were not enough; the effect is small relative to")
+                print("     the run-to-run spread and more repeats are the only")
+                print("     thing that would help.")
+            else:
+                print("  -> the interval excludes both hypotheses. Something other")
+                print("     than the two considered is happening; do not pick the")
+                print("     nearer one.")
 
     # ---- one model across every depth arm ---------------------------------
     # The per-arm P + C/B fits are four separate two-parameter models that
