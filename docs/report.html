@@ -55,6 +55,22 @@ code{background:var(--panel);border:1px solid var(--rule);border-radius:3px;
 .finding p{margin:0;font-size:16px;line-height:1.5}
 .finding b{font-weight:600}
 figure{margin:30px 0 26px}
+figure.code{margin:22px 0 24px}
+figure.code pre{
+  margin:0;background:var(--panel);border:1px solid var(--rule);
+  border-left:3px solid var(--a);border-radius:3px;
+  padding:14px 16px;overflow-x:auto;
+}
+figure.code code{
+  background:none;border:0;padding:0;display:block;white-space:pre;
+  font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.55;color:var(--ink);
+}
+figure.code figcaption{margin-top:9px;font-size:13px}
+figure.code figcaption code{
+  background:var(--panel);border:1px solid var(--rule);border-radius:3px;
+  padding:1px 5px;display:inline;white-space:normal;font-size:12px;
+}
 figure svg{width:100%;height:auto;display:block}
 figcaption{font-size:14px;line-height:1.5;color:var(--ink-2);margin-top:12px;
   font-family:Archivo,sans-serif}
@@ -89,62 +105,72 @@ footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);
 
 <header class="wrap">
   <p class="eyebrow">NetBlast &middot; l2fwd on Intel E810-C, 100 GbE</p>
-  <h1>Why the forwarder looked like it fell off a cliff</h1>
-  <p class="lede">The reported collapse at specific queue-pair counts was a
-  harness bug. Underneath it there is a real, much smaller queue-count effect,
-  and taking it apart says something precise about what the two lookup engines
-  trade against each other — and reverses one of this investigation's own
-  earlier conclusions.</p>
+  <h1>Where a forwarded packet's cycles go</h1>
+  <p class="lede">A reported throughput collapse turned out to be a harness bug.
+  Underneath it is a real and much smaller queue-count effect, and taking that
+  effect apart prices every layer between the wire and the answer &mdash; the
+  forwarding loop, the page tables, the lookup algorithm, and one line of
+  allocation nobody meant to pay for.</p>
 </header>
 
 <main>
 <section class="wrap">
+<p>The argument runs in six steps, each one the precondition for the next.</p>
 <div class="findings">
-  <div class="finding"><span class="n">01</span><p><b>The dips are not a
-  performance phenomenon.</b> <code>run.sh</code> gave N lcores for N queues,
-  but serving N queues needs N+1 — one worker each plus the main lcore. Above a
-  threshold the run died in <code>rte_exit("Not enough cores")</code> and the
-  reported figure was a floor, not a measurement. With the corrected invocation
-  both engines scale cleanly to line rate.</p></div>
+  <div class="finding"><span class="n">01</span><p><b>Fix the instrument.</b>
+  <code>run.sh</code> gave N lcores for N queues, but serving N queues needs
+  N+1. Above a threshold the run died in
+  <code>rte_exit("Not enough cores")</code> and the reported figure was a floor,
+  not a measurement. <a href="#rig">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">02</span><p><b>The real effect is a cost
-  paid once per RX burst, not per packet.</b> Fitting
-  <span class="mono">cycles/packet = P + C/B</span> across the sweep gives
-  dramblast <span class="mono">C = 645</span> cycles per burst
-  (R&sup2; 0.968); maglev's slope is indistinguishable from zero. As the
-  queue count rises the same packet stream is split over more queues, bursts
-  shrink, and dramblast's fixed cost is amortised over fewer packets.</p></div>
+  <div class="finding"><span class="n">02</span><p><b>Price the floor.</b> With
+  the lookup removed and nothing else changed, the forwarder holds line rate at
+  <b>two</b> queue pairs, where dramblast needs seven and maglev nine, and costs
+  5 cycles per packet inside the
+  timed region. The lookup is 95&ndash;97% of the per-packet cost. The same
+  subtraction run backwards prices what the timed region <em>omits</em>: about
+  29 cycles per packet of RX, TX and
+  driver. <a href="#floor">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">03</span><p><b>Both engines spend nearly
-  the same number of cycles computing. The whole difference is time spent
-  waiting.</b> 72 cycles of computation for dramblast against
-  77 for maglev — within 6% — while
-  maglev waits 41.3 ns per packet and dramblast only 10.9 ns. The
-  software prefetch pipeline hides about 74% of the same
-  memory access. Note that equal <em>cycles</em> is not equal work: dramblast
-  retires about 40% more instructions per packet, at more than twice the
-  instructions-per-cycle. Doing more, faster, to wait less is the
-  trade.</p></div>
+  <div class="finding"><span class="n">03</span><p><b>Make the two engines
+  comparable.</b> As shipped they differ in address translation as well as
+  algorithm: 8 TLB entries against 4096. Swapping each onto the other's page
+  size shows translation is about a fifth of the gap, not the explanation.
+  <a href="#pages">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">04</span><p><b>Most of that per-burst
-  cost is one call to <code>aligned_alloc</code>.</b> Sweeping the number of
-  round trips the burst performs prices one at
-  <b>462&ndash;527 cycles</b> —
-  64&ndash;73% of the whole
-  per-burst figure, against an earlier estimate of <em>at most 11%</em> taken
-  from a published number rather than measured. The 64-byte alignment request,
-  which buys nothing, is what routes the call off glibc's fast path. It is a
-  range because the counter is an integer and one tick is 64 cycles per
-  burst — quoting it tighter than that produced a retracted result.</p></div>
+  <div class="finding"><span class="n">04</span><p><b>Find what depends on
+  queue count.</b> A cost paid once per RX <em>burst</em>, not per packet.
+  Fitting <span class="mono">cycles/packet = P + C/B</span> gives dramblast
+  <span class="mono">C = 645</span> cycles per burst (R&sup2; 0.968);
+  maglev's slope is indistinguishable from zero. So dramblast is the cheaper
+  engine only while the burst holds more than 9.5 packets.
+  <a href="#burst">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">05</span><p><b>The prefetch pipeline is
-  worth about 165 cycles each time it fills, and it hides latency rather than
-  removing work.</b> Shortening it eightfold costs 4.1% more instructions per
-  packet but 18.5% more cycles. That per-fill price was calibrated on two depths
-  and then predicted a third before it was run: predicted +2.58 cycles per
-  packet, measured +2.14 over three paired repeats, with no-effect
-  excluded and the point prediction at the edge of the tighter interval.</p></div>
+  <div class="finding"><span class="n">05</span><p><b>Take that cost apart.</b>
+  It is executed work, not waiting. Most of it is one call to
+  <code>aligned_alloc</code> &mdash;
+  <b>462&ndash;527 cycles</b>, against an earlier estimate of
+  <em>at most 11%</em> taken from a published figure rather than measured. The
+  remainder is the prefetch pipeline's ramp, worth about 165 cycles each time it
+  fills. <a href="#composition">&rarr;</a></p></div>
+
+  <div class="finding"><span class="n">06</span><p><b>Say what it is worth.</b>
+  The counter is an integer, the identical condition run twice differs by
+  0.45
+  cycles per packet, and three claims on this page have been retracted by later
+  measurement. All three are kept, with the reasoning that produced them.
+  <a href="#corrections">&rarr;</a></p></div>
 </div>
+</section>
+
+<section class="wrap" id="rig">
+<h2>1 &middot; The collapse was the instrument</h2>
+<p>The committed sweep showed both engines falling roughly seventyfold at
+specific queue-pair counts and never recovering. The shape is wrong for a
+performance phenomenon &mdash; it is quantised, and it never comes back &mdash;
+and the cause is in the core assignment. One lcore is claimed per queue, and the
+main lcore is skipped, so serving N queues needs N+1 lcores. Given N, the loop
+runs off the end of the enabled set.</p>
 </section>
 
 <div class="wide">
@@ -155,21 +181,211 @@ footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);
     <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
     <span class="key">dashed: as reported &middot; solid: corrected invocation</span>
   </div>
-  <figcaption>The committed data falls roughly seventyfold to a quantised floor
-  and never recovers. That floor is <span class="mono">rte_exit</span>, not
-  throughput. Re-run with one lcore per queue plus the main lcore, both engines
-  scale linearly until they meet the 93.28&nbsp;Mpps line rate of the
+  <figcaption>That floor is <span class="mono">rte_exit</span>, not throughput.
+  Re-run with one lcore per queue plus the main lcore, both engines scale
+  linearly until they meet the 93.28&nbsp;Mpps line rate of the
   generator.</figcaption>
 </figure>
 </div>
 
 <section class="wrap">
-<h2>What is actually queue-count dependent</h2>
+<p>The sweep driver in this repository carries the correction, and says so where
+it makes it, because the difference between the two invocations is one arithmetic
+expression and it silently converts a benchmark into a crash report.</p>
+<figure class="code"><pre><code>7  #   run.sh:   MAX_CORE=$(( (NUM_CORES - 1) * 2 ))   -&gt;  N lcores for N queues
+8  #   here:     MAX_CORE=$(( NUM_CORES * 2 ))         -&gt;  N+1 lcores for N queues</code></pre><figcaption><span class="mono">l2fwd/sweep.sh:7&ndash;8</span> &mdash; the whole of the fix, and the reason the original numbers looked the way they did.</figcaption></figure>
+<h3>What the instrument can resolve</h3>
+<p>The second property of the rig matters just as much and is easier to miss:
+cycles per packet are reported as an <b>integer</b>, the quotient of two running
+totals.</p>
+<figure class="code"><pre><code>217      printf("\nCycle per fwd packet: %lu",
+218             total_hash_duration / total_packets_fwded);</code></pre><figcaption><span class="mono">l2fwd/main.c:217&ndash;218</span> &mdash; an integer quotient of two running totals. At a 64-packet burst one printed tick is 64 cycles per burst.</figcaption></figure>
+<p>Every number on this page is a mean of small integers, and nothing is
+meaningful below one tick. Counted that way the claims here are many ticks
+wide &mdash; the engine gap 64, the page-size effects 19 to 44, the allocator
+round trip 8 &mdash; with three exceptions that are marked as approximate where
+they appear. Re-running the identical condition lands <em>below</em> one tick,
+which is both the right answer and the scale for reading everything else. Two
+results on this page were retracted for being quoted past this line;
+<a href="#corrections">they are set out at the end</a>.</p>
+</section>
+
+
+<section class="wrap" id="floor">
+<h2>2 &middot; What forwarding costs with no lookup at all</h2>
+<p>Every per-packet number below is read out of one timed region, and that
+region contains more than the lookup. Before any of it can be attributed to an
+engine, the harness underneath has to be priced. The forwarding loop already has
+a third branch for exactly this: <span class="mono">-m none</span> writes the
+destination MAC exactly as the other two do, and skips only the lookup that
+produced the address.</p>
+<figure class="code"><pre><code>351            for (uint16_t j = 0; j &lt; nb_rx; j++) {
+352              unsigned dst_port = l2fwd_dst_ports[portid];
+353              uint64_t mac = 0xff;
+354              l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+355            }
+356            port_statistics[portid][lcore_id].fwded += nb_rx;</code></pre><figcaption><span class="mono">l2fwd/main.c:351&ndash;356</span> &mdash; the forwarding loop's third branch. Same header write as the other two engines; no table, no key.</figcaption></figure>
+<p>The timed region is the same in all three cases &mdash; one
+<span class="mono">rte_rdtsc</span> before the branch, one after &mdash; so
+subtracting this arm is a subtraction of identical code, not of an estimate.</p>
+<figure class="code"><pre><code>309          uint64_t start = rte_rdtsc();</code></pre><figcaption><span class="mono">l2fwd/main.c:309</span> &mdash; the region every 'cycles per packet' on this page is measured over.</figcaption></figure>
+</section>
+
+<div class="wide">
+<figure>
+  <svg viewBox="0 0 720 648" role="img" aria-label="Throughput and per-packet cost of dramblast, maglev and no hash table against queue-pair count"><line x1="58" y1="288.0" x2="602" y2="288.0" stroke="var(--rule)" stroke-width="1"/><text x="49" y="292.0" text-anchor="end" class="tick">0</text><line x1="58" y1="223.5" x2="602" y2="223.5" stroke="var(--rule)" stroke-width="1"/><text x="49" y="227.5" text-anchor="end" class="tick">25</text><line x1="58" y1="159.0" x2="602" y2="159.0" stroke="var(--rule)" stroke-width="1"/><text x="49" y="163.0" text-anchor="end" class="tick">50</text><line x1="58" y1="94.5" x2="602" y2="94.5" stroke="var(--rule)" stroke-width="1"/><text x="49" y="98.5" text-anchor="end" class="tick">75</text><line x1="58" y1="30.0" x2="602" y2="30.0" stroke="var(--rule)" stroke-width="1"/><text x="49" y="34.0" text-anchor="end" class="tick">100</text><text x="58" y="20" class="axis">delivered throughput, Mpps</text><path d="M58.0,260.2 L118.4,232.4 L178.9,204.9 L239.3,177.1 L299.8,149.5 L360.2,122.5 L420.7,94.2 L481.1,66.3 L541.6,47.3 L602.0,47.3" fill="none" stroke="var(--b)" stroke-width="2.2"/><circle cx="58.0" cy="260.2" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="118.4" cy="232.4" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="178.9" cy="204.9" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="239.3" cy="177.1" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="299.8" cy="149.5" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="360.2" cy="122.5" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="420.7" cy="94.2" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="481.1" cy="66.3" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="541.6" cy="47.3" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="602.0" cy="47.3" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><path d="M58.0,246.7 L118.4,208.1 L178.9,167.0 L239.3,126.3 L299.8,88.4 L360.2,50.4 L420.7,47.3 L481.1,47.3 L541.6,47.3 L602.0,47.4" fill="none" stroke="var(--a)" stroke-width="2.2"/><circle cx="58.0" cy="246.7" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="118.4" cy="208.1" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="178.9" cy="167.0" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="239.3" cy="126.3" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="299.8" cy="88.4" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="360.2" cy="50.4" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="420.7" cy="47.3" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="481.1" cy="47.3" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="541.6" cy="47.3" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="602.0" cy="47.4" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><path d="M58.0,118.1 L118.4,47.3 L178.9,47.3 L239.3,47.3 L299.8,47.3 L360.2,47.3 L420.7,47.3 L481.1,47.3 L541.6,47.3 L602.0,47.3" fill="none" stroke="var(--ink-2)" stroke-width="2.2"/><circle cx="58.0" cy="118.1" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="118.4" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="178.9" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="239.3" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="299.8" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="360.2" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="420.7" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="481.1" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="541.6" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="602.0" cy="47.3" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><text x="612.0" y="51.3" class="tick" fill="var(--b)" style="font-weight:600">maglev</text><text x="612.0" y="66.3" class="tick" fill="var(--ink-2)" style="font-weight:600">no hash table</text><text x="612.0" y="81.3" class="tick" fill="var(--a)" style="font-weight:600">dramblast</text><text x="58.0" y="306" text-anchor="middle" class="tick">1</text><text x="118.4" y="306" text-anchor="middle" class="tick">2</text><text x="178.9" y="306" text-anchor="middle" class="tick">3</text><text x="239.3" y="306" text-anchor="middle" class="tick">4</text><text x="299.8" y="306" text-anchor="middle" class="tick">5</text><text x="360.2" y="306" text-anchor="middle" class="tick">6</text><text x="420.7" y="306" text-anchor="middle" class="tick">7</text><text x="481.1" y="306" text-anchor="middle" class="tick">8</text><text x="541.6" y="306" text-anchor="middle" class="tick">9</text><text x="602.0" y="306" text-anchor="middle" class="tick">10</text><line x1="58" y1="47.3" x2="602" y2="47.3" stroke="var(--ink)" stroke-width="1" stroke-dasharray="3 4" opacity="0.55"/><text x="598" y="41.3" text-anchor="end" class="tick">offered load 93.28 Mpps</text><line x1="58" y1="604.0" x2="602" y2="604.0" stroke="var(--rule)" stroke-width="1"/><text x="49" y="608.0" text-anchor="end" class="tick">0</text><line x1="58" y1="535.4" x2="602" y2="535.4" stroke="var(--rule)" stroke-width="1"/><text x="49" y="539.4" text-anchor="end" class="tick">50</text><line x1="58" y1="466.9" x2="602" y2="466.9" stroke="var(--rule)" stroke-width="1"/><text x="49" y="470.9" text-anchor="end" class="tick">100</text><line x1="58" y1="398.3" x2="602" y2="398.3" stroke="var(--rule)" stroke-width="1"/><text x="49" y="402.3" text-anchor="end" class="tick">150</text><line x1="58" y1="346.0" x2="602" y2="346.0" stroke="var(--rule)" stroke-width="1"/><text x="49" y="350.0" text-anchor="end" class="tick">200</text><text x="58" y="336" class="axis">cycles per forwarded packet</text><path d="M58.0,376.4 L118.4,379.1 L178.9,379.1 L239.3,379.1 L299.8,379.1 L360.2,377.8 L420.7,379.1 L481.1,380.5 L541.6,379.1 L602.0,373.6" fill="none" stroke="var(--b)" stroke-width="2.2"/><circle cx="58.0" cy="376.4" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="118.4" cy="379.1" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="178.9" cy="379.1" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="239.3" cy="379.1" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="299.8" cy="379.1" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="360.2" cy="377.8" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="420.7" cy="379.1" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="481.1" cy="380.5" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="541.6" cy="379.1" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="602.0" cy="373.6" r="3.6" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><path d="M58.0,469.6 L118.4,465.5 L178.9,466.9 L239.3,468.3 L299.8,465.5 L360.2,465.5 L420.7,447.7 L481.1,423.0 L541.6,401.1 L602.0,376.4" fill="none" stroke="var(--a)" stroke-width="2.2"/><circle cx="58.0" cy="469.6" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="118.4" cy="465.5" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="178.9" cy="466.9" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="239.3" cy="468.3" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="299.8" cy="465.5" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="360.2" cy="465.5" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="420.7" cy="447.7" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="481.1" cy="423.0" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="541.6" cy="401.1" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="602.0" cy="376.4" r="3.6" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><path d="M58.0,597.1 L118.4,595.8 L178.9,591.7 L239.3,588.9 L299.8,588.9 L360.2,583.4 L420.7,580.7 L481.1,571.1 L541.6,572.5 L602.0,577.9" fill="none" stroke="var(--ink-2)" stroke-width="2.2"/><circle cx="58.0" cy="597.1" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="118.4" cy="595.8" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="178.9" cy="591.7" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="239.3" cy="588.9" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="299.8" cy="588.9" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="360.2" cy="583.4" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="420.7" cy="580.7" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="481.1" cy="571.1" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="541.6" cy="572.5" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="602.0" cy="577.9" r="3.6" fill="var(--ink-2)" stroke="var(--ground)" stroke-width="1.6"/><text x="612.0" y="377.6" class="tick" fill="var(--b)" style="font-weight:600">maglev</text><text x="612.0" y="392.6" class="tick" fill="var(--a)" style="font-weight:600">dramblast</text><text x="612.0" y="581.9" class="tick" fill="var(--ink-2)" style="font-weight:600">no hash table</text><text x="58.0" y="622" text-anchor="middle" class="tick">1</text><text x="118.4" y="622" text-anchor="middle" class="tick">2</text><text x="178.9" y="622" text-anchor="middle" class="tick">3</text><text x="239.3" y="622" text-anchor="middle" class="tick">4</text><text x="299.8" y="622" text-anchor="middle" class="tick">5</text><text x="360.2" y="622" text-anchor="middle" class="tick">6</text><text x="420.7" y="622" text-anchor="middle" class="tick">7</text><text x="481.1" y="622" text-anchor="middle" class="tick">8</text><text x="541.6" y="622" text-anchor="middle" class="tick">9</text><text x="602.0" y="622" text-anchor="middle" class="tick">10</text><text x="58" y="642" class="axis">RX/TX queue pairs</text></svg>
+  <figcaption>All three engines swept back to back under one tag, so the
+  comparison does not span the hours that separate the other arms. Top: what the
+  forwarder actually delivers against a generator offering
+  93.28&nbsp;Mpps. Bottom: cycles inside the timed region. Both engines
+  buy their way to line rate with cores; the no-table arm is there at two.
+  </figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>With no hash table the forwarder reaches the offered load at
+<b>two queue pairs</b> and stays there; dramblast needs
+7, maglev 9. One worker alone carries
+65.8&nbsp;Mpps of the 93.28 offered, against
+16.0 and 10.8. Whatever else is
+true of this system, the packet path is not what limits it. The lookup is, and
+the rest of this page is about the lookup.</p>
+<p>Inside the timed region, at a full 64-packet burst, the floor is
+<b>5 cycles per packet</b> against 98 for dramblast and
+166 for maglev at the same burst and the same queue count. So
+95% of dramblast's per-packet cost and
+97% of maglev's is the lookup itself. That is the licence
+the rest of this page needs: a difference between two engines is a difference
+between two lookups, not between two harnesses.</p>
+
+<h3>What the timed region does not contain</h3>
+<p>The subtraction also runs the other way, and gives something the timed region
+cannot report at all. <span class="mono">rte_eth_rx_burst</span>, the TX buffer
+and the driver are all <em>outside</em> the timestamp pair, so no cycles-per-packet
+figure on this page includes them. At one queue the single worker busy-polls at
+100%, so the cycles it has per packet is simply its delivered clock over its
+delivered rate &mdash; and the gap between that and the timed region is the part
+of the packet path this instrument never sees.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>arm</th><th class="num">cycles/packet, total</th>
+<th class="num">inside the timed region</th><th class="num">outside it</th></tr></thead>
+<tbody><tr><td>no hash table</td><td class='num'>31.8</td><td class='num'>5</td><td class='num'>26.8</td></tr><tr><td>dramblast</td><td class='num'>130.8</td><td class='num'>98</td><td class='num'>32.8</td></tr><tr><td>maglev</td><td class='num'>194.3</td><td class='num'>166</td><td class='num'>28.3</td></tr></tbody>
+</table></div>
+<p>Three arms whose delivered rates differ sixfold agree on
+<b>29&nbsp;&plusmn;&nbsp;6 cycles per
+packet</b> of RX, TX and driver. They did not have to: if the subtraction were
+an artefact of the method it would scale with the thing being subtracted, and it
+does not. This is also the number that reconciles the two panels above &mdash;
+why a forwarder costing five cycles per packet inside the region still needs two
+cores to hold line rate.</p>
+
+<h3>The floor is not quite flat</h3>
+<p>Fitted the same way as everything else, the no-table arm has a small
+per-burst term of its own: <span class="mono">C = 32 &plusmn;
+12</span> cycles per burst, which is the two timestamp reads and the
+loop entry, charged to every burst in every arm. Against dramblast's
+718 that is <b>4%</b> &mdash; small, but it is the
+first thing that would have to be subtracted if the per-burst cost were ever
+quoted as an absolute. The fit itself is poor (R&sup2; 0.45), and for a
+reason worth stating: this arm is fast enough to run down to two-packet bursts,
+where the printed integer is 5 to 24 and rounding is a large fraction of the
+value. Treat 32 as a bound, not a measurement. Differences taken between
+two arms &mdash; which is every comparison that follows &mdash; are untouched
+either way, because the instrument cancels.</p>
+</section>
+
+
+
+<section class="wrap" id="pages">
+<h2>3 &middot; Was it ever about page size?</h2>
+<p>The two engines do not only differ in how they look a key up. They differ in
+how their table is mapped: dramblast takes 8 GiB of 1 GiB hugepages, eight TLB
+entries; maglev's ordinary allocation is promoted by transparent hugepages to
+2 MiB pages, four thousand and ninety-six of them against a translation buffer
+that holds about two thousand. Every comparison between the two was therefore a
+comparison of algorithm <em>and</em> address translation at once. So each engine
+was run on the other's page size, and on 4 KiB pages, which neither ships
+with.</p>
+<figure class="code"><pre><code>306    /* As shipped this was an unconditional MAP_HUGETLB|MAP_HUGE_1GB mmap (2 MiB
+307       below 1 GiB). It now goes through backing_alloc so -B can put dramblast on
+308       maglev's page size and vice versa; with no -B the behaviour is unchanged. */
+309    return backing_alloc(bytes, bytes &gt; PAGE_SIZE_1GB ? BACKING_1G : BACKING_THP2M);</code></pre><figcaption><span class="mono">l2fwd/libsashstore/dramblast.c:306&ndash;309</span> &mdash; dramblast asks for 1 GiB pages by policy: 8 GiB of table is 8 TLB entries.</figcaption></figure>
+<figure class="code"><pre><code>45    /* aligned_alloc(4096, 8 GiB) as shipped, which THP promotes to 2 MiB pages
+46       (measured: whole table shows up in AnonHugePages). Stated explicitly here
+47       so the -B matrix can move it to 1 GiB or hold it down at 4 KiB. */
+48    maglev_conntrack.pairs = backing_alloc(size, BACKING_THP2M);</code></pre><figcaption><span class="mono">l2fwd/libsashstore/maglev.c:45&ndash;48</span> &mdash; maglev asks for nothing in particular, and transparent hugepages give it 2 MiB pages: 4096 entries against a translation buffer that holds about 2048.</figcaption></figure>
+<p>The <span class="mono">-B</span> flag exists to break that tie: it overrides
+each mode's default so the two can be compared at equal address translation, and
+on 4 KiB pages, which neither ships with.</p>
+</section>
+
+<div class="wide">
+<figure>
+  <svg viewBox="0 0 720 264" role="img" aria-label="Per-packet cost of each mode on each page backing"><text x="138" y="41" text-anchor="end" class="barlab">dramblast &#183; 1 GiB pages</text><rect x="150" y="24" width="196.2" height="26" fill="var(--a)"/><text x="355.2" y="41" class="tick">98</text><text x="138" y="76" text-anchor="end" class="barlab">dramblast &#183; 2 MiB THP</text><rect x="150" y="59" width="204.2" height="26" fill="var(--a)"/><rect x="150" y="59" width="73.0" height="26" fill="var(--ink)" opacity="0.45"/><text x="363.2" y="76" class="tick">102   (36 in page walks)</text><text x="138" y="111" text-anchor="end" class="barlab">dramblast &#183; 4 KiB pages</text><rect x="150" y="94" width="234.2" height="26" fill="var(--a)"/><rect x="150" y="94" width="215.2" height="26" fill="var(--ink)" opacity="0.45"/><text x="393.2" y="111" class="tick">117   (107 in page walks)</text><text x="138" y="166" text-anchor="end" class="barlab">maglev &#183; 1 GiB pages</text><rect x="150" y="149" width="308.2" height="26" fill="var(--b)"/><text x="467.2" y="166" class="tick">154</text><text x="138" y="201" text-anchor="end" class="barlab">maglev &#183; 2 MiB THP</text><rect x="150" y="184" width="336.3" height="26" fill="var(--b)"/><rect x="150" y="184" width="51.5" height="26" fill="var(--ink)" opacity="0.45"/><text x="495.3" y="201" class="tick">168   (26 in page walks)</text><text x="138" y="236" text-anchor="end" class="barlab">maglev &#183; 4 KiB pages</text><rect x="150" y="219" width="420.3" height="26" fill="var(--b)"/><rect x="150" y="219" width="204.1" height="26" fill="var(--ink)" opacity="0.45"/><text x="579.3" y="236" class="tick">210   (102 in page walks)</text></svg>
+  <div class="legend">
+    <span class="key"><span class="sw" style="background:var(--a)"></span>dramblast</span>
+    <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
+    <span class="key"><span class="sw" style="background:var(--ink);opacity:.45"></span>cycles spent walking page tables</span>
+  </div>
+  <figcaption>Cost at a single queue with a full 64-packet burst, so neither
+  the per-burst term nor cross-core page-table contention is in the number.
+  Page-walk cycles, shown inside each bar, are counted directly
+  (<span class="mono">dtlb_walk_active</span>) rather than inferred from a miss
+  rate times an assumed latency — and they are consistently larger than the cost
+  the page change actually adds, because a good deal of walking happens
+  underneath other work.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>Giving maglev dramblast's 1 GiB pages moves its per-packet cost by
+14 cycles — 20% of the 70-cycle gap between the two
+engines. So the confound was real, and it was worth finding, and it is a fifth
+of the story. Address translation is not the explanation.</p>
+<p>The sharper result is in how differently the two engines react to the same
+change. Dropping from 1 GiB pages to 4 KiB costs dramblast 19 cycles
+and maglev 56 — close to three times as much. The prefetch pipeline is
+not only hiding the data access; it is hiding the <em>page walk</em>, which the
+prefetch itself triggers, early, so it completes underneath later work. That is
+why the gap between the engines widens as pages shrink, from 56 cycles
+at 1 GiB to 93 at 4 KiB. A configuration change that hurts both engines
+hurts the unprefetched one three times harder.</p>
+<p>And the counters make a trap visible. maglev on 2 MiB pages spends 25.6
+cycles per packet with a page walk in flight, but removing the walks entirely
+saves only 14 — so even the engine with no prefetching at all overlaps
+about 45% of its walking under other work. dramblast on 2 MiB pages spends 27%
+of every core cycle with a walk outstanding and pays 4 cycles for it.
+Walk occupancy is not walk cost, and reading it as cost would have overstated
+this whole section sixfold.</p>
+
+<h3>The one thing on this page the burst model cannot express</h3>
+<p>On 4 KiB pages the cost rises with the <em>number of queues</em> while the
+burst stays pinned at 64 — and the model has no term for how many cores are
+running. The counters already recorded answer what it is. Across every queue
+count, in both engines, the number of page walks per packet is flat at 0.99 and
+instructions per packet are flat too. What rises is the time each walk takes:
+walk occupancy per packet climbs 19% over six cores for dramblast and 28% over
+ten for maglev. The same binary on 1 GiB pages takes no walks at all and shows
+no core-count effect whatsoever, which is the control.</p>
+<p>So the extra cost is <b>contention for shared page-table structures</b>,
+measured in the duration of a walk rather than in how many happen. At a matched
+six queues, dramblast's walk occupancy rises 20.3 cycles per packet and 12 of
+them reach the cost; maglev's rises 11.8 and none of them do. That is the
+opposite direction from the prefetch result earlier on this page, for a reason
+that is consistent with it: a pipeline hides latency it issued early, not
+latency added underneath it, and an engine already waiting has slack to absorb
+more waiting while one retiring at three instructions per cycle does not.</p>
+</section>
+
+
+<section class="wrap" id="burst">
+<h2>4 &middot; What is actually queue-count dependent</h2>
 <p>Offered load is held at line rate while the queue count rises, so the same
-packet stream is divided over more queues and the average RX burst shrinks —
-from 64 packets down to 4 — with nothing else about the workload changing. That
-makes the sweep an instrument for separating a per-packet cost from a per-burst
-one, because only the second depends on burst size.</p>
+packet stream is divided over more queues and the average RX burst shrinks &mdash;
+from 64 packets down to 4 &mdash; with nothing else about the workload changing.
+That makes the sweep an instrument for separating a per-packet cost from a
+per-burst one, because only the second depends on burst size.</p>
 </section>
 
 <div class="wide">
@@ -192,17 +408,29 @@ one, because only the second depends on burst size.</p>
 dramblast is cheaper than maglev exactly while</p>
 <blockquote>the RX burst holds more than 9.5 packets.</blockquote>
 <p>Above that, dramblast wins by up to 40%. Below it, it loses. That single
-inequality is the whole shape of the queue-count dependence — and it is why the
-engine that looks faster in a microbenchmark can be the slower one in a
+inequality is the whole shape of the queue-count dependence &mdash; and it is why
+the engine that looks faster in a microbenchmark can be the slower one in a
 deployment that spreads traffic across many queues.</p>
+<p>One bookkeeping note, because two numbers for the same quantity appear on this
+page. The fit above is taken on the original binary, because the clock-arm
+decomposition in the next section needs a matched turbo run and only that binary
+has one: <span class="mono">C = 645 &plusmn; 41</span> cycles per
+burst. Everything that compares one arm against another is read instead against
+the control arm of the refactored build, where the same fit gives
+<span class="mono">718 &plusmn; 42</span>. The two differ
+by 1.2&sigma; of their combined
+error, which is to say they are the same measurement; but a difference taken
+across the two would not be.</p>
+</section>
 
-<h2>Splitting the cost into work and waiting</h2>
+<section class="wrap" id="composition">
+<h2>5 &middot; What the per-burst cost is made of</h2>
 <p>A cost measured in core cycles at two different clock speeds separates
 computation from memory access, because the two scale differently: instructions
 retire in a fixed number of <em>cycles</em>, while a DRAM access takes a fixed
 number of <em>nanoseconds</em> and therefore costs more cycles on a faster core.
-Running the identical binary at 2.094 GHz and 2.993 GHz gives
-two equations and two unknowns.</p>
+Running the identical binary at 2.094 GHz and 2.993 GHz gives two
+equations and two unknowns.</p>
 </section>
 
 <div class="wide">
@@ -221,19 +449,45 @@ two equations and two unknowns.</p>
 </div>
 
 <section class="wrap">
-<p>That last row matters because it kills the obvious explanation. If the
-per-burst cost were the prefetch pipeline failing to fill on a short burst, it
-would show up as <em>stall</em>. It does not: it is
+<p>That last row is what narrows the search. If the per-burst cost were the
+prefetch pipeline failing to fill on a short burst, it would show up as
+<em>stall</em>. It does not: it is
 86%
 executed work. Whatever dramblast is doing once per burst, it is doing it, not
-waiting for it.</p>
+waiting for it &mdash; so the thing to look for is several hundred instructions,
+somewhere on the per-burst path.</p>
+
+<h3>The same split, arrived at twice</h3>
+<p>The split above is inferred from how the cost responds to the clock. The
+processor will also tell you directly: it counts the cycles in which nothing
+executes because an L3 miss is outstanding. Two methods, no shared
+assumptions.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>engine</th><th class="num">cycles/pkt</th><th class="num">IPC</th>
+<th class="num">memory share, two clocks</th>
+<th class="num">memory share, stall counter</th></tr></thead>
+<tbody><tr><td>dramblast</td><td class='num'>101</td><td class='num'>3.03</td><td class='num'>17.5%</td><td class='num'>0.9%</td></tr><tr><td>maglev</td><td class='num'>168</td><td class='num'>1.45</td><td class='num'>56.4%</td><td class='num'>51.9%</td></tr></tbody>
+</table></div>
+<p>For maglev they agree. That is the strongest corroboration here: the
+clock-arm method's entire premise is that a cost which does not scale with core
+frequency is memory, and a hardware counter that knows nothing about that
+premise says the same thing.</p>
+<p>For dramblast they disagree twentyfold — and <em>that</em> is the result. The
+stall counter measures cycles thrown away waiting, and dramblast throws away
+almost none: it runs at an IPC of 3.03 because the prefetch pipeline has always
+queued other work. The clock method measures everything whose duration is fixed
+in nanoseconds rather than cycles, which includes waiting <em>and</em> any
+throughput limit in the memory hierarchy. So the prefetch pipeline does not
+remove dramblast's memory traffic. It converts that traffic from latency into
+throughput — and the two measurements diverging is how you tell those two
+regimes apart.</p>
 
 
 </section>
 
 
 <section class="wrap">
-<h2>What the per-burst cost is made of</h2>
+<h3>Most of it is one call to <span class="mono">aligned_alloc</span></h3>
 <p>Two candidates survived: the <span class="mono">aligned_alloc</span> /
 <span class="mono">free</span> round trip the batched path performs once per
 burst, and the batching machinery itself. They can be separated because only one
@@ -242,6 +496,10 @@ round trips per burst — minus one meaning none at all, with the buffer allocat
 once per core at start-up — so the per-burst cost becomes a straight line whose
 slope is what a round trip costs <em>on this machine</em>, rather than what the
 literature says one costs somewhere else.</p>
+<figure class="code"><pre><code>240    if (dramblast_alloc_pairs &lt; 0) {
+241      results = dramblast_hoisted[id];
+242    } else {
+243      results = aligned_alloc(64, sizeof(dramblast_result_t) * args_len);</code></pre><figcaption><span class="mono">l2fwd/libsashstore/dramblast.c:240&ndash;243</span> &mdash; the whole of the shipped allocation: one call per burst, for a buffer whose maximum size is known at compile time and whose elements are 16 bytes wide.</figcaption></figure>
 </section>
 
 <div class="wide">
@@ -264,33 +522,12 @@ cycles, that single allocation is <b>64&ndash;73%</b>
 of it. What remains when it is removed, the batching machinery itself, is
 256 cycles, measured directly by the leftmost point rather than
 extrapolated from the line through the others.</p>
-<p>An earlier draft of this investigation put the allocator at <em>at most
-11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
-
-<h3>Why this is quoted as a range and not a number</h3>
-<p><span class="mono">l2fwd</span> reports cycles per packet as an
-<b>integer</b>. At a 64-packet burst one printed tick is therefore
-64 cycles per burst, and every number above is a mean of small
-integers. Nothing here is meaningful to better than a few tens of cycles,
-however many digits a fit prints.</p>
-<p>That is not a pedantic caveat; it is the correction to a result this page
-carried for six hours. Read at a single queue count, the shipped pair came out
-at 447 cycles and an incremental one at 511, the two consecutive slopes agreed
-to 0.00 cycles and the line's intercept was 0.0. That was written up as a
-structural check — <i>k</i> pairs costing exactly <i>k</i> times one — and then,
-because the shipped pair sat 64 cycles below the line, as an allocator load
-effect: a lone round trip being cheaper than one of several in flight. A
-reviewer improved the framing and it still stood on nothing. The gap was 64
-cycles, which is one tick; the perfect slope agreement followed arithmetically
-from three integers where one difference was exactly twice another; and 447 came
-from the one queue count where the difference happens to be smallest.</p>
-<p>Measured at every matched queue count instead, the incremental pair is
-509 cycles (consecutive slopes: 3&nbsp;&rarr;&nbsp;5 gives 495, 5&nbsp;&rarr;&nbsp;9 gives 515) and extrapolating that
-line to a single pair predicts 562 against 527 measured —
-0.7σ apart, <b>not resolved</b>. There is no first-pair effect and no load
-effect. The failure worth naming is precision claimed past the instrument's
-resolution, where the excess precision then generates a mechanism and everything
-downstream stays internally consistent while describing rounding.</p>
+<p>It is quoted as a range, and not more tightly, because the counter is an
+integer: one printed tick is 64 cycles per burst. An earlier draft of
+this page put the allocator at <em>at most 11%</em>, and a later one quoted the
+round trip to the cycle. Both were wrong, in opposite directions, and both
+failures are set out in <a href="#corrections">what these numbers are
+worth</a>.</p>
 
 <p>This reverses an earlier conclusion in the investigation log, and the way it
 was wrong is worth more than the correction. The allocator had been dismissed by
@@ -314,11 +551,21 @@ taken from a paper had quietly replaced a measurement.</p>
 
 
 <section class="wrap">
-<h2>What the prefetch pipeline actually buys</h2>
+<h3>The rest of it is the prefetch pipeline's ramp</h3>
 <p>The remaining candidate for the per-burst cost was the prefetch pipeline's
-own fill and drain. It can be shortened — <span class="mono">-Q</span> sets the
-find queue's depth — and at a matched 64-packet burst the four depths separate
-cleanly.</p>
+own fill and drain. Each iteration issues a prefetch and queues an item, then
+pops one and processes it, so the queue keeps many cache lines in flight — but a
+burst of B packets can only ever fill <span class="mono">min(B, depth)</span>
+slots, and a short burst runs a pipeline that never reaches steady state.</p>
+<figure class="code"><pre><code>140      // push as many as possible without stalling on LFB.
+141      while (args_head &lt; args_len &amp;&amp;
+142             dramblast_get_queue_sz(ht, id) &lt; ht-&gt;queues[id].find_queue_size - 1) {
+143        dramblast_arg_t *arg = &amp;args[args_head];
+144        args_head++;
+145        idx = dramblast_hash(ht, arg-&gt;k);
+146        dramblast_prefetch(ht, idx);
+147        dramblast_push_queue(ht, idx, arg-&gt;k, 0, arg-&gt;id, id);</code></pre><figcaption><span class="mono">l2fwd/libsashstore/dramblast.c:140&ndash;147</span> &mdash; the fill. <code>find_queue_size</code> is what <code>-Q</code> sets, so shortening it shortens the ramp and nothing else.</figcaption></figure>
+<p>At a matched 64-packet burst the four depths separate cleanly.</p>
 </section>
 
 <div class="wide">
@@ -388,107 +635,18 @@ does, which is why every earlier result on this page is unaffected.</p>
 </section>
 
 
-<section class="wrap">
-<h2>The same number, arrived at twice</h2>
-<p>The split above is inferred from how the cost responds to the clock. The
-processor will also tell you directly: it counts the cycles in which nothing
-executes because an L3 miss is outstanding. Two methods, no shared
-assumptions.</p>
-<div class="tablewrap"><table>
-<thead><tr><th>engine</th><th class="num">cycles/pkt</th><th class="num">IPC</th>
-<th class="num">memory share, two clocks</th>
-<th class="num">memory share, stall counter</th></tr></thead>
-<tbody><tr><td>dramblast</td><td class='num'>101</td><td class='num'>3.03</td><td class='num'>17.5%</td><td class='num'>0.9%</td></tr><tr><td>maglev</td><td class='num'>168</td><td class='num'>1.45</td><td class='num'>56.4%</td><td class='num'>51.9%</td></tr></tbody>
-</table></div>
-<p>For maglev they agree. That is the strongest corroboration here: the
-clock-arm method's entire premise is that a cost which does not scale with core
-frequency is memory, and a hardware counter that knows nothing about that
-premise says the same thing.</p>
-<p>For dramblast they disagree twentyfold — and <em>that</em> is the result. The
-stall counter measures cycles thrown away waiting, and dramblast throws away
-almost none: it runs at an IPC of 3.03 because the prefetch pipeline has always
-queued other work. The clock method measures everything whose duration is fixed
-in nanoseconds rather than cycles, which includes waiting <em>and</em> any
-throughput limit in the memory hierarchy. So the prefetch pipeline does not
-remove dramblast's memory traffic. It converts that traffic from latency into
-throughput — and the two measurements diverging is how you tell those two
-regimes apart.</p>
-</section>
+<section class="wrap" id="corrections">
+<h2>6 &middot; What these numbers are worth</h2>
+<p>Three results on this page were retracted by later measurement, and a fourth
+was withdrawn and then re-established. Two of the four are recorded where the
+number they changed appears &mdash; the allocator's <em>at most 11%</em> in
+section 5, and the depth-32 point's 3.1&sigma; just above. The other two are
+here, because they are properties of the rig rather than of either engine. In
+every case the mistake had the same shape: precision claimed past what the
+instrument can resolve, which then grew a mechanism to explain itself and stayed
+internally consistent while describing rounding.</p>
 
-
-<section class="wrap">
-<h2>Was it ever about page size?</h2>
-<p>The two engines do not only differ in how they look a key up. They differ in
-how their table is mapped: dramblast takes 8 GiB of 1 GiB hugepages, eight TLB
-entries; maglev's ordinary allocation is promoted by transparent hugepages to
-2 MiB pages, four thousand and ninety-six of them against a translation buffer
-that holds about two thousand. Every comparison between the two was therefore a
-comparison of algorithm <em>and</em> address translation at once. So each engine
-was run on the other's page size, and on 4 KiB pages, which neither ships
-with.</p>
-</section>
-
-<div class="wide">
-<figure>
-  <svg viewBox="0 0 720 264" role="img" aria-label="Per-packet cost of each mode on each page backing"><text x="138" y="41" text-anchor="end" class="barlab">dramblast &#183; 1 GiB pages</text><rect x="150" y="24" width="196.2" height="26" fill="var(--a)"/><text x="355.2" y="41" class="tick">98</text><text x="138" y="76" text-anchor="end" class="barlab">dramblast &#183; 2 MiB THP</text><rect x="150" y="59" width="204.2" height="26" fill="var(--a)"/><rect x="150" y="59" width="73.0" height="26" fill="var(--ink)" opacity="0.45"/><text x="363.2" y="76" class="tick">102   (36 in page walks)</text><text x="138" y="111" text-anchor="end" class="barlab">dramblast &#183; 4 KiB pages</text><rect x="150" y="94" width="234.2" height="26" fill="var(--a)"/><rect x="150" y="94" width="215.2" height="26" fill="var(--ink)" opacity="0.45"/><text x="393.2" y="111" class="tick">117   (107 in page walks)</text><text x="138" y="166" text-anchor="end" class="barlab">maglev &#183; 1 GiB pages</text><rect x="150" y="149" width="308.2" height="26" fill="var(--b)"/><text x="467.2" y="166" class="tick">154</text><text x="138" y="201" text-anchor="end" class="barlab">maglev &#183; 2 MiB THP</text><rect x="150" y="184" width="336.3" height="26" fill="var(--b)"/><rect x="150" y="184" width="51.5" height="26" fill="var(--ink)" opacity="0.45"/><text x="495.3" y="201" class="tick">168   (26 in page walks)</text><text x="138" y="236" text-anchor="end" class="barlab">maglev &#183; 4 KiB pages</text><rect x="150" y="219" width="420.3" height="26" fill="var(--b)"/><rect x="150" y="219" width="204.1" height="26" fill="var(--ink)" opacity="0.45"/><text x="579.3" y="236" class="tick">210   (102 in page walks)</text></svg>
-  <div class="legend">
-    <span class="key"><span class="sw" style="background:var(--a)"></span>dramblast</span>
-    <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
-    <span class="key"><span class="sw" style="background:var(--ink);opacity:.45"></span>cycles spent walking page tables</span>
-  </div>
-  <figcaption>Cost at a single queue with a full 64-packet burst, so neither
-  the per-burst term nor cross-core page-table contention is in the number.
-  Page-walk cycles, shown inside each bar, are counted directly
-  (<span class="mono">dtlb_walk_active</span>) rather than inferred from a miss
-  rate times an assumed latency — and they are consistently larger than the cost
-  the page change actually adds, because a good deal of walking happens
-  underneath other work.</figcaption>
-</figure>
-</div>
-
-<section class="wrap">
-<p>Giving maglev dramblast's 1 GiB pages moves its per-packet cost by
-14 cycles — 20% of the 70-cycle gap between the two
-engines. So the confound was real, and it was worth finding, and it is a fifth
-of the story. Address translation is not the explanation.</p>
-<p>The sharper result is in how differently the two engines react to the same
-change. Dropping from 1 GiB pages to 4 KiB costs dramblast 19 cycles
-and maglev 56 — close to three times as much. The prefetch pipeline is
-not only hiding the data access; it is hiding the <em>page walk</em>, which the
-prefetch itself triggers, early, so it completes underneath later work. That is
-why the gap between the engines widens as pages shrink, from 56 cycles
-at 1 GiB to 93 at 4 KiB. A configuration change that hurts both engines
-hurts the unprefetched one three times harder.</p>
-<p>And the counters make a trap visible. maglev on 2 MiB pages spends 25.6
-cycles per packet with a page walk in flight, but removing the walks entirely
-saves only 14 — so even the engine with no prefetching at all overlaps
-about 45% of its walking under other work. dramblast on 2 MiB pages spends 27%
-of every core cycle with a walk outstanding and pays 4 cycles for it.
-Walk occupancy is not walk cost, and reading it as cost would have overstated
-this whole section sixfold.</p>
-
-<h3>The one thing on this page the burst model cannot express</h3>
-<p>On 4 KiB pages the cost rises with the <em>number of queues</em> while the
-burst stays pinned at 64 — and the model has no term for how many cores are
-running. The counters already recorded answer what it is. Across every queue
-count, in both engines, the number of page walks per packet is flat at 0.99 and
-instructions per packet are flat too. What rises is the time each walk takes:
-walk occupancy per packet climbs 19% over six cores for dramblast and 28% over
-ten for maglev. The same binary on 1 GiB pages takes no walks at all and shows
-no core-count effect whatsoever, which is the control.</p>
-<p>So the extra cost is <b>contention for shared page-table structures</b>,
-measured in the duration of a walk rather than in how many happen. At a matched
-six queues, dramblast's walk occupancy rises 20.3 cycles per packet and 12 of
-them reach the cost; maglev's rises 11.8 and none of them do. That is the
-opposite direction from the prefetch result earlier on this page, for a reason
-that is consistent with it: a pipeline hides latency it issued early, not
-latency added underneath it, and an engine already waiting has slack to absorb
-more waiting while one retiring at three instructions per cycle does not.</p>
-</section>
-
-
-<section class="wrap">
-<h2>The error bar everything else is measured against</h2>
+<h3>The error bar everything else is measured against</h3>
 <p>The shipped condition was run again at the end of the matrix — same binary,
 same core assignment, same invocation, hours later with every other experiment
 in between. Until that ran, every error bar on this page came from <em>inside</em>
@@ -515,42 +673,54 @@ thing that could have settled it. The larger results were never close to this
 line — the allocator pair is six times the floor and the eightfold pipeline
 shortening sixteen times — but every σ quoted before this arm existed was
 optimistic by a factor nobody could have known.</p>
+
+<h3>The allocator round trip, quoted to the cycle</h3>
+<p>One printed tick is 64 cycles per burst, as
+<a href="#rig">section 1</a> sets out. That is not a pedantic caveat; it is the
+correction to a result this page carried for six hours. Read at a single queue count, the shipped pair came out
+at 447 cycles and an incremental one at 511, the two consecutive slopes agreed
+to 0.00 cycles and the line's intercept was 0.0. That was written up as a
+structural check — <i>k</i> pairs costing exactly <i>k</i> times one — and then,
+because the shipped pair sat 64 cycles below the line, as an allocator load
+effect: a lone round trip being cheaper than one of several in flight. A
+reviewer improved the framing and it still stood on nothing. The gap was 64
+cycles, which is one tick; the perfect slope agreement followed arithmetically
+from three integers where one difference was exactly twice another; and 447 came
+from the one queue count where the difference happens to be smallest.</p>
+<p>Measured at every matched queue count instead, the incremental pair is
+509 cycles (consecutive slopes: 3&nbsp;&rarr;&nbsp;5 gives 495, 5&nbsp;&rarr;&nbsp;9 gives 515) and extrapolating that
+line to a single pair predicts 562 against 527 measured —
+0.7σ apart, <b>not resolved</b>. There is no first-pair effect and no load
+effect. The failure worth naming is precision claimed past the instrument's
+resolution, where the excess precision then generates a mechanism and everything
+downstream stays internally consistent while describing rounding.</p>
+
+
 </section>
 
 <section class="wrap">
-<h2>How much of this is the measurement rig</h2>
-<p>Two properties of the machine turned out to matter more than expected, and
-both are recorded as conditions of the experiment rather than corrected away.</p>
-<p>A third property is the instrument itself. Cycles per packet are reported as
-an <b>integer</b>, so at a 64-packet burst the smallest distinguishable step is
-one tick. Counted that way, every claim on this page is many ticks wide — the
-engine gap 64, the page-size effects 19 to 44, the allocator round trip 8 — with
-three exceptions that are stated as approximate where they appear: the
-<span class="mono">-B/-A/-Q</span> refactor at 3 ticks, dramblast's 1 GiB to
-2 MiB step at 3, and the depth-32 point at 1.8, which is why that one needed six
-runs. Re-running the identical condition lands below one tick, which is both the
-right answer and the scale for reading the rest.</p>
+<h2>The machine this was measured on</h2>
+<p>Two properties of the host turned out to matter more than expected, and both
+are recorded as conditions of the experiment rather than corrected away.</p>
 <p>Idle states are disabled on all 56 cores, so every core spins unhalted and the
 package never goes quiet. The all-core turbo ceiling is therefore pinned near
-2.99&nbsp;GHz regardless of load — measured at 2993 MHz on every one of ten
-runs spanning one to ten busy cores, with 1 MHz of spread. Nothing here should
-be described as running at the 3.7&nbsp;GHz nominal.</p>
-<p>The two engines also ship on different page sizes: dramblast maps its 8 GiB
-table on 1 GiB pages, while maglev's plain
-<span class="mono">aligned_alloc</span> is silently promoted by transparent
-hugepages to 2 MiB pages. That is 8 TLB entries against 4096. Every comparison
-between them was therefore a comparison of algorithm <em>and</em> address
-translation at once — a confound found by looking for one, not by it causing
-trouble.</p>
+2.99&nbsp;GHz regardless of load &mdash; measured at 2993 MHz on every one of
+ten runs spanning one to ten busy cores, with 1 MHz of spread. Nothing here
+should be described as running at the 3.7&nbsp;GHz nominal.</p>
+<p>And the two engines ship on different page sizes, which is the confound
+<a href="#pages">section 3</a> exists to remove. It was found by looking for it,
+not by it causing trouble &mdash; which is the only reason it did not quietly
+become the result.</p>
 </section>
 
 <section class="wrap">
 <footer>
 Measured on a single-socket Intel Xeon Gold 5512U with an E810-C 100 GbE NIC,
 DPDK 21.11, against a hardware generator holding 93.28 Mpps of 110-byte frames
-across 16.8M flows. Every figure on this page is generated from the measured
-data by <span class="mono">l2fwd/make_report.py</span>; the full reasoning,
-including the mistakes, is in <span class="mono">docs/INVESTIGATION.md</span>.
+across 16.8M flows. Every figure and every quoted source line on this page is
+generated from the working tree by
+<span class="mono">l2fwd/make_report.py</span>; the full reasoning, including
+the mistakes, is in <span class="mono">docs/INVESTIGATION.md</span>.
 </footer>
 </section>
 </main>

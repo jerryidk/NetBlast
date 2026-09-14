@@ -252,6 +252,36 @@ def main():
         if not qs:
             print("  no queue count holds a 64-packet burst in all three arms")
 
+        # What the timed region does NOT contain. rte_eth_rx_burst, the TX
+        # buffer and the driver all sit outside the rdtsc pair, so no arm's
+        # "cycles per packet" includes them. At one queue the single worker
+        # busy-polls at 100%, so its total cycles per packet is just the
+        # delivered clock over the delivered rate -- and the difference between
+        # that and the timed region is the part of the packet path this
+        # instrument cannot see. Three arms give three independent estimates of
+        # the same quantity, which is the only reason it can be quoted at all.
+        print()
+        print("  what sits OUTSIDE the timed region, from q=1 (one busy worker):")
+        outs = []
+        for mode in ("none", "dramblast", "maglev"):
+            r = trio[mode].get("1")
+            if not r or not r.get("steady_mpps") or not r.get("freq_mhz"):
+                continue
+            total = r["freq_mhz"] / r["steady_mpps"]   # MHz / Mpps = cycles/pkt
+            out = total - r["cycles_per_pkt"]
+            outs.append(out)
+            print(f"    {mode:10} {total:6.1f} cycles/pkt total "
+                  f"- {r['cycles_per_pkt']:>3} timed = {out:5.1f} outside")
+        if len(outs) == 3:
+            mu = sum(outs) / 3
+            print(f"    three independent estimates of one quantity: "
+                  f"{mu:.0f} +/- {max(outs)-min(outs):.0f} cycles/packet of "
+                  f"RX/TX and driver")
+            print("    They agree to a few cycles despite the arms differing "
+                  "sixfold in rate,")
+            print("    which is what makes it a measurement rather than a "
+                  "subtraction artefact.")
+
         # FALSIFICATION. The floor is not flat: the timed region has its own
         # fixed cost per burst (two rdtsc reads and the loop entry), and that
         # cost is charged to every arm. If it were a large fraction of

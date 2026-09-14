@@ -2272,3 +2272,128 @@ simply emitting the two totals, would give roughly four more significant digits
 for a one-line change. That has deliberately not been done, because it would
 change the binary the whole dataset was taken with. It is the first thing to do
 before the next campaign.
+
+### 5.20 The floor arm: what the forwarder costs with no lookup at all
+
+Every per-packet number in this document is read out of one timed region in
+`main.c` — an `rte_rdtsc()` before the per-packet loop and another after it,
+accumulated into `hash_tsc` — and until now nothing said how much of that region
+is *not* the lookup. That gap mattered in two directions. A cost attributed to
+an engine could not be stated as a fraction of anything, because the denominator
+was unknown; and the per-burst coefficient `C` could not be separated from
+whatever fixed cost the timed region itself carries once per burst.
+
+The control was already in the program and had simply never been run. `-m none`
+(`main.c:438`) takes the forwarding loop's third branch (`main.c:351-356`),
+which writes the destination MAC exactly as the two engines do and skips only
+the lookup that produced the address:
+
+```c
+        } else {
+          for (uint16_t j = 0; j < nb_rx; j++) {
+            unsigned dst_port = l2fwd_dst_ports[portid];
+            uint64_t mac = 0xff;
+            l2fwd_mac_updating(pkts_burst[j], dst_port, mac);
+          }
+          port_statistics[portid][lcore_id].fwded += nb_rx;
+```
+
+No new measurement code: the same `sweep.sh`, the same counters, one different
+argument. The `trio` block in `run_matrix.sh` sweeps all three modes under one
+tag, back to back, because the comparison it exists to make is *between* the
+three and should not span the hours that `pinned3` exists to bound.
+
+**Result 1: the packet path is not what limits this system.** With no table the
+forwarder reaches the offered 93.28 Mpps at **two** queue pairs and holds it to
+ten. dramblast needs seven, maglev nine. A single worker carries 65.85 Mpps on
+its own, against 16.02 for dramblast and 10.78 for maglev.
+
+**Result 2: the lookup is essentially the whole per-packet cost.** At q=1, where
+all three sit at a full 64-packet burst:
+
+| arm | cycles/packet, timed region | instructions/packet |
+|---|---|---|
+| no hash table | 5 | 102.5 |
+| dramblast | 98 | 399.2 |
+| maglev | 166 | 285.6 |
+
+So 95% of dramblast's per-packet cost and 97% of maglev's is the lookup itself.
+Every engine-versus-engine number in this document is therefore a comparison of
+lookups, not of harnesses — which is the licence §5.12 and §5.13 were assuming
+without having checked it.
+
+**Result 3, and the one that was not anticipated: what the timed region does not
+contain.** `rte_eth_rx_burst`, the TX buffer and the driver all sit *outside* the
+timestamp pair, so no "cycles per packet" anywhere in this document includes
+them. At one queue the single worker busy-polls at 100%, so the cycles it has
+per packet is just its delivered clock over its delivered rate, and the
+difference between that and the timed region is the invisible part of the path:
+
+| arm | MHz/Mpps = cycles/pkt total | timed | outside |
+|---|---|---|---|
+| no hash table | 31.8 | 5 | 26.8 |
+| dramblast | 130.8 | 98 | 32.8 |
+| maglev | 194.3 | 166 | 28.3 |
+
+Three arms whose delivered rates differ sixfold agree on **29 ± 6 cycles per
+packet** of RX, TX and driver. They did not have to agree: an artefact of the
+subtraction would scale with the quantity being subtracted, and this does not.
+It is also what reconciles the two halves of result 1 — how an arm costing five
+cycles per packet inside the region still needs two cores to hold line rate.
+
+**Result 4, a small correction rather than a finding.** Fitted the same way as
+every other arm, the floor has a per-burst term of its own: `C = 32 ± 12`
+cycles/burst, `P = 8.3 ± 2.6`, which is the two timestamp reads plus loop entry
+and is charged to every burst in every arm. Against dramblast's 717.6 that is
+4%. It is quoted as a bound rather than a measurement, because the fit is poor
+(R² 0.45) for a reason that is itself instructive: this arm is fast enough to run
+down to two-packet bursts, where the printed integer is 5 to 24 and the
+quantisation of §5.19 is a large fraction of the value. Nothing else in this
+document moves, because every other comparison is a *difference* between two
+arms and the instrument cancels in a difference. Only an absolute per-burst
+figure would need this subtracted.
+
+**What this arm does not license.** It prices the region, not the machine. The
+5 cycles/packet is the MAC write and loop overhead only; the driver and NIC
+costs are the 29 cycles measured above, and neither number says anything about
+what a different NIC or a different DPDK version would do.
+
+### 5.21 The report was reorganised, and now quotes the tree rather than describing it
+
+`docs/report.html` had been grown one findings card per experiment, in the order
+the experiments happened, and it read as a pile of results rather than an
+argument. Three specific failures, all of arrangement rather than of
+measurement:
+
+- The crossover control (§5.12) — the thing that makes any engine-versus-engine
+  comparison legitimate — sat two thirds of the way down, *after* the results
+  that depend on it.
+- The instrument's resolution (§5.19), which is the reason three numbers are
+  quoted as ranges, was in the final section, after every one of those numbers
+  had already been read.
+- Retractions were interleaved with live claims, so a reader could not tell
+  which parts still stood.
+
+It is now six numbered sections, each the precondition for the next: fix the
+instrument, price the floor, make the engines comparable, find what depends on
+queue count, take that cost apart, say what it is worth. Corrections that are
+properties of the rig are collected at the end; corrections that belong to a
+particular number stay with that number, and each place says which it is.
+
+The page also quoted `C = 645` in one section and `718` in another without
+saying that these are the pre-refactor and refactored builds. They agree to
+1.2σ, so nothing was wrong, but a reader had no way to know that a difference
+taken *across* the two would not have been legitimate. The page now says so
+where the two first meet.
+
+Separately, claims about the code now show the code. `make_report.py:snip()`
+quotes real lines out of the working tree at generation time, with their real
+line numbers, anchored on exact substrings; a missing or ambiguous anchor aborts
+the build rather than emitting a wrong quotation. Six snippets: the lcore
+arithmetic that produced the fake collapse, the integer quotient that sets the
+resolution, the forwarding loop's third branch, the two table allocations that
+differ in page size, the per-burst `aligned_alloc`, and the prefetch fill. The
+point is not decoration — a paraphrase of what a function does cannot be checked
+against the tree, and this document has already recorded one case (§5.13) where
+a claim about `aligned_alloc` rested on a published constant rather than on the
+call actually being made.

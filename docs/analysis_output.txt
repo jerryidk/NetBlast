@@ -20,6 +20,61 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
     pre-refactor arm: the two binaries are not interchangeable.
 
 ====================================================================================
+0. THE FLOOR   the same forwarding loop with the lookup removed
+====================================================================================
+  mode        q burst    Mpps  cyc/pkt  insns/pkt
+  none        1    64   65.85        5      102.5
+  none        2    54   93.28        6      105.1
+  none        3    14   93.28        9      124.8
+  none        4     8   93.28       11      145.2
+  none        5     5   93.28       11      154.1
+  none        6     5   93.28       15      153.4
+  none        7     4   93.28       17      157.3
+  none        8     6   93.28       24      153.4
+  none        9     4   93.28       23      156.6
+  none       10     2   93.28       19      179.0
+  dramblast   1    64   16.02       98      399.2
+  dramblast   2    64   30.96      101      399.2
+  dramblast   3    64   46.91      100      399.3
+  dramblast   4    64   62.66       99      399.2
+  dramblast   5    64   77.36      101      399.1
+  dramblast   6    62   92.08      101      399.8
+  dramblast   7    31   93.28      114      422.8
+  dramblast   8    21   93.28      132      443.2
+  dramblast   9    14   93.28      148      480.7
+  dramblast  10    10   93.26      166      512.8
+  maglev      1    64   10.78      166      285.6
+  maglev      2    64   21.54      164      284.8
+  maglev      3    64   32.19      164      285.5
+  maglev      4    64   42.97      164      285.5
+  maglev      5    64   53.70      164      285.6
+  maglev      6    64   64.14      165      285.5
+  maglev      7    64   75.10      164      285.6
+  maglev      8    64   85.94      163      285.5
+  maglev      9    37   93.28      164      291.6
+  maglev     10    12   93.28      168      314.2
+
+  none       reaches the offered load at q=2
+  dramblast  reaches the offered load at q=7
+  maglev     reaches the offered load at q=9
+
+  q=1, burst 64:  floor 5   dramblast 98 (95% lookup)   maglev 166 (97% lookup)
+
+  what sits OUTSIDE the timed region, from q=1 (one busy worker):
+    none         31.8 cycles/pkt total -   5 timed =  26.8 outside
+    dramblast   130.8 cycles/pkt total -  98 timed =  32.8 outside
+    maglev      194.3 cycles/pkt total - 166 timed =  28.3 outside
+    three independent estimates of one quantity: 29 +/- 6 cycles/packet of RX/TX and driver
+    They agree to a few cycles despite the arms differing sixfold in rate,
+    which is what makes it a measurement rather than a subtraction artefact.
+
+  floor fit:  P = 8.3 +/- 2.6   C = 32 +/- 12 cycles/burst   R2 0.451  n=10
+  dramblast's C is 718; the instrument accounts for 4% of it.
+  Differences between two dramblast arms (the allocator and depth
+  results below) are unaffected: the instrument cancels in a paired
+  difference. The absolute per-burst figure is not.
+
+====================================================================================
 1. CROSSOVER   each mode on the other's page backing
 ====================================================================================
   dramblast  1 GiB (as shipped)       P =    87.7   C =    717.6    +/-42   R2 0.974  n=10
@@ -432,3 +487,5 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
   the same condition re-run should not differ -- and it also sets the
   scale: anything of that size elsewhere is indistinguishable from
   re-running the identical experiment.
+
+wrote /users/sohamb/NetBlast/docs/matrix.png

@@ -566,8 +566,11 @@ def chart_trio(rows):
     W = 720
     PH = 258                      # panel height
     L, R = 58, 118                # right margin holds the inline series labels
-    gapY = 58
-    H = PH * 2 + gapY + 26
+    TOP, gapY = 30, 58            # first panel's top edge, and the gap between
+    # Height must clear the SECOND panel's tick row, which sits 18px below its
+    # plot area, plus the shared x-axis label below that. Sizing it as
+    # 2*PH + gap alone put both outside the viewBox and silently clipped them.
+    H = TOP + PH * 2 + gapY + 18 + 26
     qs = sorted({q for t in rows.values() for q in t})
     x = lambda q: L + (q - min(qs)) * (W - L - R) / max(1, (max(qs) - min(qs)))
     p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Throughput and '
@@ -582,6 +585,7 @@ def chart_trio(rows):
             p.append(f'<text x="{L-9}" y="{Y(v)+4:.1f}" text-anchor="end" '
                      f'class="tick">{v:g}</text>')
         p.append(f'<text x="{L}" y="{top-10:.0f}" class="axis">{title}</text>')
+        labels = []
         for mode in ("maglev", "dramblast", "none"):
             t = rows.get(mode)
             if not t:
@@ -596,18 +600,28 @@ def chart_trio(rows):
                          f'fill="{TRIO_COL[mode]}" stroke="var(--ground)" '
                          f'stroke-width="1.6"/>')
             lq, lv = pts[-1]
-            p.append(f'<text x="{x(lq)+10:.1f}" y="{Y(lv)+4:.1f}" class="tick" '
-                     f'fill="{TRIO_COL[mode]}" style="font-weight:600">'
-                     f'{TRIO_LAB[mode]}</text>')
+            labels.append([Y(lv) + 4, x(lq) + 10, TRIO_COL[mode], TRIO_LAB[mode]])
+        # Series labels sit at the right-hand end of each line, which puts them
+        # on top of each other wherever the lines converge -- and in the top
+        # panel all three arms end at the offered load, so all three landed on
+        # the same pixel. Push them apart by at least one line height, keeping
+        # their order, before drawing any of them.
+        labels.sort()
+        for i in range(1, len(labels)):
+            if labels[i][0] - labels[i - 1][0] < 15:
+                labels[i][0] = labels[i - 1][0] + 15
+        for ly, lx, col, lab in labels:
+            p.append(f'<text x="{lx:.1f}" y="{ly:.1f}" class="tick" '
+                     f'fill="{col}" style="font-weight:600">{lab}</text>')
         for q in qs:
             p.append(f'<text x="{x(q):.1f}" y="{top+PH+18:.0f}" '
                      f'text-anchor="middle" class="tick">{q}</text>')
         return Y
 
     # panel 1: delivered throughput, with the generator's line rate drawn in
-    Y1 = panel(30, 100, (0, 25, 50, 75, 100), lambda r: r[0],
+    Y1 = panel(TOP, 100, (0, 25, 50, 75, 100), lambda r: r[0],
                "delivered throughput, Mpps", "Mpps")
-    yr = 30 + (1 - LINE_RATE / 100) * PH
+    yr = TOP + (1 - LINE_RATE / 100) * PH
     p.append(f'<line x1="{L}" y1="{yr:.1f}" x2="{W-R}" y2="{yr:.1f}" '
              f'stroke="var(--ink)" stroke-width="1" stroke-dasharray="3 4" '
              f'opacity="0.55"/>')
@@ -615,12 +629,12 @@ def chart_trio(rows):
              f'offered load {LINE_RATE} Mpps</text>')
 
     # panel 2: cost per packet inside the timed region
-    top2 = 30 + PH + gapY
+    top2 = TOP + PH + gapY
     cmax = max(r[1] for t in rows.values() for r in t.values()) * 1.12
     step = 50 if cmax > 160 else 20
     ticks = [v for v in range(0, int(cmax) + step, step)]
     panel(top2, cmax, ticks, lambda r: r[1], "cycles per forwarded packet", "cycles")
-    p.append(f'<text x="{L}" y="{H-4}" class="axis">RX/TX queue pairs</text>')
+    p.append(f'<text x="{L}" y="{H-6}" class="axis">RX/TX queue pairs</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1245,9 +1259,26 @@ more waiting while one retiring at three instructions per cycle does not.</p>
         for mode, t in trio.items():
             hit = [q for q in sorted(t) if t[q][0] >= LINE_RATE - 0.1]
             sat[mode] = hit[0] if hit else None
-        satline = ", ".join(
-            f"{TRIO_LAB[m]} at {sat[m]}" if sat[m] else f"{TRIO_LAB[m]} never"
-            for m in ("none", "dramblast", "maglev"))
+        # What the timed region excludes, three ways. MHz / Mpps is cycles
+        # per packet of a core that is busy-polling at 100%, which every DPDK
+        # worker is, so no task-clock correction is needed.
+        outs, orows = [], []
+        for mode in ("none", "dramblast", "maglev"):
+            r = allc["engine_trio"][mode].get("1", {})
+            if not (r.get("steady_mpps") and r.get("freq_mhz")):
+                continue
+            tot = r["freq_mhz"] / r["steady_mpps"]
+            outs.append(tot - r["cycles_per_pkt"])
+            orows.append(f"<tr><td>{TRIO_LAB[mode]}</td>"
+                         f"<td class='num'>{tot:.1f}</td>"
+                         f"<td class='num'>{r['cycles_per_pkt']}</td>"
+                         f"<td class='num'>{tot - r['cycles_per_pkt']:.1f}</td></tr>")
+        outside_rows = "".join(orows)
+        outside_mu = sum(outs) / len(outs) if outs else 0.0
+        outside_spread = (max(outs) - min(outs)) if outs else 0.0
+        nf = fit_of(allc, "engine_trio", "none") or {}
+        n_Cse, n_r2 = nf.get("se") or 0.0, nf.get("r2") or 0.0
+        shipC = f_new.get("C") or dC
         trio_html = f"""
 <section class="wrap" id="floor">
 <h2>2 &middot; What forwarding costs with no lookup at all</h2>
@@ -1281,26 +1312,55 @@ subtracting this arm is a subtraction of identical code, not of an estimate.</p>
 </div>
 
 <section class="wrap">
-<p>With no hash table the forwarder reaches the offered load with
-<b>two queue pairs</b> and stays there ({satline}). One worker already carries
-{trio["none"][1][0]:.1f}&nbsp;Mpps of the {LINE_RATE} offered. Whatever else is
-true of this system, it is not the packet path that limits it &mdash; it is the
-lookup, and the whole of the rest of this page is about that lookup.</p>
-<p>At a full 64-packet burst the floor is <b>{n1[1]:.0f} cycles per packet</b>,
-against {d1[1]:.0f} for dramblast and {m1[1]:.0f} for maglev at the same burst
-and the same queue count. So {100*(1-n1[1]/d1[1]):.0f}% of dramblast's
-per-packet cost and {100*(1-n1[1]/m1[1]):.0f}% of maglev's is the lookup itself.
-The harness is not a meaningful part of either number, which is the licence the
-rest of this page needs.</p>
-<p>The floor is not flat, though, and that part <em>is</em> a correction. Fitted
-the same way as everything else, the no-table arm has a per-burst term of its
-own: <span class="mono">P&nbsp;=&nbsp;{n_P:.1f}</span> cycles per packet and
-<span class="mono">C&nbsp;=&nbsp;{n_C:.0f}</span> cycles per burst. That is the
-two timestamp reads and the loop entry, and it is charged to every burst in
-every arm. The per-burst cost attributed to dramblast below is therefore about
-{100*n_C/dC:.0f}% instrument; the figure quoted for the allocator, which is a
-difference between two dramblast arms, is unaffected because the instrument
-cancels.</p>
+<p>With no hash table the forwarder reaches the offered load at
+<b>two queue pairs</b> and stays there; dramblast needs
+{sat["dramblast"]}, maglev {sat["maglev"]}. One worker alone carries
+{trio["none"][1][0]:.1f}&nbsp;Mpps of the {LINE_RATE} offered, against
+{trio["dramblast"][1][0]:.1f} and {trio["maglev"][1][0]:.1f}. Whatever else is
+true of this system, the packet path is not what limits it. The lookup is, and
+the rest of this page is about the lookup.</p>
+<p>Inside the timed region, at a full 64-packet burst, the floor is
+<b>{n1[1]:.0f} cycles per packet</b> against {d1[1]:.0f} for dramblast and
+{m1[1]:.0f} for maglev at the same burst and the same queue count. So
+{100*(1-n1[1]/d1[1]):.0f}% of dramblast's per-packet cost and
+{100*(1-n1[1]/m1[1]):.0f}% of maglev's is the lookup itself. That is the licence
+the rest of this page needs: a difference between two engines is a difference
+between two lookups, not between two harnesses.</p>
+
+<h3>What the timed region does not contain</h3>
+<p>The subtraction also runs the other way, and gives something the timed region
+cannot report at all. <span class="mono">rte_eth_rx_burst</span>, the TX buffer
+and the driver are all <em>outside</em> the timestamp pair, so no cycles-per-packet
+figure on this page includes them. At one queue the single worker busy-polls at
+100%, so the cycles it has per packet is simply its delivered clock over its
+delivered rate &mdash; and the gap between that and the timed region is the part
+of the packet path this instrument never sees.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>arm</th><th class="num">cycles/packet, total</th>
+<th class="num">inside the timed region</th><th class="num">outside it</th></tr></thead>
+<tbody>{outside_rows}</tbody>
+</table></div>
+<p>Three arms whose delivered rates differ sixfold agree on
+<b>{outside_mu:.0f}&nbsp;&plusmn;&nbsp;{outside_spread:.0f} cycles per
+packet</b> of RX, TX and driver. They did not have to: if the subtraction were
+an artefact of the method it would scale with the thing being subtracted, and it
+does not. This is also the number that reconciles the two panels above &mdash;
+why a forwarder costing five cycles per packet inside the region still needs two
+cores to hold line rate.</p>
+
+<h3>The floor is not quite flat</h3>
+<p>Fitted the same way as everything else, the no-table arm has a small
+per-burst term of its own: <span class="mono">C = {n_C:.0f} &plusmn;
+{n_Cse:.0f}</span> cycles per burst, which is the two timestamp reads and the
+loop entry, charged to every burst in every arm. Against dramblast's
+{shipC:.0f} that is <b>{100*n_C/shipC:.0f}%</b> &mdash; small, but it is the
+first thing that would have to be subtracted if the per-burst cost were ever
+quoted as an absolute. The fit itself is poor (R&sup2; {n_r2:.2f}), and for a
+reason worth stating: this arm is fast enough to run down to two-packet bursts,
+where the printed integer is 5 to 24 and rounding is a large fraction of the
+value. Treat {n_C:.0f} as a bound, not a measurement. Differences taken between
+two arms &mdash; which is every comparison that follows &mdash; are untouched
+either way, because the instrument cancels.</p>
 </section>
 """
 
@@ -1336,11 +1396,13 @@ cancels.</p>
   not a measurement. <a href="#rig">&rarr;</a></p></div>
 
   <div class="finding"><span class="n">02</span><p><b>Price the floor.</b> With
-  the lookup removed and nothing else changed, the forwarder holds line rate on
-  two cores at {trio["none"][1][1] if len(trio)==3 else 5:.0f} cycles per
-  packet. The lookup is essentially the entire per-packet cost &mdash; but the
-  floor has a per-burst term of its own, which every other arm inherits.
-  <a href="#floor">&rarr;</a></p></div>
+  the lookup removed and nothing else changed, the forwarder holds line rate at
+  <b>two</b> queue pairs, where dramblast needs seven and maglev nine, and costs
+  {trio["none"][1][1] if len(trio)==3 else 5:.0f} cycles per packet inside the
+  timed region. The lookup is 95&ndash;97% of the per-packet cost. The same
+  subtraction run backwards prices what the timed region <em>omits</em>: about
+  {outside_mu if len(trio)==3 else 29:.0f} cycles per packet of RX, TX and
+  driver. <a href="#floor">&rarr;</a></p></div>
 
   <div class="finding"><span class="n">03</span><p><b>Make the two engines
   comparable.</b> As shipped they differ in address translation as well as

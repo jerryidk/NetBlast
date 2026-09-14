@@ -17,7 +17,7 @@ Conditions (all at 100 GbE line rate unless noted):
   engine_trio        logs tagged "trio"   -- all three engines in one sitting:
                                                dramblast, maglev, and `-m none` (the
                                                forwarding loop's third branch,
-                                               main.c:352-357 -- same MAC write, no
+                                               main.c:351-356 -- same MAC write, no
                                                lookup). The floor everything else must
                                                be read against.
   capped_72mpps      logs tagged "sweep"    -- generator -l 0-2  (1 TX core), 72 Mpps
