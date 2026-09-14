@@ -687,9 +687,19 @@ def main():
     if "--plot" not in sys.argv:
         return
 
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    # matplotlib and numpy are not installed on this node any more (they were
+    # on 2026-09-11; the node has not rebooted since, and another session is
+    # working on this machine). Reinstalling them is a system-level change to
+    # shared research hardware for the sake of a figure, so the figure is drawn
+    # without them instead. plot_matrix.py writes the same three panels as SVG.
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        import plot_matrix
+        plot_matrix.main()
+        return
     plt.rcParams.update({"figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
                          "savefig.facecolor": SURFACE, "font.family": "DejaVu Sans",
                          "text.color": INK, "axes.labelcolor": INK_2,
@@ -735,17 +745,41 @@ def main():
     ax.set_title("2. The allocator's real share of C", fontsize=11, loc="left", pad=10)
 
     ax = axes[2]
-    if len(ds) >= 2:
-        ax.plot([d for d, _ in ds], [f["P"] for _, f in ds], marker="o",
-                color=BLUE, linewidth=2, label="P per packet")
+    # Deliberately NOT P and C against depth. That figure would draw the
+    # mis-specification as though it were the finding: below Q = B the number
+    # of pipeline fills is ceil(B/Q), so a line in 1/B is the wrong shape and
+    # the shallow arms' P/C split is an artifact of fitting it anyway. What is
+    # real is the matched-burst comparison, and it needs both counters -- a
+    # cycle curve alone cannot distinguish more work from more waiting.
+    if len(at64) >= 2:
+        dpts = sorted(at64)
+        cyc = [at64[d][0] for d in dpts]
+        ins = [at64[d][1] for d in dpts]
+        err = [at64[d][2] or 0 for d in dpts]
+        ax.errorbar(dpts, cyc, yerr=err, marker="o", color=BLUE, linewidth=2,
+                    markersize=7, capsize=3, markeredgecolor=SURFACE,
+                    markeredgewidth=1.8, label="cycles / packet")
         ax2 = ax.twinx()
-        ax2.plot([d for d, _ in ds], [f["C"] for _, f in ds], marker="s",
-                 color=ORANGE, linewidth=2, label="C per burst")
-        ax2.set_ylabel("C  (cycles per burst)", color=ORANGE)
+        ax2.plot(dpts, ins, marker="s", color=ORANGE, linewidth=2, markersize=6,
+                 markeredgecolor=SURFACE, markeredgewidth=1.8,
+                 label="instructions / packet")
+        ax2.set_ylabel("instructions per packet", color=ORANGE)
+        ax2.grid(False)
+        # Anchor both axes to the same relative span so the divergence between
+        # them is a fair visual comparison rather than an artefact of scaling.
+        span = 0.26
+        ax.set_ylim(min(cyc) * (1 - span / 6), min(cyc) * (1 + span))
+        ax2.set_ylim(min(ins) * (1 - span / 6), min(ins) * (1 + span))
+        for d in dpts:
+            ax.annotate(f"IPC {at64[d][1] / at64[d][0]:.2f}", (d, at64[d][0]),
+                        textcoords="offset points", xytext=(0, -15),
+                        ha="center", fontsize=8, color=INK_2)
         ax.set_xscale("log", base=2)
-        ax.set_xlabel("prefetch pipeline depth")
-        ax.set_ylabel("P  (cycles per packet)", color=BLUE)
-    ax.set_title("3. Is C the pipeline ramp?", fontsize=11, loc="left", pad=10)
+        ax.set_xticks(dpts); ax.set_xticklabels([str(d) for d in dpts])
+        ax.set_xlabel("prefetch pipeline depth   (burst held at 64)")
+        ax.set_ylabel("core cycles per packet", color=BLUE)
+    ax.set_title("3. The pipeline hides latency; it does not remove work",
+                 fontsize=11, loc="left", pad=10)
 
     for a in axes:
         a.grid(True, color=GRID, linewidth=0.8); a.set_axisbelow(True)
