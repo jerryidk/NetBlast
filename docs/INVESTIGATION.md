@@ -2148,3 +2148,56 @@ compared against the wrong reference. Here a `command not found` was read
 correctly and attributed to the wrong cause, and unlike a measurement error it
 came with a confident story about a third party. The correction is recorded in
 the commit that made it and here, rather than quietly rewritten.
+
+### 5.18 The 4 KiB core-count term, answered without running anything
+
+§5.12 left an open question it could not close. On 4 KiB pages the per-packet
+cost rises with the **number of queues** while the burst stays pinned at 64 —
+117 to 129 ticks over `q = 1..6` for dramblast — and the burst-cost model has no
+term for how many cores are running. Cross-core contention for the page table
+was the hypothesis, with nothing measuring it.
+
+Nothing needed to be re-run. The page-walk counters were recorded alongside every
+run from §5.9 onward, and they answer the sharp form of the question: is the
+extra cost **more walks, or slower walks**?
+
+Every queue count below is at a matched 64-packet burst.
+
+| | q=1 | | q=6 or 10 | | |
+|---|---|---|---|---|---|
+| | cyc | walk cyc | cyc | walk cyc | walks/pkt |
+| dramblast, 4 KiB (q=1→6) | 117 | 107.3 | 129 | 127.6 | 0.99 → 0.99 |
+| maglev, 4 KiB (q=1→10) | 210 | 101.7 | 214 | 129.8 | 0.99 → 0.97 |
+| dramblast, 1 GiB (control) | 98 | 0.00 | 102 | 0.01 | 0.00 |
+
+**Walks per packet are flat** — 0.99 everywhere, one walk per lookup — and so are
+instructions per packet (398.7 → 397.1 for dramblast; 285.8 → 286.0 for maglev).
+What rises is **walk occupancy**: 19% over six cores for dramblast, 28% over ten
+for maglev. The same binary on 1 GiB pages takes no walks at all and shows no
+core-count effect whatsoever, which is the control the whole argument needs.
+
+So the term that breaks the model is **contention for shared page-table
+structures, measured in the duration of a walk rather than in how many happen.**
+Which structure is contended — last-level-cache pressure from the page table's
+own working set, or the shared page-walk resources — is not settled here.
+
+**How much of it reaches the cost, at a matched queue count.** The two arms
+cover different ranges (dramblast leaves burst 64 at `q=7`, maglev never does),
+so the percentages above are not comparable with each other; at `q = 1 → 6` they
+are:
+
+    dramblast   walk cycles +20.3   cost +12   59% reaches the cost
+    maglev      walk cycles +11.8   cost   0    0% reaches the cost
+
+That is the **opposite direction** from the prefetch result in §5.6, and for a
+reason consistent with it. A pipeline hides latency it *issued early*; it cannot
+hide latency added underneath it. An engine already spending half its cycles
+waiting has slack to absorb more waiting, while one retiring at nearly four
+instructions per cycle has none. dramblast wins on the memory access it can
+prefetch and loses on the contention it cannot.
+
+The methodological point is smaller but worth keeping: this question stood open
+for a day and was answered in ten minutes from counters already on disk. The
+`.perf` sidecar next to every run exists precisely because which counter matters
+changes as an investigation moves, and a question that can be answered from data
+already taken should be, before any machine time is asked for.
