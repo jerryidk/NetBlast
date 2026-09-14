@@ -187,9 +187,35 @@ def main():
     series = [(-1, g("alloc_hoisted", "dramblast")), (0, base_d),
               (2, g("alloc_x2", "dramblast")), (4, g("alloc_x4", "dramblast")),
               (8, g("alloc_x8", "dramblast"))]
-    have = [(n, f) for n, f in series if f]
+    # Only conditions with a real slope enter the line. An arm that never
+            # saturated the link has no burst-size range and therefore no C.
+    have = [(n, f) for n, f in series if f and "C" in f]
     for n, f in have:
         print(row(f"pairs = {n:+d}" + ("  (hoisted)" if n < 0 else ""), f))
+    # Two different quantities, and they must not be conflated.
+    #
+    #   hoist difference  C(0 pairs) - C(hoisted)  is the SHIPPED pair's cost:
+    #       the real allocation, separated from its free by the whole batch.
+    #   amplification slope                        is an INCREMENTAL pair's cost:
+    #       alloc and free back to back in a tight loop, which is the warmest
+    #       possible tcache path and therefore a LOWER BOUND on the shipped one.
+    #
+    # If they agree, the shipped pair is as cheap as a back-to-back pair and the
+    # allocator's share is settled. If the hoist difference is materially
+    # larger, the separation costs something -- the tcache entry ages out of L1
+    # across a batch -- and the slope alone would have understated it.
+    hoisted = dict(series).get(-1)
+    if hoisted and "C" in hoisted and base_d:
+        shipped_pair = base_d["C"] - hoisted["C"]
+        sig = ((base_d["se"] or 0) ** 2 + (hoisted["se"] or 0) ** 2) ** 0.5
+        print(f"\n    shipped pair, by removing it:  C {hoisted['C']:.0f} (hoisted) "
+              f"-> {base_d['C']:.0f} (as shipped)")
+        print(f"      = {shipped_pair:.0f} cycles for the one round trip the code "
+              f"actually performs"
+              + (f", {abs(shipped_pair)/sig:.1f} sigma" if sig else ""))
+        print(f"      = {shipped_pair/base_d['C']*100:.1f}% of the per-burst cost; "
+              f"{base_d['C']-shipped_pair:.0f} cycles are something else")
+
     if len(have) >= 3:
         # pairs actually executed is n+1 for n>=0, and 0 for the hoisted arm
         pts = [(float(n + 1 if n >= 0 else 0), f["C"]) for n, f in have]
@@ -197,8 +223,10 @@ def main():
         if fitres:
             C0, per_pair, r2, worst, _n, _se = fitres
             print(f"\n    C = {C0:.0f} + {per_pair:.0f} * pairs      (R2 {r2:.3f})")
-            print(f"    -> one alloc/free pair costs {per_pair:.0f} cycles "
+            print(f"    -> an INCREMENTAL pair costs {per_pair:.0f} cycles "
                   f"= {per_pair/2.1:.0f} ns on this machine")
+            print("       (back-to-back in a loop: the warmest tcache path, so a")
+            print("        lower bound on the shipped pair measured above)")
             if base_d:
                 sh = per_pair / base_d["C"] * 100
                 print(f"    -> the shipped single pair is {sh:.1f}% of the shipped "
