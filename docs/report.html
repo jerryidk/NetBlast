@@ -128,11 +128,14 @@ footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);
 
   <div class="finding"><span class="n">04</span><p><b>Most of that per-burst
   cost is one call to <code>aligned_alloc</code>.</b> Sweeping the number of
-  round trips the burst performs prices one at <b>447 cycles</b> — 60% of the
-  whole per-burst figure, against an earlier estimate of <em>at most 11%</em>
-  taken from a published number rather than measured. The 64-byte alignment
-  request, which buys nothing, is what routes the call off glibc's fast
-  path.</p></div>
+  round trips the burst performs prices one at
+  <b>462&ndash;527 cycles</b> —
+  64&ndash;73% of the whole
+  per-burst figure, against an earlier estimate of <em>at most 11%</em> taken
+  from a published number rather than measured. The 64-byte alignment request,
+  which buys nothing, is what routes the call off glibc's fast path. It is a
+  range because the counter is an integer and one tick is 64 cycles per
+  burst — quoting it tighter than that produced a retracted result.</p></div>
 
   <div class="finding"><span class="n">05</span><p><b>The prefetch pipeline is
   worth about 165 cycles each time it fills, and it hides latency rather than
@@ -242,56 +245,52 @@ literature says one costs somewhere else.</p>
 
 <div class="wide">
 <figure>
-  <svg viewBox="0 0 720 300" role="img" aria-label="Per-burst cost against number of allocator round trips"><line x1="66" y1="254.0" x2="696" y2="254.0" stroke="var(--rule)" stroke-width="1"/><text x="57" y="258.0" text-anchor="end" class="tick">0</text><line x1="66" y1="236.3" x2="696" y2="236.3" stroke="var(--rule)" stroke-width="1"/><text x="57" y="240.3" text-anchor="end" class="tick">400</text><line x1="66" y1="218.6" x2="696" y2="218.6" stroke="var(--rule)" stroke-width="1"/><text x="57" y="222.6" text-anchor="end" class="tick">800</text><line x1="66" y1="200.9" x2="696" y2="200.9" stroke="var(--rule)" stroke-width="1"/><text x="57" y="204.9" text-anchor="end" class="tick">1200</text><line x1="66" y1="183.2" x2="696" y2="183.2" stroke="var(--rule)" stroke-width="1"/><text x="57" y="187.2" text-anchor="end" class="tick">1600</text><line x1="66" y1="165.5" x2="696" y2="165.5" stroke="var(--rule)" stroke-width="1"/><text x="57" y="169.5" text-anchor="end" class="tick">2000</text><line x1="66" y1="147.8" x2="696" y2="147.8" stroke="var(--rule)" stroke-width="1"/><text x="57" y="151.8" text-anchor="end" class="tick">2400</text><line x1="66" y1="130.1" x2="696" y2="130.1" stroke="var(--rule)" stroke-width="1"/><text x="57" y="134.1" text-anchor="end" class="tick">2800</text><line x1="66" y1="112.4" x2="696" y2="112.4" stroke="var(--rule)" stroke-width="1"/><text x="57" y="116.4" text-anchor="end" class="tick">3200</text><line x1="66" y1="94.7" x2="696" y2="94.7" stroke="var(--rule)" stroke-width="1"/><text x="57" y="98.7" text-anchor="end" class="tick">3600</text><line x1="66" y1="76.9" x2="696" y2="76.9" stroke="var(--rule)" stroke-width="1"/><text x="57" y="80.9" text-anchor="end" class="tick">4000</text><line x1="66" y1="59.2" x2="696" y2="59.2" stroke="var(--rule)" stroke-width="1"/><text x="57" y="63.2" text-anchor="end" class="tick">4400</text><line x1="66" y1="41.5" x2="696" y2="41.5" stroke="var(--rule)" stroke-width="1"/><text x="57" y="45.5" text-anchor="end" class="tick">4800</text><line x1="66" y1="23.8" x2="696" y2="23.8" stroke="var(--rule)" stroke-width="1"/><text x="57" y="27.8" text-anchor="end" class="tick">5200</text><text x="66.0" y="274" text-anchor="middle" class="tick">0</text><text x="126.1" y="274" text-anchor="middle" class="tick">1</text><text x="246.3" y="274" text-anchor="middle" class="tick">3</text><text x="366.6" y="274" text-anchor="middle" class="tick">5</text><text x="607.0" y="274" text-anchor="middle" class="tick">9</text><line x1="66.0" y1="255.1" x2="696.0" y2="16.6" stroke="var(--a)" stroke-width="1.6" opacity="0.55"/><circle cx="66.0" cy="254.0" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="66.0" y="242.0" text-anchor="middle" class="tick">0</text><circle cx="126.1" cy="234.2" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="126.1" y="222.2" text-anchor="middle" class="tick">447</text><circle cx="246.3" cy="186.2" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="246.3" y="174.2" text-anchor="middle" class="tick">1532</text><circle cx="366.6" cy="141.0" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="366.6" y="129.0" text-anchor="middle" class="tick">2554</text><circle cx="607.0" cy="50.5" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="607.0" y="38.5" text-anchor="middle" class="tick">4597</text><text x="66" y="294" class="axis">aligned_alloc / free round trips per burst</text><text x="14" y="24" class="axis" transform="rotate(-90 14 24)">extra cycles per burst</text></svg>
-  <figcaption>Each point is a full ten-run queue sweep refitted. The leftmost
-  point has no allocation in the burst path at all.</figcaption>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Per-burst cost against number of allocator round trips"><line x1="66" y1="254.0" x2="696" y2="254.0" stroke="var(--rule)" stroke-width="1"/><text x="57" y="258.0" text-anchor="end" class="tick">0</text><line x1="66" y1="236.5" x2="696" y2="236.5" stroke="var(--rule)" stroke-width="1"/><text x="57" y="240.5" text-anchor="end" class="tick">400</text><line x1="66" y1="219.0" x2="696" y2="219.0" stroke="var(--rule)" stroke-width="1"/><text x="57" y="223.0" text-anchor="end" class="tick">800</text><line x1="66" y1="201.4" x2="696" y2="201.4" stroke="var(--rule)" stroke-width="1"/><text x="57" y="205.4" text-anchor="end" class="tick">1200</text><line x1="66" y1="183.9" x2="696" y2="183.9" stroke="var(--rule)" stroke-width="1"/><text x="57" y="187.9" text-anchor="end" class="tick">1600</text><line x1="66" y1="166.4" x2="696" y2="166.4" stroke="var(--rule)" stroke-width="1"/><text x="57" y="170.4" text-anchor="end" class="tick">2000</text><line x1="66" y1="148.9" x2="696" y2="148.9" stroke="var(--rule)" stroke-width="1"/><text x="57" y="152.9" text-anchor="end" class="tick">2400</text><line x1="66" y1="131.3" x2="696" y2="131.3" stroke="var(--rule)" stroke-width="1"/><text x="57" y="135.3" text-anchor="end" class="tick">2800</text><line x1="66" y1="113.8" x2="696" y2="113.8" stroke="var(--rule)" stroke-width="1"/><text x="57" y="117.8" text-anchor="end" class="tick">3200</text><line x1="66" y1="96.3" x2="696" y2="96.3" stroke="var(--rule)" stroke-width="1"/><text x="57" y="100.3" text-anchor="end" class="tick">3600</text><line x1="66" y1="78.8" x2="696" y2="78.8" stroke="var(--rule)" stroke-width="1"/><text x="57" y="82.8" text-anchor="end" class="tick">4000</text><line x1="66" y1="61.3" x2="696" y2="61.3" stroke="var(--rule)" stroke-width="1"/><text x="57" y="65.3" text-anchor="end" class="tick">4400</text><line x1="66" y1="43.7" x2="696" y2="43.7" stroke="var(--rule)" stroke-width="1"/><text x="57" y="47.7" text-anchor="end" class="tick">4800</text><line x1="66" y1="26.2" x2="696" y2="26.2" stroke="var(--rule)" stroke-width="1"/><text x="57" y="30.2" text-anchor="end" class="tick">5200</text><text x="66.0" y="274" text-anchor="middle" class="tick">0</text><text x="126.1" y="274" text-anchor="middle" class="tick">1</text><text x="246.3" y="274" text-anchor="middle" class="tick">3</text><text x="366.6" y="274" text-anchor="middle" class="tick">5</text><text x="607.0" y="274" text-anchor="middle" class="tick">9</text><line x1="66.0" y1="253.3" x2="696.0" y2="16.8" stroke="var(--a)" stroke-width="1.6" opacity="0.55"/><circle cx="66.0" cy="254.0" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="66.0" y="240.0" text-anchor="middle" class="tick">0</text><line x1="126.1" y1="233.0" x2="126.1" y2="228.8" stroke="var(--a)" stroke-width="1.6"/><circle cx="126.1" cy="230.9" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="126.1" y="216.9" text-anchor="middle" class="tick">527</text><line x1="246.3" y1="186.1" x2="246.3" y2="182.1" stroke="var(--a)" stroke-width="1.6"/><circle cx="246.3" cy="184.1" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="246.3" y="170.1" text-anchor="middle" class="tick">1596</text><line x1="366.6" y1="142.1" x2="366.6" y2="139.3" stroke="var(--a)" stroke-width="1.6"/><circle cx="366.6" cy="140.7" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="366.6" y="126.7" text-anchor="middle" class="tick">2586</text><line x1="607.0" y1="52.9" x2="607.0" y2="48.1" stroke="var(--a)" stroke-width="1.6"/><circle cx="607.0" cy="50.5" r="4.5" fill="var(--a)" stroke="var(--ground)" stroke-width="1.8"/><text x="607.0" y="36.5" text-anchor="middle" class="tick">4645</text><text x="66" y="294" class="axis">aligned_alloc / free round trips per burst</text><text x="14" y="24" class="axis" transform="rotate(-90 14 24)">extra cycles per burst</text></svg>
+  <figcaption>Each point is the difference from the arm with no allocation in
+  the burst path, taken at every queue count where both sit at a full 64-packet
+  burst and averaged. Bars are the standard error of that mean.</figcaption>
 </figure>
 </div>
 
 <section class="wrap">
-<p>The one round trip the code actually performs is worth
-<b>447 cycles</b> per burst — about 215&nbsp;nanoseconds.
-Against a total per-burst cost of 718 cycles, that single allocation
-is roughly <b>60%</b> of it. What remains when it is removed, the batching
-machinery itself, is 256 cycles, measured directly by the leftmost
-point rather than extrapolated from the line through the others.</p>
+<p>The one round trip the code actually performs costs
+<b>462&ndash;527 cycles</b> per burst — about
+235&nbsp;nanoseconds. Two estimators that share no
+algebra: 527&nbsp;&plusmn;&nbsp;48 at a matched
+burst and queue count, and 462 from differencing the two fitted
+per-burst coefficients. Against a total per-burst cost of 718
+cycles, that single allocation is <b>64&ndash;73%</b>
+of it. What remains when it is removed, the batching machinery itself, is
+256 cycles, measured directly by the leftmost point rather than
+extrapolated from the line through the others.</p>
 <p>An earlier draft of this investigation put the allocator at <em>at most
 11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
 
-<h3>Reading the amplified arms honestly</h3>
-<p>The arms with several pairs are very well behaved, but the tempting way to
-say so — total cost divided by number of pairs, three numbers agreeing to the
-cycle — does not survive scrutiny. That ratio is an average, so it converges on
-the asymptotic slope as the count grows no matter how the first pair behaves;
-three such numbers are not three independent confirmations of anything. The
-<em>consecutive</em> slopes are independent, because each uses a disjoint pair of
-measurements: 3&nbsp;&rarr;&nbsp;5 pairs gives 510.78 cycles each, 5&nbsp;&rarr;&nbsp;9 pairs gives 510.78 cycles each. The line through those arms is
-<span class="mono">+0.0 + 510.78 × pairs</span>, and the zero
-intercept is the real check — <i>k</i> pairs cost exactly <i>k</i> times one pair
-with nothing left over, which a fixed setup overhead would violate.</p>
-<p>Extrapolated down to a single pair that line predicts
-511 cycles, against 447 measured: the lone pair is
-<b>64 cycles (12%) cheaper</b>. Two explanations for that were
-wrong. The first said the shipped pair must cost <em>more</em>, its
-<span class="mono">free</span> separated from its <span class="mono">alloc</span>
-by a whole batch while the amplification pairs run back to back — that had the
-sign backwards. The second said the first pair is intrinsically cheap and later
-ones cost 511. The data rule that out: if the discount belonged to
-pair&nbsp;#1 it would persist into every arm that contains one, and instead the
-model misses each of them by the same constant.</p>
-<div class="tablewrap"><table>
-<thead><tr><th>pairs</th><th>cheap-first model</th><th>measured</th><th>miss</th></tr></thead>
-<tbody><tr><td>3</td><td>1468</td><td>1532</td><td>+64</td></tr><tr><td>5</td><td>2490</td><td>2554</td><td>+64</td></tr><tr><td>9</td><td>4533</td><td>4597</td><td>+64</td></tr></tbody>
-</table></div>
-<p>So in an arm with three or more pairs, <em>every</em> pair costs
-511 — including the first. What survives is a statement about how
-many, not which one: <b>a lone round trip costs 447 cycles; with
-three or more in flight each costs 511.</b> That is an allocator load
-effect — more live chunks, more splitting, a larger free-list working set — and
-its mechanism is not established here. It also settles which number describes
-the shipped code, which performs exactly one: 447. Calibrating
-from the amplification slope instead would overstate it by
-14%.</p>
+<h3>Why this is quoted as a range and not a number</h3>
+<p><span class="mono">l2fwd</span> reports cycles per packet as an
+<b>integer</b>. At a 64-packet burst one printed tick is therefore
+64 cycles per burst, and every number above is a mean of small
+integers. Nothing here is meaningful to better than a few tens of cycles,
+however many digits a fit prints.</p>
+<p>That is not a pedantic caveat; it is the correction to a result this page
+carried for six hours. Read at a single queue count, the shipped pair came out
+at 447 cycles and an incremental one at 511, the two consecutive slopes agreed
+to 0.00 cycles and the line's intercept was 0.0. That was written up as a
+structural check — <i>k</i> pairs costing exactly <i>k</i> times one — and then,
+because the shipped pair sat 64 cycles below the line, as an allocator load
+effect: a lone round trip being cheaper than one of several in flight. A
+reviewer improved the framing and it still stood on nothing. The gap was 64
+cycles, which is one tick; the perfect slope agreement followed arithmetically
+from three integers where one difference was exactly twice another; and 447 came
+from the one queue count where the difference happens to be smallest.</p>
+<p>Measured at every matched queue count instead, the incremental pair is
+509 cycles (consecutive slopes: 3&nbsp;&rarr;&nbsp;5 gives 495, 5&nbsp;&rarr;&nbsp;9 gives 515) and extrapolating that
+line to a single pair predicts 562 against 527 measured —
+0.7σ apart, <b>not resolved</b>. There is no first-pair effect and no load
+effect. The failure worth naming is precision claimed past the instrument's
+resolution, where the excess precision then generates a mechanism and everything
+downstream stays internally consistent while describing rounding.</p>
+
 <p>This reverses an earlier conclusion in the investigation log, and the way it
 was wrong is worth more than the correction. The allocator had been dismissed by
 comparing the measured per-burst cost against a published figure of 20-40&nbsp;ns

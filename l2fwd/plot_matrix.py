@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from fit_burst_model import DOCS, lsq, points          # noqa: E402
 from analyse_matrix import at_q1                        # noqa: E402
+from make_report import alloc_rows                      # noqa: E402
 
 # Same palette as the report, so the figure and the page read as one thing.
 SURFACE, INK, INK_2, GRID = "#fbfaf7", "#1a1a1a", "#5a5a5a", "#e0ddd6"
@@ -104,7 +105,7 @@ def panel_backing(x0, allc, base_cond):
     return g
 
 
-def panel_alloc(x0, rows, shipped_pair):
+def panel_alloc(x0, rows, shipped_pair, err=None):
     """Per-burst cost against the number of alloc/free round trips in the burst."""
     g, (L, R, T, B) = frame(x0, "2. The allocator's share of the per-burst cost",
                             "cycles per burst above the arm with no allocation")
@@ -133,16 +134,23 @@ def panel_alloc(x0, rows, shipped_pair):
                      f'stroke-width="1.4" stroke-dasharray="5 4"/>')
             g.append(f'<text x="{x(xhi)-6:.1f}" y="{y(a + b*xhi) - 10:.1f}" '
                      f'class="note" text-anchor="end">'
-                     f'{b:.0f} cycles per pair, intercept {a:+.0f}</text>')
+                     f'{b:.0f} cycles per pair</text>')
     pts = " ".join(f"{x(n):.1f},{y(c):.1f}" for n, c in rows)
     g.append(f'<polyline points="{pts}" fill="none" stroke="{BLUE}" '
              f'stroke-width="2.4"/>')
     for n, c in rows:
+        e = (err or {}).get(n, 0.0)
+        if e:
+            g.append(f'<line x1="{x(n):.1f}" y1="{y(c-e):.1f}" x2="{x(n):.1f}" '
+                     f'y2="{y(c+e):.1f}" stroke="{BLUE}" stroke-width="1.8"/>')
         g.append(f'<circle cx="{x(n):.1f}" cy="{y(c):.1f}" r="5" fill="{BLUE}" '
                  f'stroke="{SURFACE}" stroke-width="2"/>')
     if shipped_pair:
-        g.append(f'<text x="{x(1)+10:.1f}" y="{y(shipped_pair)+4:.1f}" '
-                 f'class="val">{shipped_pair:.0f}  (as shipped)</text>')
+        se = (err or {}).get(1)
+        lab = (f"{shipped_pair:.0f} +/- {se:.0f}  (as shipped)" if se
+               else f"{shipped_pair:.0f}  (as shipped)")
+        g.append(f'<text x="{x(1)+12:.1f}" y="{y(shipped_pair)+4:.1f}" '
+                 f'class="val">{lab}</text>')
     for v in (0, 3, 5, 9):
         if v <= xhi:
             g.append(f'<text x="{x(v):.1f}" y="{B + 20:.1f}" class="tick" '
@@ -211,19 +219,12 @@ def main():
     allc = json.loads((DOCS / "results_reproduced.json").read_text())
     base_cond = "pinned2_asshipped"
 
-    # Allocator arms, at a matched burst of 64 -- the same estimator §5.13 uses.
-    def q1_extra(cond):
-        v = at_q1(allc, cond, "dramblast")
-        return v
-    hoist = q1_extra("alloc_hoisted")
-    arows = []
-    if hoist:
-        for pairs, cond in ((1, base_cond), (3, "alloc_x2"), (5, "alloc_x4"),
-                            (9, "alloc_x8")):
-            v = q1_extra(cond)
-            if v:
-                arows.append((pairs, (v - hoist) * 64))
-        arows = [(0, 0.0)] + arows
+    # Allocator arms from the shared estimator: matched burst AND matched queue
+    # count, with a standard error. Drawing this from q=1 alone -- which an
+    # earlier version did -- is what turned one integer tick into a result.
+    arows3 = alloc_rows(allc)
+    arows = [(r[0], r[1]) for r in arows3]
+    aerr = {r[0]: r[2] for r in arows3}
     shipped_pair = dict(arows).get(1)
 
     # Depth arms at a matched burst of 64.
@@ -244,7 +245,7 @@ def main():
     W, H = PW * 3, PH
     body = []
     body += panel_backing(0, allc, base_cond)
-    body += panel_alloc(PW, arows, shipped_pair)
+    body += panel_alloc(PW, arows, shipped_pair, aerr)
     body += panel_depth(PW * 2, at64)
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
            f'width="{W}" height="{H}" role="img" '

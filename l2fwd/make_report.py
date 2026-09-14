@@ -269,34 +269,48 @@ def at_q1(allc, cond, mode):
 
 
 def alloc_rows(allc):
-    """[(absolute pairs, per-burst cycles above the hoisted arm)].
+    """[(pairs, cycles/burst above the hoisted arm, standard error)].
 
-    Read at a matched 64-packet burst rather than from each arm's own fit.
-    Adding allocator pairs slows the forwarder, which keeps it oversubscribed
-    further up the sweep, which changes the burst sizes it reaches -- so the
-    arms are only comparable at q=1, where all of them have a full burst. There
-    the per-packet difference times 64 is the per-burst difference, with no
-    model in between.
+    Matched burst AND matched queue count. Adding allocator pairs slows the
+    forwarder, which keeps it oversubscribed further up the sweep and changes
+    the burst sizes it reaches, so the arms are only comparable where both sit
+    at a full 64-packet burst. At a matched burst the per-packet difference
+    times 64 is the per-burst difference, with no model in between.
+
+    The queue count is matched too, and this is not a detail. At a fixed burst
+    the cost still varies slightly with queue count, reproducibly, so the
+    difference is taken at each queue count and averaged. An earlier version
+    read it off q=1 alone, where "Cycle per fwd packet" -- an integer -- makes
+    one printed tick worth 64 cycles per burst; the result that came out of that
+    was a rounding artefact with a mechanism attached to it.
     """
-    spec = [(0, "alloc_hoisted"), (1, "pinned2_asshipped"), (3, "alloc_x2"),
-            (5, "alloc_x4"), (9, "alloc_x8")]
-    base, out = None, []
-    for n, cond in spec:
-        v = at_q1(allc, cond, "dramblast")
-        if v is None:
+    hoist = {int(q): (r["cycles_per_pkt"], r.get("rx_batch"), r.get("freq_mhz"))
+             for q, r in allc.get("alloc_hoisted", {}).get("dramblast", {}).items()}
+    out = [(0, 0.0, 0.0)]
+    for pairs, cond in ((1, "pinned2_asshipped"), (3, "alloc_x2"),
+                        (5, "alloc_x4"), (9, "alloc_x8")):
+        t = {int(q): (r["cycles_per_pkt"], r.get("rx_batch"), r.get("freq_mhz"))
+             for q, r in allc.get(cond, {}).get("dramblast", {}).items()}
+        qs = [q for q in sorted(set(t) & set(hoist))
+              if t[q][1] == 64 and hoist[q][1] == 64]
+        if len(qs) < 2:
             continue
-        if base is None:
-            base = v
-        out.append((n, (v - base) * 64.0))
-    return out
+        diffs = [t[q][0] - hoist[q][0] for q in qs]
+        fq = [t[q][2] / 2100.0 for q in qs if t[q][2]]
+        scale = 64.0 * (sum(fq) / len(fq) if fq else 1.0)
+        mean = sum(diffs) / len(diffs)
+        var = sum((v - mean) ** 2 for v in diffs) / (len(diffs) - 1)
+        out.append((pairs, mean * scale, (var / len(diffs)) ** 0.5 * scale))
+    return out if len(out) >= 3 else []
 
 
 def chart_alloc(rows):
     """Per-burst cost above the hoisted arm, against allocator round trips."""
     W, H = 720, 300
     L, R, T, B = 66, 24, 20, 46
-    xs = [n for n, _ in rows]
-    ys = [c for _, c in rows]
+    xs = [r[0] for r in rows]
+    ys = [r[1] for r in rows]
+    es = [r[2] if len(r) > 2 else 0.0 for r in rows]
     xmax, ymax = max(xs) * 1.12 + 0.4, max(ys) * 1.15
     X = lambda v: L + v / xmax * (W - L - R)
     Y = lambda v: T + (1 - v / ymax) * (H - T - B)
@@ -322,10 +336,13 @@ def chart_alloc(rows):
         p.append(f'<line x1="{X(0):.1f}" y1="{Y(a):.1f}" x2="{X(xmax):.1f}" '
                  f'y2="{Y(a + b * xmax):.1f}" stroke="var(--a)" stroke-width="1.6" '
                  f'opacity="0.55"/>')
-    for x, y in zip(xs, ys):
+    for x, y, e in zip(xs, ys, es):
+        if e:
+            p.append(f'<line x1="{X(x):.1f}" y1="{Y(y-e):.1f}" x2="{X(x):.1f}" '
+                     f'y2="{Y(y+e):.1f}" stroke="var(--a)" stroke-width="1.6"/>')
         p.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="4.5" fill="var(--a)" '
                  f'stroke="var(--ground)" stroke-width="1.8"/>')
-        p.append(f'<text x="{X(x):.1f}" y="{Y(y)-12:.1f}" text-anchor="middle" '
+        p.append(f'<text x="{X(x):.1f}" y="{Y(y)-14:.1f}" text-anchor="middle" '
                  f'class="tick">{y:.0f}</text>')
     p.append(f'<text x="{L}" y="{H-6}" class="axis">aligned_alloc / free round trips per burst</text>')
     p.append(f'<text x="14" y="{T+4}" class="axis" transform="rotate(-90 14 {T+4})">extra cycles per burst</text>')
@@ -655,32 +672,28 @@ regimes apart.</p>
     alloc_html = ""
     if len(arows) >= 3:
         asvg, (a0, per_pair) = chart_alloc(arows)
-        byn = dict(arows)                       # absolute pairs -> extra cycles/burst
-        shipped_pair = byn.get(1)               # cost of the one pair the code performs
-        # Consecutive slopes between the multi-pair arms. Each uses a disjoint
-        # pair of measurements, unlike total/pairs, which is an average and so
-        # converges on the slope whatever the low-count behaviour is.
-        multi = sorted((n, c) for n, c in arows if n > 1)
+        byn = {r[0]: r[1] for r in arows}
+        bye = {r[0]: r[2] for r in arows}
+        shipped_pair, shipped_se = byn.get(1), bye.get(1)
+        multi = sorted((r[0], r[1], r[2]) for r in arows if r[0] >= 3)
         slopes = [(multi[i + 1][1] - multi[i][1]) / (multi[i + 1][0] - multi[i][0])
                   for i in range(len(multi) - 1)]
-        incr_lo = min(slopes) if slopes else None
-        incr_hi = max(slopes) if slopes else None
-        # Line through the multi-pair arms; its intercept is the structural test.
+        # Weighted line through the multi-pair arms, extrapolated to one pair.
+        m_slope = m_int = pred1 = z1 = None
         if len(multi) >= 2:
-            n_ = len(multi)
-            sx = sum(n for n, _ in multi); sy = sum(c for _, c in multi)
-            sxx = sum(n * n for n, _ in multi); sxy = sum(n * c for n, c in multi)
-            m_slope = (n_ * sxy - sx * sy) / (n_ * sxx - sx * sx)
-            m_int = (sy - m_slope * sx) / n_
-        else:
-            m_slope = m_int = None
-        # The position model: first pair cheap, the rest at the asymptotic slope.
-        pos_miss = [(n, c - (shipped_pair + (n - 1) * m_slope)) for n, c in multi] \
-            if (m_slope is not None and shipped_pair is not None) else []
-        miss_rows = "".join(
-            f"<tr><td>{n}</td><td>{shipped_pair + (n - 1) * m_slope:.0f}</td>"
-            f"<td>{c:.0f}</td><td>{d:+.0f}</td></tr>"
-            for (n, c), (_, d) in zip(multi, pos_miss))
+            w = [1.0 / max(e, 1.0) ** 2 for _, _, e in multi]
+            sw = sum(w)
+            sx = sum(wi * x for wi, (x, _, _) in zip(w, multi))
+            sy = sum(wi * y for wi, (_, y, _) in zip(w, multi))
+            sxx = sum(wi * x * x for wi, (x, _, _) in zip(w, multi))
+            sxy = sum(wi * x * y for wi, (x, y, _) in zip(w, multi))
+            den = sw * sxx - sx * sx
+            if den:
+                m_slope = (sw * sxy - sx * sy) / den
+                m_int = (sy - m_slope * sx) / sw
+                pred1 = m_int + m_slope
+                if shipped_pair and shipped_se:
+                    z1 = abs(shipped_pair - pred1) / shipped_se
         # The non-allocator remainder is the hoisted arm's own per-burst cost,
         # measured rather than extrapolated from an intercept.
         hoist_fit = lsq(series({"dramblast": allc.get("alloc_hoisted", {}).get("dramblast", {})},
@@ -689,12 +702,14 @@ regimes apart.</p>
         shipped_fit = lsq(series({"dramblast": allc.get("pinned2_asshipped", {}).get("dramblast", {})},
                                  "dramblast"))
         shipped_C = shipped_fit[1] if shipped_fit else None
+        # Second estimator: differencing the two fitted per-burst coefficients.
+        removal = (shipped_C - remainder) if (shipped_C and remainder) else None
+        lo_est = min(x for x in (shipped_pair, removal) if x)
+        hi_est = max(x for x in (shipped_pair, removal) if x)
         slope_txt = ", ".join(
-            f"{multi[i][0]}&nbsp;&rarr;&nbsp;{multi[i+1][0]} pairs gives "
-            f"{sl:.2f} cycles each" for i, sl in enumerate(slopes))
-        gap = m_slope - shipped_pair
-        gappct = 100.0 * gap / m_slope
-        overpct = 100.0 * gap / shipped_pair
+            f"{multi[i][0]}&nbsp;&rarr;&nbsp;{multi[i+1][0]} gives {sl:.0f}"
+            for i, sl in enumerate(slopes))
+        onetick = 64.0 * 2095.0 / 2100.0
         alloc_html = f"""
 <section class="wrap">
 <h2>What the per-burst cost is made of</h2>
@@ -711,55 +726,51 @@ literature says one costs somewhere else.</p>
 <div class="wide">
 <figure>
   {asvg}
-  <figcaption>Each point is a full ten-run queue sweep refitted. The leftmost
-  point has no allocation in the burst path at all.</figcaption>
+  <figcaption>Each point is the difference from the arm with no allocation in
+  the burst path, taken at every queue count where both sit at a full 64-packet
+  burst and averaged. Bars are the standard error of that mean.</figcaption>
 </figure>
 </div>
 
 <section class="wrap">
-<p>The one round trip the code actually performs is worth
-<b>{shipped_pair:.0f} cycles</b> per burst — about 215&nbsp;nanoseconds.
-Against a total per-burst cost of {shipped_C:.0f} cycles, that single allocation
-is roughly <b>60%</b> of it. What remains when it is removed, the batching
-machinery itself, is {remainder:.0f} cycles, measured directly by the leftmost
-point rather than extrapolated from the line through the others.</p>
+<p>The one round trip the code actually performs costs
+<b>{lo_est:.0f}&ndash;{hi_est:.0f} cycles</b> per burst — about
+{(lo_est+hi_est)/2/2.1:.0f}&nbsp;nanoseconds. Two estimators that share no
+algebra: {shipped_pair:.0f}&nbsp;&plusmn;&nbsp;{shipped_se:.0f} at a matched
+burst and queue count, and {removal:.0f} from differencing the two fitted
+per-burst coefficients. Against a total per-burst cost of {shipped_C:.0f}
+cycles, that single allocation is <b>{100*lo_est/shipped_C:.0f}&ndash;{100*hi_est/shipped_C:.0f}%</b>
+of it. What remains when it is removed, the batching machinery itself, is
+{remainder:.0f} cycles, measured directly by the leftmost point rather than
+extrapolated from the line through the others.</p>
 <p>An earlier draft of this investigation put the allocator at <em>at most
 11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
 
-<h3>Reading the amplified arms honestly</h3>
-<p>The arms with several pairs are very well behaved, but the tempting way to
-say so — total cost divided by number of pairs, three numbers agreeing to the
-cycle — does not survive scrutiny. That ratio is an average, so it converges on
-the asymptotic slope as the count grows no matter how the first pair behaves;
-three such numbers are not three independent confirmations of anything. The
-<em>consecutive</em> slopes are independent, because each uses a disjoint pair of
-measurements: {slope_txt}. The line through those arms is
-<span class="mono">{m_int:+.1f} + {m_slope:.2f} × pairs</span>, and the zero
-intercept is the real check — <i>k</i> pairs cost exactly <i>k</i> times one pair
-with nothing left over, which a fixed setup overhead would violate.</p>
-<p>Extrapolated down to a single pair that line predicts
-{m_slope:.0f} cycles, against {shipped_pair:.0f} measured: the lone pair is
-<b>{gap:.0f} cycles ({gappct:.0f}%) cheaper</b>. Two explanations for that were
-wrong. The first said the shipped pair must cost <em>more</em>, its
-<span class="mono">free</span> separated from its <span class="mono">alloc</span>
-by a whole batch while the amplification pairs run back to back — that had the
-sign backwards. The second said the first pair is intrinsically cheap and later
-ones cost {m_slope:.0f}. The data rule that out: if the discount belonged to
-pair&nbsp;#1 it would persist into every arm that contains one, and instead the
-model misses each of them by the same constant.</p>
-<div class="tablewrap"><table>
-<thead><tr><th>pairs</th><th>cheap-first model</th><th>measured</th><th>miss</th></tr></thead>
-<tbody>{miss_rows}</tbody>
-</table></div>
-<p>So in an arm with three or more pairs, <em>every</em> pair costs
-{m_slope:.0f} — including the first. What survives is a statement about how
-many, not which one: <b>a lone round trip costs {shipped_pair:.0f} cycles; with
-three or more in flight each costs {m_slope:.0f}.</b> That is an allocator load
-effect — more live chunks, more splitting, a larger free-list working set — and
-its mechanism is not established here. It also settles which number describes
-the shipped code, which performs exactly one: {shipped_pair:.0f}. Calibrating
-from the amplification slope instead would overstate it by
-{overpct:.0f}%.</p>
+<h3>Why this is quoted as a range and not a number</h3>
+<p><span class="mono">l2fwd</span> reports cycles per packet as an
+<b>integer</b>. At a 64-packet burst one printed tick is therefore
+{onetick:.0f} cycles per burst, and every number above is a mean of small
+integers. Nothing here is meaningful to better than a few tens of cycles,
+however many digits a fit prints.</p>
+<p>That is not a pedantic caveat; it is the correction to a result this page
+carried for six hours. Read at a single queue count, the shipped pair came out
+at 447 cycles and an incremental one at 511, the two consecutive slopes agreed
+to 0.00 cycles and the line's intercept was 0.0. That was written up as a
+structural check — <i>k</i> pairs costing exactly <i>k</i> times one — and then,
+because the shipped pair sat 64 cycles below the line, as an allocator load
+effect: a lone round trip being cheaper than one of several in flight. A
+reviewer improved the framing and it still stood on nothing. The gap was 64
+cycles, which is one tick; the perfect slope agreement followed arithmetically
+from three integers where one difference was exactly twice another; and 447 came
+from the one queue count where the difference happens to be smallest.</p>
+<p>Measured at every matched queue count instead, the incremental pair is
+{m_slope:.0f} cycles (consecutive slopes: {slope_txt}) and extrapolating that
+line to a single pair predicts {pred1:.0f} against {shipped_pair:.0f} measured —
+{z1:.1f}σ apart, <b>not resolved</b>. There is no first-pair effect and no load
+effect. The failure worth naming is precision claimed past the instrument's
+resolution, where the excess precision then generates a mechanism and everything
+downstream stays internally consistent while describing rounding.</p>
+
 <p>This reverses an earlier conclusion in the investigation log, and the way it
 was wrong is worth more than the correction. The allocator had been dismissed by
 comparing the measured per-burst cost against a published figure of 20-40&nbsp;ns
@@ -780,28 +791,6 @@ read as evidence against the allocator instead of for it, because a constant
 taken from a paper had quietly replaced a measurement.</p>
 </section>
 """
-
-    # Numbers the prose quotes, computed rather than typed. Every one of these
-    # was a literal in an earlier draft, which is the same defect as every
-    # measurement error in this investigation: a number that no longer matches
-    # the thing it came from, with nothing to make the mismatch visible.
-    wk = walk_rows(allc)
-    d4, m4 = wk.get("dram4k", {}), wk.get("mag4k", {})
-    common_q = sorted(set(d4) & set(m4))
-    if d4 and m4 and len(common_q) >= 2:
-        q0, q1 = common_q[0], common_q[-1]
-        d4_lo, d4_hi = max(d4), max(d4)      # placeholders, replaced below
-        dram_span = (min(d4), max(d4))
-        mag_span = (min(m4), max(m4))
-        w_dram_pct = 100 * (d4[dram_span[1]][1] - d4[dram_span[0]][1]) / d4[dram_span[0]][1]
-        w_mag_pct = 100 * (m4[mag_span[1]][1] - m4[mag_span[0]][1]) / m4[mag_span[0]][1]
-        w_dram_d = d4[q1][1] - d4[q0][1]
-        w_dram_c = d4[q1][0] - d4[q0][0]
-        w_mag_d = m4[q1][1] - m4[q0][1]
-        w_mag_c = m4[q1][0] - m4[q0][0]
-        walks_flat = min(v[2] for t in (d4, m4) for v in t.values())
-    else:
-        common_q = []
 
     # The depth-32 point is the one that tests the ramp model, and one sweep
     # each could not resolve it against the run-to-run floor. These are the
@@ -1087,11 +1076,14 @@ more waiting while one retiring at three instructions per cycle does not.</p>
 
   <div class="finding"><span class="n">04</span><p><b>Most of that per-burst
   cost is one call to <code>aligned_alloc</code>.</b> Sweeping the number of
-  round trips the burst performs prices one at <b>447 cycles</b> — 60% of the
-  whole per-burst figure, against an earlier estimate of <em>at most 11%</em>
-  taken from a published number rather than measured. The 64-byte alignment
-  request, which buys nothing, is what routes the call off glibc's fast
-  path.</p></div>
+  round trips the burst performs prices one at
+  <b>{lo_est:.0f}&ndash;{hi_est:.0f} cycles</b> —
+  {100*lo_est/shipped_C:.0f}&ndash;{100*hi_est/shipped_C:.0f}% of the whole
+  per-burst figure, against an earlier estimate of <em>at most 11%</em> taken
+  from a published number rather than measured. The 64-byte alignment request,
+  which buys nothing, is what routes the call off glibc's fast path. It is a
+  range because the counter is an integer and one tick is 64 cycles per
+  burst — quoting it tighter than that produced a retracted result.</p></div>
 
   <div class="finding"><span class="n">05</span><p><b>The prefetch pipeline is
   worth about 165 cycles each time it fills, and it hides latency rather than
