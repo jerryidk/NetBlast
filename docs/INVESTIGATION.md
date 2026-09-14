@@ -1538,3 +1538,117 @@ the same burst size, so no slope is measurable at all. That is a result about
 the configuration, not missing data, and the analysis now says so instead of
 printing an unfittable line.
 
+
+### 5.13 What the per-burst cost is made of — and a reversal
+
+Two candidates survived §5.6: the `aligned_alloc`/`free` round trip
+`dramblast_process_frames` performs once per burst, and the batching machinery
+itself. They are separated by two knobs that cannot produce each other's
+signature — `-A N` multiplies the allocator round trips, `-Q depth` changes the
+prefetch pipeline's depth — and both predictions were registered in
+`l2fwd/analyse_matrix.py`'s docstring and committed before the runs.
+
+#### The reference was wrong, not the measurement
+
+Before the numbers, the correction they force. §5.6's earlier conclusion
+downgraded the allocator by comparing the measured per-burst cost against a
+published figure of 20-40 ns for a hot allocator round trip. That figure
+describes `malloc`'s tcache fast path. **This code never reaches it.**
+
+Read from the linked library rather than from memory: the binary links glibc
+2.33 out of the nix store, where `aligned_alloc` resolves to `__libc_memalign`,
+which is nine bytes — a bare `jmp` into `_mid_memalign`. And `_mid_memalign`
+relays to plain `malloc` only when the requested alignment is at most
+`MALLOC_ALIGNMENT`, which is 16 on x86-64. This call asks for **64**. So it goes
+to `_int_memalign` instead: 453 bytes of code that allocates oversized, computes
+the aligned address, splits the chunk, and frees the leader — with the arena
+lock held throughout.
+
+So the earlier reasoning was not a bad measurement. It was a **correct
+measurement compared against the wrong reference**, which no amount of
+measurement hygiene catches, because nothing in the pipeline is wrong. The check
+that catches it is to read the implementation actually being called.
+
+Worse, the evidence was already pointing the right way. §5.6 established that
+the per-burst cost is 86% executed instructions rather than waiting. Several
+hundred instructions of chunk-splitting under an arena lock is exactly what that
+looks like. It was read as evidence *against* the allocator because a constant
+taken from a paper had quietly replaced a measurement, and had been sitting in
+the reasoning for several days.
+
+The 64-byte alignment also appears to be unnecessary: `dramblast_result_t` is two
+`uint64_t`s, and the array is written sequentially, so cache-line alignment buys
+nothing that 16-byte alignment does not.
+
+
+#### What the allocator actually costs here
+
+Five arms, each a full ten-run queue sweep, differing only in how many
+`aligned_alloc`/`free` round trips the burst path performs.
+
+The comparison is made at **q=1**, where every arm sits at a full 64-packet
+burst. This matters: adding allocator pairs makes the forwarder slower, which
+makes it stay oversubscribed further up the sweep, which changes the burst sizes
+it reaches — so the arms are not at comparable bursts anywhere else, and fitting
+each arm over its own burst range compares conditions that differ in two things
+at once. At a matched burst, the difference in cost per packet multiplied by 64
+*is* the difference in cost per burst, with no model in between.
+
+| pairs per burst | core cycles/packet | vs hoisted | × 64 = per burst | per pair |
+|---|---|---|---|---|
+| 0 (hoisted) | 90.8 | — | — | — |
+| 1 (as shipped) | 97.8 | 7.0 | 447 | **447** |
+| 3 | 114.7 | 23.9 | 1532 | 511 |
+| 5 | 130.7 | 39.9 | 2554 | **511** |
+| 9 | 162.6 | 71.8 | 4597 | **511** |
+
+**One `aligned_alloc(64, …)`/`free` pair costs about 450 cycles — 215 ns.** The
+shipped pair is 447 by this route and 462 by differencing the two fitted
+per-burst coefficients, two estimates agreeing to 3%, the second at 10.6σ.
+
+So the allocator is **60-64% of the per-burst cost**, against the "at most ~11%"
+this document previously claimed. The remainder — the batching machinery itself
+— is measured directly by the hoisted arm at **256 ± 13 cycles per burst**,
+rather than extrapolated from a fitted intercept.
+
+#### Three things that had to be got right, and one that was got wrong
+
+**The line is tested, not asserted.** The earlier draft quoted R² = 0.988 for the
+regression of per-burst cost against pair count. With three points, two
+parameters and an x-range doing all the work, R² is near-uninformative — it is
+close to 1 whatever happens. The regression is now weighted by each arm's own
+standard error and tested with χ² against those same errors, and R² is
+deliberately not printed for it.
+
+**One arm is excluded, and the exclusion is stated.** The 9-pair arm is slow
+enough that only two of its ten runs left a 64-packet burst, so it has no
+measurable slope of its own (R² 0.62, standard error a quarter of the value). It
+is dropped from the line with the reason given. This is the third condition in
+this investigation where a fit returned confident parameters in a regime where
+the model had stopped applying — the others being the 4 KiB crossover arm
+(§5.12) and maglev's per-burst slope, which is indistinguishable from zero.
+
+**The two estimators disagree and the disagreement is reported.** An incremental
+pair costs 511 cycles at matched burst and 365 from the weighted fit. The reason
+is visible in `P`, which is not constant across the arms (89.3, 87.7, 96.9,
+99.5): the matched-burst route multiplies the whole per-packet difference by 64
+and so charges that drift to the per-burst term, while the fit separates them
+but pays for it with a model. An incremental pair costs **between 365 and 511
+cycles**; that is as far as this data goes. Why a once-per-burst allocation
+moves the per-packet cost at all is open — cache and TLB pollution from the
+allocator's chunk walking is the obvious candidate and has not been measured.
+
+Note that `P` *is* flat across the two arms that carry the headline — 89.3
+hoisted against 87.7 as shipped — so the structural check holds exactly where
+the claim lives and weakens only where the calibration lives.
+
+**And the thing that was got wrong.** An earlier draft explained the gap between
+the two estimators by arguing that the shipped pair must cost *more* than an
+incremental one, because its `free` is separated from its `alloc` by the whole
+batch while the amplification pairs are back-to-back in a loop. Measured at
+matched burst, the shipped pair costs 447 cycles and an incremental one 511:
+the shipped pair is **cheaper**, by 64 cycles. The argument was not merely
+unsupported, it had the sign backwards. It is recorded here as measured, with no
+replacement story, because inventing a second mechanism to explain the first
+one's failure is how this section got into trouble in the first place.
+
