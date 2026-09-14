@@ -507,6 +507,86 @@ def main():
                     print("       consistent with zero, which is what a ramp that")
                     print("       scales with queue depth would look like.")
 
+    # ---- the part of the depth result that needs no model at all ----------
+    # Raw runs that stayed at burst 64, so every arm is compared at the same
+    # burst and no fit stands between the measurement and the claim. Both a
+    # cycle counter and an instruction counter are read, which is what
+    # separates "does more work" from "waits longer": the burst-cost model
+    # cannot tell those apart and this can.
+    PERF_WINDOW = 8.0        # sweep.sh's perf window, seconds
+    print()
+    print("=" * 84)
+    print("3b. DEPTH AT A MATCHED BURST   cycles vs instructions, no fit")
+    print("=" * 84)
+    dcond = [(8, "depth_8"), (16, "depth_16"), (32, "depth_32"),
+             (64, "pinned2_asshipped")]
+    at64 = {}
+    print(f"  {'depth':>5} {'runs':>5} {'cycles/pkt':>12} {'insns/pkt':>11} {'IPC':>6}")
+    for dpt, cond in dcond:
+        runs = [r for r in allc.get(cond, {}).get("dramblast", {}).values()
+                if r.get("rx_batch") == 64 and r.get("insns") and r.get("steady_mpps")]
+        if not runs:
+            continue
+        cyc = sum(r["cycles_per_pkt"] for r in runs) / len(runs)
+        ipp = sum(r["insns"] / (r["steady_mpps"] * 1e6 * PERF_WINDOW)
+                  for r in runs) / len(runs)
+        # scatter of the mean, so the depth-32 test has an error bar
+        var = sum((r["cycles_per_pkt"] - cyc) ** 2 for r in runs)
+        sem = (var / (len(runs) * (len(runs) - 1))) ** 0.5 if len(runs) > 1 else None
+        at64[dpt] = (cyc, ipp, sem, len(runs))
+        semtxt = f"+/-{sem:.2f}" if sem else ""
+        print(f"  {dpt:>5} {len(runs):>5} {cyc:>8.1f}{semtxt:>6} {ipp:>11.1f} "
+              f"{ipp / cyc:>6.2f}")
+    if 8 in at64 and 64 in at64:
+        c8, i8 = at64[8][0], at64[8][1]
+        c64, i64 = at64[64][0], at64[64][1]
+        print(f"\n    depth 64 -> 8 at a matched burst of 64:")
+        print(f"      instructions per packet  +{100*(i8-i64)/i64:.1f}%")
+        print(f"      cycles       per packet  +{100*(c8-c64)/c64:.1f}%")
+        print(f"      IPC  {i64/c64:.2f} -> {i8/c8:.2f}")
+        print("    -> a shallower prefetch pipeline does not make the forwarder")
+        print("       do meaningfully more work. It makes it wait. This is the")
+        print("       load-bearing depth result and it survives without the")
+        print("       burst-cost model, which cannot separate the two.")
+
+    # ---- the per-fill ramp model, calibrated then tested -------------------
+    # See docs/depth_prediction.md, written before the depth-32 arm finished.
+    # With queue depth Q and burst B the pipeline fills ceil(B/Q) times per
+    # burst, so the ramp is paid per fill, not per burst. At the shipped depth
+    # Q == B and the two are the same event, which is why the burst model
+    # attributes the ramp to C; shortening the queue moves it into P.
+    cal = [(q, at64[q][0] - at64[64][0]) for q in (8, 16) if q in at64]
+    if len(cal) == 2 and 64 in at64:
+        xs = [(1.0 / q - 1.0 / 64.0) for q, _ in cal]
+        ys = [y for _, y in cal]
+        ramp = sum(x * y for x, y in zip(xs, ys)) / sum(x * x for x in xs)
+        print(f"\n    Per-fill ramp calibrated on depths 8 and 16 (two points,")
+        print(f"    one parameter): ramp = {ramp:.0f} cycles per pipeline fill.")
+        if 32 in at64:
+            pred = at64[64][0] + ramp * (1.0 / 32 - 1.0 / 64)
+            obs, _, sem, n = at64[32][0], None, at64[32][2], at64[32][3]
+            null = at64[64][0]
+            print(f"    Prediction for depth 32 at burst 64: {pred:.1f}")
+            print(f"    No-effect null:                      {null:.1f}")
+            print(f"    Measured ({n} runs):                    {obs:.1f}"
+                  + (f" +/- {sem:.2f}" if sem else ""))
+            if sem:
+                zp = abs(obs - pred) / sem
+                zn = abs(obs - null) / sem
+                print(f"      {zp:.1f} sigma from the prediction, "
+                      f"{zn:.1f} sigma from the null.")
+                if zp < 2 and zn > 3:
+                    print("    -> the model survives a test it could have failed.")
+                elif zn < 2:
+                    print("    -> NOT CONFIRMED. Depth 32 is indistinguishable from")
+                    print("       no effect at this burst, so the ramp calibrated on")
+                    print("       the two shallow arms does not extrapolate. The")
+                    print("       matched-burst cycles/instructions result above is")
+                    print("       unaffected -- it uses no model.")
+                else:
+                    print("    -> the measurement sits between the two hypotheses and")
+                    print("       separates neither. Reported as inconclusive.")
+
     if "--plot" not in sys.argv:
         return
 
