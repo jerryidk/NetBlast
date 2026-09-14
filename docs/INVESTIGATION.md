@@ -1694,3 +1694,121 @@ estimate (462, differencing shipped against hoisted) agrees with 447 to 3% and
 depends on none of this; those two are the pair of numbers this result rests on,
 and both avoid the amplified regime entirely.
 
+
+### 5.14 The prefetch pipeline depth: the model was the wrong shape, and saying so fixes two things
+
+The per-burst cost was decomposed into an allocator part (447 cycles, §5.13) and
+a remainder of about 271. The remainder was supposed to be the prefetch
+pipeline's fill-and-drain ramp. The test was to shorten the pipeline, which
+`-Q` now does: `dramblast_queue_depth` sets `find_queue_size`, the push loop
+bounds against it (`dramblast.c:142`), and the four arms run at depth 8, 16, 32
+and the shipped 64.
+
+#### The result that needs no model
+
+Five queue counts in every arm stayed at a 64-packet burst, so the arms can be
+compared at a matched burst with nothing fitted:
+
+| queue depth | cycles/packet | instructions/packet | IPC |
+|---|---|---|---|
+| 8 | 119.0 ± 0.32 | 414.0 | 3.48 |
+| 16 | 106.8 ± 0.37 | 411.9 | 3.86 |
+| 32 | 102.2 ± 0.58 | 405.0 | 3.96 |
+| 64 (as shipped) | 100.4 ± 0.75 | 397.8 | 3.96 |
+
+From depth 64 to depth 8, **instructions per packet rise 4.1% while cycles per
+packet rise 18.5%**, and IPC falls from 3.96 to 3.48. A shallower prefetch
+pipeline does not make the forwarder do meaningfully more work; it makes it
+wait. That is the load-bearing depth result and it uses no fit at all. The
+burst-cost model cannot produce it, because a model in cycles alone cannot tell
+work from waiting — only a second counter can, which is why the instruction
+counter has been read alongside the cycle counter since §5.8.
+
+It also puts a number on the design decision. Going from the shipped depth 64 to
+depth 32 costs 1.8 cycles per packet; going to depth 8 costs 18.6. The returns
+are nearly exhausted by 32 and the last doubling to 64 buys 1.8 cycles.
+
+#### Why the fitted C did something impossible
+
+Fitting `P + C/B` to each arm separately gives:
+
+| depth | P | C | R² |
+|---|---|---|---|
+| 8 | 115.8 | 375.4 ± 49 | 0.882 |
+| 16 | 97.5 | 646.5 ± 18 | 0.994 |
+| 32 | 91.2 | 733.7 ± 18 | 0.995 |
+| 64 | 87.7 | 717.6 ± 42 | 0.974 |
+
+Depth 8's `C` is **375, below the 447-cycle allocator pair** — and that pair runs
+once per burst at every depth, because the buffer is sized by the burst length
+and not by the queue depth (`dramblast.c:243`). A per-burst term cannot be
+smaller than a cost the burst pays unconditionally. At 1.5σ this is not a
+falsification, but it is the model announcing that something is wrong with it.
+
+What is wrong is the shape. The pipeline fills and drains `ceil(B/Q)` times per
+burst. At the shipped depth `Q = 64` and the burst never exceeds 64, so there is
+always exactly one fill and *per burst* and *per fill* name the same event — the
+model cannot tell them apart, and quietly puts the ramp in `C`. Shorten the
+queue and the two come apart: at depth 8 a 64-packet burst fills eight times, so
+the ramp is paid per eight packets rather than per burst and moves into `P`.
+Nothing trades places; the same cycles change which event they belong to.
+`ceil(B/Q)` is a step function, so a straight line in `1/B` is mis-specified
+wherever `B > Q` — which is most of the depth-8 arm and none of the shipped one.
+
+This also retires a worry from §5.13. The concern there was that `P` moved
+across the allocator arms for no stated reason. Some of that is the same effect:
+`P` is not a clean per-packet quantity once anything per-fill is in play.
+
+#### Calibrating the ramp, and a prediction that could have failed
+
+Before the depth-32 arm finished, the per-fill ramp was calibrated on depths 8
+and 16 at the matched burst of 64 — two points, one parameter — giving **165
+cycles per pipeline fill**, and the prediction for depth 32 was written to
+`docs/depth_prediction.md` with its falsification bounds. (That file also records
+that one of depth-32's five burst-64 points was already on screen when the
+arithmetic was done; the other four were not.)
+
+    predicted   103.0        null (no effect)   100.4
+    measured    102.2 ± 0.58
+
+1.3σ from the prediction, 3.1σ from the null. The model survived a test it could
+have failed.
+
+#### One model across all four arms, and where it stops being a measurement
+
+Fitting `W + ramp·ceil(B/Q)/B + K/B` to all forty points at once:
+
+    W     =  91.4 ± 2.0    steady per-packet work
+    ramp  =   166 ± 25     one pipeline fill
+    K     =   477 ± 30     per burst
+    residual rms 6.25 cycles over a 98-172 range
+
+`K` is the striking one. Nothing in this fit knows about the allocator — this
+experiment varied the queue depth and never varied the number of `alloc`/`free`
+pairs — and yet `K` lands 1.0σ from the 447 cycles the amplification sweep
+measured for that pair directly.
+
+**That agreement does not survive a sensitivity check, and it is reported
+anyway.** Refitting without the depth-8 arm, which is the arm the step model
+describes worst (residual rms 9.1 against 3.3-5.0 for the others), moves `K` to
+589 ± 30 — a 2.6σ shift, and 4.7σ from the allocator's 447. A parameter that
+moves that far when the noisiest arm is dropped is not a measurement. So the
+convergence is suggestive and no more; what this fit actually determines is the
+ramp, which barely moves (166 ± 25 with all four arms, 142 ± 31 without depth 8)
+and which agrees with the 165 obtained by the completely separate matched-burst
+route.
+
+#### What the depth sweep settles
+
+- The prefetch pipeline's benefit is **latency hiding, not work reduction**:
+  4.1% more instructions, 18.5% more cycles when it is shortened eightfold.
+- The ramp costs about **165 cycles per fill**, by two independent routes.
+- The remaining ~271 cycles of the shipped per-burst cost is **not** all ramp,
+  because at the shipped depth the ramp is paid exactly once per burst and is
+  therefore already inside that number — the ramp and the allocator together
+  account for roughly 447 + 165 = 612 of the 718 measured, leaving about 106
+  cycles of genuinely per-burst work (the RX and TX burst calls themselves)
+  unattributed.
+- The linear burst model is valid only while `B ≤ Q`. For the shipped build that
+  is every burst, so §5.5 through §5.13 are unaffected. For any future arm that
+  shortens the queue, it is not, and the step model must be used instead.

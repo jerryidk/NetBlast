@@ -82,3 +82,23 @@ matched burst of 64, instructions per packet rise **4.0%** while cycles per
 packet rise **18.5%**, so IPC falls from 3.96 to 3.48. A shallower prefetch
 pipeline does not make the forwarder do meaningfully more work. It makes it
 wait.
+
+---
+
+## Outcome (2026-09-14, after the arm completed)
+
+    predicted   103.0        null (no effect)   100.4
+    measured    102.2 +/- 0.58  (mean of five burst-64 runs)
+
+1.3 sigma from the prediction, 3.1 sigma from the null. Not falsified.
+
+The ramp is confirmed by a second, independent route as well: fitting
+`W + ramp*ceil(B/Q)/B + K/B` to all forty points from the four depth arms at
+once gives `ramp = 166 +/- 25`, against the 165 calibrated here from two points
+at a single burst. The two routes share no algebra.
+
+The instruction-count anomaly noted above stands unexplained. Depth 32 gives
+405.0 instructions per packet, between depth 64's 397.8 and depth 16's 411.9, so
+the step-at-first-shortening reading is wrong too — the instruction count rises
+smoothly with the number of fills while the *excess* is not proportional to it.
+No account of that is offered here.
