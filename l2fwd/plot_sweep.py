@@ -142,10 +142,19 @@ def main():
         ax.annotate(mode, (qs[-1], ys[-1]), textcoords="offset points",
                     xytext=(-6, 10), fontsize=9, color=INK_2, ha="right")
     # l2fwd prints this as "Cycle per fwd packet" but it is rte_rdtsc() deltas,
-    # and this CPU has constant_tsc/nonstop_tsc with the TSC pinned at 2.1 GHz
-    # while cores boost to 3.7 GHz. So these are TSC ticks (i.e. time), NOT core
-    # cycles -- they understate true cycles by the boost ratio. Relative
-    # comparisons between modes at the same queue count remain valid.
+    # and this CPU has constant_tsc/nonstop_tsc with the TSC pinned at its
+    # 2.1 GHz nominal. So these are TSC ticks (i.e. time), NOT core cycles.
+    #
+    # COND here is the HISTORICAL turbo arm, taken before the machine was
+    # frequency-pinned and cpuset-isolated and before per-run frequency sampling
+    # existed. Its delivered clock was therefore somewhere between 2.1 GHz and
+    # single-core turbo, unrecorded and varying with queue count, so these ticks
+    # CANNOT be converted to core cycles -- do not multiply them by a fixed
+    # ratio. Mode-vs-mode comparison at the same queue count stays valid, since
+    # both modes ran under identical conditions.
+    #
+    # For the core-cycle view, and for the pinned-vs-turbo contrast, see
+    # plot_clock_arms.py, whose arms each carry their own measured frequency.
     style(ax, "Per-packet cost rises with queue count",
           "RX/TX queue pairs  (-q)", "TSC ticks per forwarded packet  (2.1 GHz)")
     ax.set_xlim(0.7, 10.6)
@@ -177,7 +186,7 @@ def main():
                  fontweight="medium")
     fig.text(0.055, 0.915,
              "Line-rate load spread over more queues. dramblast rises 3.2x, maglev 1.3x — isolating a per-burst,\n"
-             "not per-packet, cost. TSC is invariant at 2.1 GHz here, so ticks are time, not core cycles.",
+             "not per-packet, cost. Ticks are elapsed time (invariant TSC), not core cycles — see plot_clock_arms.py.",
              fontsize=9.5, color=INK_2, ha="left", va="top", linespacing=1.5)
     fig.tight_layout(rect=(0, 0, 1, 0.875))
     out2 = DOCS / "per_packet_cost.png"

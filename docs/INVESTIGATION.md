@@ -275,6 +275,75 @@ rather than patched. Writing the prediction down before the data exists is the
 point — the earlier `C = 66` result shows how readily a fit lands on whatever
 mechanism is already suspected.
 
+#### RESULT: the model does hold up, once the clock is fixed
+
+The section above concluded that `ticks_per_pkt = W + C/batch` could not be
+fitted stably and that "the current data cannot settle the attribution". That
+conclusion was correct **about the turbo data** and wrong as a general claim. Re
+fitted on the pinned arm, where TSC ticks *are* core cycles and there is no
+frequency drift across queue counts to absorb, the model is well behaved:
+
+| estimator | dramblast `C` | maglev `C` |
+|---|---|---|
+| least squares, all 10 points | **771** cycles/burst | 71 cycles/burst |
+| least squares, only the 4 post-knee points | 739 | — |
+| two-point, the extremes | 794 | 98 |
+| `R^2` (all points) | **0.9946** | 0.68 |
+
+Three estimators within **7%** for dramblast, against a **5.9x** swing on the
+same model fitted to turbo data. The instability was the frequency drift, not the
+model. maglev's low `R^2` is not a failure: its cost is flat, so there is almost
+no variance for the model to explain -- which is itself the asymmetry, stated
+numerically. **dramblast's per-burst cost is 11x maglev's.**
+
+**A pre-registered prediction that half failed -- reported, not patched.** The
+prediction recorded above was that refitting on frequency-corrected data should
+shrink `C` in **both** modes and shrink it **more in maglev**, and that "if a
+refit does not behave that way, this explanation is also wrong and should be
+discarded rather than patched." Outcome:
+
+* maglev: `C` fell 116 -> 71. As predicted.
+* dramblast: `C` rose 66 -> 771. **Not as predicted, by an order of magnitude.**
+
+So the "fitted `C` was mostly absorbing frequency drift" explanation is
+discarded. The better account is that the turbo fit was not one biased estimate
+but an unstable one, and its least-squares value of 66 happened to land on the
+low end -- which is precisely why it looked so convincing against a hot-tcache
+allocator round trip. In fairness to the prediction, it was also badly posed: the
+pinned arm is not the turbo data with a correction applied, it is a different
+dataset with different burst sizes, so "refit the same points" was never
+something this experiment could do.
+
+#### This substantially downgrades the allocator hypothesis
+
+With `C` now measured rather than fitted unstably, it can be checked against the
+mechanism it was attributed to:
+
+    C = 771 cycles/burst at 2.100 GHz = 367 ns per burst
+    glibc aligned_alloc + free, hot tcache path = 20-40 ns = 42-84 cycles
+
+**The allocator can account for at most ~11% of the per-burst cost.** The
+`aligned_alloc`/`free` pair in `dramblast_process_frames` (`dramblast.c:202-203`,
+`:231`) therefore cannot be the explanation, whatever else it is. The 3.2x rise
+is real, the per-burst character of it is now firmly established by a clean
+linear fit, but the attribution to the allocator is the weakest link and the
+number says so.
+
+Note what killed it: not an argument, and not the hoist experiment, but putting
+the machine in a state where the existing measurement became interpretable. The
+earlier `C = 66` matching an allocator round trip "to the nanosecond" was the
+plausibility trap this document has now recorded three times.
+
+**Consequence for the experiment design.** A plain hoist is now a *weak* test: if
+the allocator is ~11% of `C`, removing it should move `C` by ~80 cycles, against
+a 7% estimator spread of ~50. That is marginal. The **amplification arm** becomes
+the primary measurement instead -- inject `N` extra `aligned_alloc`/`free` pairs
+per burst and check that `C` rises by `N x ~60` cycles. At `N = 8` that is ~480
+cycles, far above the noise floor, and it calibrates the allocator's true
+per-burst contribution on this machine rather than relying on a literature value
+for the tcache path. The hoist then becomes the confirmation, with the
+amplification arm supplying the expected effect size.
+
 #### Controls the experiment must carry
 
 A negative result ("buffer hoisted, 3.2x unmoved") is only meaningful if the
@@ -486,14 +555,38 @@ this sweep. All-core turbo is lower than single-core turbo, so as q rises from 1
 to 10 the actual frequency falls and the correction factor shrinks with it. This
 is exactly the mechanism that makes the across-queue-count comparison suspect:
 part of the measured rise in ticks-per-packet is the clock slowing down, not more
-work being done. Quantifying it requires sampling `scaling_cur_freq` per queue
-count during a sweep, which has not been done.
+work being done. Quantifying it requires per-queue-count frequency sampling
+during a sweep.
 
-When that sampling is added, read **every active core and take the median**, not
-one core. Under an all-core load the turbo bins can differ between cores, so
-dividing an aggregate packet count by a single core's clock reintroduces a
-smaller version of the same error. `scaling_cur_freq` is a sysfs read needing no
-MSR access, which matters here because the `msr` module is not loaded.
+**Retraction: `scaling_cur_freq` cannot be used for this, on this box.** The
+obvious plan was to sample it on every active core and take the median. It does
+not work. Sampled while a sweep was busy-polling CPUs 0-14, an *idle* core read
+**3.63-3.70 GHz** -- indistinguishable from the busy cores -- while `perf` counted
+**506,165 cycles/s** on that same core, i.e. it was halted essentially the whole
+interval. Under `intel_pstate` in active mode, `scaling_cur_freq` reports the
+P-state *request*, not per-core delivery, and `cpuinfo_cur_freq` does not exist
+in that mode, so there is no sysfs fallback. A median over cores would not have
+rescued it: every core was reading the same wrong number, so the median is wrong
+too, and it would have looked stable and plausible.
+
+The working method, now in `sweep.sh:111`, counts cycles directly:
+
+    sudo perf stat -e cycles -C <worker cpus> -x, -- sleep 8
+
+Cycles / wall-time / core *is* the delivered frequency here with no task-clock
+correction, because DPDK busy-polls: the workers sit at 100% with no populate
+phase or idle time to contaminate the average. Worker cores only -- lcore 0 runs
+the stats loop, not forwarding.
+
+**Resolved by configuration, not by correction.** Section 3.4b pins every core to
+2,100,000 kHz, which is simultaneously this SKU's `base_frequency` and exactly
+the invariant TSC rate. At that setting **TSC ticks are core cycles**, the
+1.762x factor is 1.000, and the entire "across queue counts is weaker than it
+looks" caveat above disappears rather than being estimated away. Verified by
+perf, not sysfs: 33,482,579,855 cycles over 8 s on 2 cores = **2.0927 GHz**
+delivered; an independent peer session on the same box measured 2.0843 GHz and
+the sweep instrumentation reports 2095 MHz. The cost is representativeness --
+see the pre-registration below.
 
 **Which comparisons this defect actually bites** is decided by the axis compared
 along, since a ratio is only safe when conditions — frequency included — are
@@ -513,6 +606,175 @@ than "cycles".
   `rte_lcore_count()-1` = 2 workers split 1 TX / 1 RX (`pktgen.c:308`).
 
 ---
+
+### Pre-registered: what the pinned re-baseline must show
+
+Written **before** running the 2.1 GHz sweep, against the turbo-era
+`linerate_2tx_instr` numbers, so the prediction cannot be fitted after the fact.
+
+**First, a units correction that inverts the naive expectation.** A peer session
+pinning the same box predicted that per-packet cost would *fall* at 2.1 GHz,
+because memory latency is fixed in nanoseconds and therefore spans fewer cycles
+at a lower clock. That is right in *core cycles*, which is what that session
+measures. It is backwards in the units this investigation reports. `rte_rdtsc()`
+counts the invariant TSC, which runs at 2.1 GHz in **both** conditions, so a tick
+is a fixed quantity of *time* either way. Lowering the core clock cannot make any
+work finish sooner in wall-clock terms. So here, ticks per packet must **rise or
+stay flat, never fall.** If any point falls, the rig is wrong, not the chip.
+
+That gives a free, sharp test of the central hypothesis. Let `r = 3.7/2.1 =
+1.762` be the clock ratio (an upper bound; all-core turbo at high q is below
+single-core turbo, so the true per-q ratio is somewhere in `[1.0, 1.762]`).
+
+| the cost is... | scales by | because |
+|---|---|---|
+| CPU-bound work (instructions retired) | up to `r` | fewer instructions per unit time at a lower clock |
+| memory / DMA latency | `1.0` | fixed in nanoseconds, unaffected by core clock |
+
+The hypothesis under test (section 2, "A real queue-count-dependent cost") is
+that dramblast's rise from 58 to 185 ticks is a **fixed per-burst cost amortised
+over shrinking bursts**, and the candidate mechanism is the `aligned_alloc`/`free`
+pair in `dramblast_process_frames` (`dramblast.c:202-203`, `:231`) -- which is
+CPU work, not a memory stall. maglev's near-flat ~100 ticks, by contrast, is
+presumed dominated by table-lookup memory latency.
+
+So, concretely:
+
+1. **Every point rises or holds.** No point falls below its turbo value. This is
+   a rig check; failure invalidates everything downstream.
+2. **dramblast's excess scales like CPU work.** Its q=10 *excess over its own
+   q=1 plateau* is `185 - 58 = 127` ticks. If that excess is the allocator, it
+   should scale by close to `r`, landing the q=10 excess near `127 x 1.7 ~ 216`
+   ticks. If it is memory stalls in disguise, it stays near 127.
+3. **maglev's plateau scales less than dramblast's excess.** maglev's flat
+   ~100 ticks at q=1-5 should grow by a *smaller* factor than dramblast's excess
+   does, since it is the more latency-exposed of the two.
+
+**What would falsify the per-burst-CPU-cost story:** dramblast's excess growing
+by less than maglev's plateau does. That would mean the queue-count-dependent
+cost is latency-bound, the allocator is the wrong candidate, and the hoist
+experiment should not be run as specified.
+
+**AMENDMENT, before the turbo arm was run.** The criteria above use a single
+`r = 1.762`. A peer session pointed out that this is wrong in a way that biases
+toward *rejecting* the hypothesis, and it is right:
+
+* Delivered single-core turbo on this box measures **3.65-3.68 GHz**, not the
+  3.70 nominal, so `r <= 1.74` even at q=1.
+* All-core turbo is below single-core turbo, and this sweep goes from 1 to 10
+  busy cores. A delivered **3553 MHz** was observed here at high core counts,
+  giving `r ~ 1.69` there, and the true figure at q=10 is lower still.
+
+So `r` is a *function of q*, falling as q rises. Testing "does dramblast's excess
+scale near `r`" against a fixed 1.762 would make genuinely CPU-bound work look
+sub-`r` at exactly the high queue counts where the per-burst cost lives, and
+would kill a correct hypothesis. **Criterion 2 is therefore evaluated against
+`r(q)` computed per queue count from the turbo arm's own recorded `freq_mhz`, not
+against a constant.** The absolute target "~216 ticks" is withdrawn; the test is
+`excess_pinned / excess_turbo` compared to that queue count's measured `r(q)`.
+
+**Second amendment: the comparator changes.** Comparing the pinned arm against
+the *older* `linerate_2tx_instr` dataset is not a single-variable contrast. Four
+other things changed on this host in between -- `irqbalance` stopped, C-states
+disabled, THP `defrag` moved to `madvise`, and the cpuset partition introduced
+(section 3.4b/3.4c). All of those should make results faster or steadier rather
+than slower, so none of them explains a slowdown, but none of them is *measured*
+either. Early evidence that this matters: pinned q=2 dramblast reads 105 ticks
+against the old turbo arm's 58, a ratio of **1.81 -- above the `r <= 1.762`
+ceiling**, which under a clean single-variable contrast should be impossible.
+
+The turbo arm resolves this. It is run with the identical binary, cpuset,
+`irqbalance`, C-state and THP configuration as the pinned arm, differing *only*
+in turbo and the frequency governor. **The pinned-vs-turbo comparison is
+therefore made against the new turbo arm, and `linerate_2tx_instr` is retained
+only as the historical record.**
+
+**Third amendment: q-for-q is the wrong axis to compare the arms on.** Found
+while the pinned arm was running, from its own early points. At 2.1 GHz the
+forwarder is ~1.74x slower, so it stays oversubscribed to a higher queue count:
+pinned dramblast is still at a full `batch=64` and a flat ~103 ticks at q=4,
+where the turbo arm had already begun keeping up and its bursts had started to
+shrink (66 ticks, rising). The knee simply moves right.
+
+That breaks the obvious comparison. The per-burst-cost model says ticks/packet
+depends on **burst size**, not on queue count -- queue count only matters because
+it sets the burst size. Comparing the two arms at equal `q` therefore compares
+them at *different burst sizes*, which is the one variable the hypothesis is
+about.
+
+The fix, which is also a sharper test than the one pre-registered above: plot
+**core cycles per packet against 1/burst-size**, for both arms and both modes,
+converting each turbo point by its own measured `r(q)` (the pinned arm needs no
+conversion, `r = 1.000`). Under the model `cycles/packet = P + C/B`, this is a
+straight line with intercept `P` (per-packet work) and slope `C` (per-burst
+work).
+
+The test is then a *collapse*: if all the work is CPU-bound, both arms fall on
+the **same** line, because core cycles are clock-invariant for CPU work. Any
+vertical separation between the arms is precisely the memory-latency fraction,
+which does not scale with the clock. This needs no assumption about `r` being
+near any particular value, and it uses every point in both sweeps rather than
+just the endpoints -- addressing the failure recorded above under "Attempting to
+size the per-burst cost -- the model does not hold up", where a two-point fit and
+a least-squares fit disagreed by 6x.
+
+**Fourth amendment, and this one is a post-hoc correction -- flagged as such.**
+Criterion 1 above ("every point rises or holds") is **mis-specified**, and it was
+a violation in the data that made me notice, not foresight. At q=9 the pinned arm
+reads 149 ticks against the older turbo arm's 164 -- a fall, which criterion 1
+declares impossible.
+
+The criterion is unsound as written. "A lower clock cannot make anything finish
+sooner" is true only *at equal work*. Here the work per packet is itself a
+function of the clock, through exactly the mechanism the third amendment
+identified: at q=9 the pinned arm is running `batch=14` while the turbo arm ran
+`batch=6`, and a larger burst amortises the per-burst cost over more packets. The
+pinned arm is doing **less work per packet**, so fewer ticks per packet is not
+only possible, it is what the per-burst-cost model predicts.
+
+So criterion 1 is valid only where both arms sit at the same burst size -- in
+practice the low-q cells where both are pinned at a full `batch=64`. It is
+reported below in both forms: as originally written (which it fails), and
+restricted to equal-burst cells (its sound form). The unrestricted form is
+retained in the output rather than deleted, because a pre-registration that is
+quietly narrowed after it fails is worth nothing.
+
+The honest summary is that the third amendment already implied this and I did not
+propagate it into criterion 1. That the two arms cannot be compared at equal `q`
+turns out to matter more than it first appeared: it invalidates not just the
+headline comparison but the rig check built on top of it.
+
+**Control the collapse test requires: are the two arms instruction-matched?**
+The collapse test reads any vertical gap between the arms as the
+memory-latency fraction. That reading is only valid if both arms execute the
+*same work*. A peer session checked this assumption on its own two arms -- having
+just called the equivalent result its strongest -- and found a real, deterministic
+asymmetry of **0.19 instructions per key** between machine states, reproducible
+to four decimal places across four trials and surviving the differencing that
+removes setup. Origin unestablished. At its IPC that is ~0.073 cycles/op against
+a gap precision of ~0.08 cycles/op: the *same order as the effect being
+measured*, which turned "twelve points on zero" into "zero to within the
+precision at which the arms are matched".
+
+The same hazard applies here and has not been checked. **Before any gap in the
+collapse figure is interpreted as latency, `perf stat -e instructions,cycles`
+must be run on a matched configuration in each arm.** If the arms differ in
+retired instructions, part of the gap is work asymmetry, not latency, and the
+figure's caption would be claiming more than the data supports. This is the same
+failure mode already recorded twice in this document -- a plausible number
+produced by an invalid method -- and it is cheap to rule out.
+
+**What this costs, and why it is still worth doing.** Pinning makes the rig more
+reproducible and *less representative at the same time*. Production runs with
+turbo, so absolute numbers at 2.1 GHz describe a machine nobody deploys on --
+throughput drops from ~93 to ~56 Mpps. The peer session found its own tuning
+parameter looked 4x less valuable pinned than at turbo, and warned that anyone
+tuning on a pinned rig would pick a value too shallow for production. That
+applies here too. Mitigation: run **both arms instrumented** -- pinned for the
+mechanism, turbo for the representative number -- and report the turbo arm as the
+headline. The turbo arm also supplies the per-q delivered frequency that
+`linerate_2tx_instr` never recorded, which is what converts the whole existing
+tick dataset into core cycles.
 
 ## 3. Machine modifications
 
@@ -680,7 +942,8 @@ several minutes of chasing a non-existent bug. Use `pgrep -x l2fwd`.
 
 ### 3.5 Repository additions
 
-New files only; nothing existing was edited.
+Originally new files only; §5's experiments also required three
+run-time knobs in the l2fwd source, described at the end of this section.
 
 | File | Purpose |
 |---|---|
@@ -691,6 +954,34 @@ New files only; nothing existing was edited.
 | `docs/results_reproduced.json` | measured sweep data, both load conditions |
 | `docs/queue_sweep_reproduction.png` | committed vs measured, per mode |
 | `docs/per_packet_cost.png` | cycles/packet and RX burst size vs queue count |
+| `l2fwd/set_clock.sh` | switches between the pinned and turbo arms, changing **only** the core clock |
+| `l2fwd/check_arms.py` | evaluates the pre-registered criteria against the two arms |
+| `l2fwd/plot_clock_arms.py` | the two-arm figure, including the collapse test |
+| `docs/clock_arms.png` | pinned vs turbo: saturation knee, and cost vs burst size in core cycles |
+| `l2fwd/fit_burst_model.py` | fits `cycles/packet = P + C/B` per condition and decomposes P and C into CPU work and exposed stall using the two clock arms |
+| `docs/burst_model.png` | the fit: core cycles per packet against 1/burst, all arms |
+| `l2fwd/run_matrix.sh` | the experiment matrix after the clock arms — crossover, allocator and pipeline-depth blocks |
+| `l2fwd/libsashstore/backing.{c,h}` | run-time page-backing selection shared by both modes, so `-B` can put either on the other's page size |
+
+Source changes were made to `main.c`, `dramblast.c`/`.h` and `maglev.c` to add
+three run-time knobs — `-B` (page backing), `-A` (allocator pairs per burst) and
+`-Q` (prefetch pipeline depth). All three default to as-shipped behaviour, so an
+invocation without them is the unmodified experiment; each exists because a
+hypothesis about the per-burst cost was otherwise going to be settled by argument
+rather than by measurement. They are passed in **argv, never the environment**:
+these runs launch through `sudo systemd-run`, which strips the environment, so an
+env-var knob would silently fall back to its default and report a plausible wrong
+number — a failure mode a peer session lost a dataset to on the same night.
+
+`l2fwd/set_clock.sh` deliberately touches *only* `scaling_min/max_freq` and
+`no_turbo`. C-states, `irqbalance`, `nmi_watchdog` and THP `defrag` stay as
+section 3.4b left them in **both** arms, which is what makes pinned-vs-turbo a
+single-variable contrast rather than a five-variable one. It writes max before
+min when pinning and min before max when releasing, because the kernel rejects a
+`scaling_min_freq` above the current `scaling_max_freq`: doing it in the wrong
+order fails silently on the affected cores and leaves the machine half
+configured, which reads exactly like success. It verifies by reading back every
+core rather than `cpu0` for the same reason.
 
 `l2fwd/sweep.sh` is the durable record of how every measurement in this document
 was produced. It is `run.sh` generalised over queue count with exactly one
@@ -761,3 +1052,241 @@ untouched, since they are the evidence under investigation.
    invocation with N+1 lcores (faithful to current code)? These measure different
    threading models.
 7. Apply the one-line `run.sh` fix in §3.6.
+
+---
+
+## 5. The per-burst cost, measured rather than argued (2026-09-14)
+
+Everything below was taken with the machine frequency-pinned and cpuset-isolated
+per §3.4b/§3.4c, against the node1 generator that had been holding 93.28 Mpps
+continuously since 2026-09-12.
+
+### 5.1 The rig reproduces across days
+
+The first measurement taken was a cold re-run of the pinned `dramblast` q=1
+point, two days after the original. It returned **15.62 Mpps and 101 TSC ticks
+per packet** against 15.63 and 101 before. Machine state was re-verified rather
+than assumed: `no_turbo=1` and `scaling_min = scaling_max = 2100000` on all 56
+cores, `bench.slice` still holding CPUs 0-23 as a `root` partition.
+
+That matters because everything in this section is a comparison between
+conditions measured hours apart. A rig that reproduces to one tick after two days
+idle can carry that weight; one that does not cannot.
+
+### 5.2 A confound found before it was measured: the two modes do not use the same page size
+
+The two modes allocate the same 8 GiB of table on **different page sizes**, which
+had gone unnoticed:
+
+| mode | allocation | pages | TLB entries for 8 GiB |
+|---|---|---|---|
+| dramblast | `mmap(MAP_HUGETLB \| MAP_HUGE_1GB)` (`dramblast.c`) | 1 GiB | 8 |
+| maglev | `aligned_alloc(4096, ...)` (`maglev.c:43`) | 2 MiB via THP | 4096 |
+
+This is measured, not inferred. With a maglev run live, `/proc/meminfo` reported
+`AnonHugePages: 8513536 kB` and the process's own `smaps_rollup` reported
+`AnonHugePages: 8331264 kB` alongside `Private_Hugetlb: 2048000 kB` — the latter
+being DPDK's own `-m 2000`, not the table. THP is `always` on this host, so
+maglev's plain `aligned_alloc` is silently promoted to 2 MiB pages in full.
+
+8 GiB on 2 MiB pages is 4096 distinct pages against a ~2048-entry L2 STLB, so
+uniformly random lookups miss the STLB most of the time and take a page walk;
+8 GiB on 1 GiB pages is 8 entries and never misses. **Any per-packet cost
+difference between the two modes was therefore a difference in algorithm and in
+address translation at once.** Section 5.6 reports what that is worth.
+
+### 5.3 The two clock arms, and what the disabled C-states did to them
+
+Both arms use the identical binary, cpuset, irqbalance, THP and C-state
+configuration, and differ only in `no_turbo` and the governor limits.
+
+The turbo arm's delivered clock was measured per run rather than assumed, and it
+is a machine constant here:
+
+    q=1..10, dramblast and maglev:  2992-2994 MHz, every run
+
+Ten runs spanning one to ten busy worker cores, one MHz of spread. And a core
+doing nothing at all measured 2.993 GHz too. The cause is that **idle states are
+disabled machine-wide** (`POLL`, `C1`, `C1E`, `C6` all `disable=1` on all 56
+cores), so every core spins unhalted and the package never goes quiet. The
+all-core turbo ceiling is therefore pinned near 2.99 GHz regardless of load —
+nothing like the 3.7 GHz nominal.
+
+So the clock ratio is
+
+    r = 2993 / 2094 = 1.429
+
+not the 1.762 the original pre-registration assumed and not the 1.756 a 3.66 GHz
+turbo would give. This is recorded as a **condition of the experiment**, not
+fixed, because fixing it would invalidate the pinned arm as well. It is also the
+reason AMENDMENT 1 was right to replace a constant `r` with a per-run measured
+one.
+
+### 5.4 The model, and the instrument
+
+The claim under test is
+
+    cycles per forwarded packet  =  P  +  C / B
+
+with `P` an irreducible per-packet cost and `C` a fixed cost paid once per RX
+burst and amortised over the `B` packets that burst returned. The queue-pair
+sweep is an unusually clean instrument for it: offered load is held at line rate
+while the queue count rises, so the same packet stream is divided over more
+queues and `B` falls with nothing else about the workload changing. That sweeps
+`1/B` over a sixteenfold range using only a command-line argument.
+
+`B` is l2fwd's own `Average rx batch sz`, which is `rx / rx_cnt` with `rx_cnt`
+incremented on every poll *including empty ones* (`main.c:301`, before the
+`nb_rx > 0` test), so it is packets per poll attempt — the right denominator for
+a per-poll cost.
+
+`l2fwd/fit_burst_model.py` fits this by least squares and cross-checks the slope
+against a two-point estimator using only the extreme bursts. The two share no
+algebra, so agreement is evidence about the model rather than about convergence.
+
+### 5.5 Result: dramblast has a large per-burst cost; maglev has none
+
+| arm | mode | P (cycles/packet) | C (cycles/burst) | R² | two-point C |
+|---|---|---|---|---|---|
+| pinned 2.094 GHz | dramblast | 95.2 | **644.5 ± 55** | 0.968 | 638.5 (0.9% away) |
+| pinned 2.094 GHz | maglev | 163.4 | −44.4 ± 26 — **not resolved** | 0.166 | — |
+| turbo 2.993 GHz | dramblast | 105.0 | **684.4 ± 55** | 0.951 | 638.9 (6.7% away) |
+| turbo 2.993 GHz | maglev | 200.5 | −26.9 ± 26 — **not resolved** | 0.117 | — |
+
+dramblast's slope is resolved at about twelve standard errors and two independent
+estimators agree on it to 0.9% in the pinned arm. maglev's is indistinguishable
+from zero in both arms, which is not a weak result but a strong one: its cost per
+packet barely moves while its burst collapses from 64 packets to 10
+(168 → 159 ticks, a **fall** of 5%), whereas dramblast's rises 101 → 171 over the
+same range.
+
+The crossover follows directly: dramblast is cheaper than maglev while
+`644.5 / B < 163.4 − 95.2`, i.e. while **B > 9.4 packets**. Above that burst size
+dramblast wins by up to 40%; below it, it loses. That is the whole shape of the
+queue-count dependence in one inequality.
+
+### 5.6 What the two arms decompose it into — the headline
+
+A cost measured in core cycles at two different clocks separates CPU work from
+memory stall, because instructions retire in a fixed number of *cycles* while a
+DRAM access takes a fixed number of *nanoseconds*. Writing `X(f) = W + T·f`:
+
+| | CPU work | exposed stall | memory-bound share |
+|---|---|---|---|
+| dramblast, per packet | 72.4 cycles | 10.9 ns | **24%** |
+| maglev, per packet | 77.0 cycles | 41.3 ns | **53%** |
+| dramblast, per burst | 551.5 cycles | 44.4 ns | **14%** |
+
+**The two modes do essentially the same CPU work per packet — 72.4 against 77.0
+cycles, within 6%. The entire per-packet performance difference is exposed memory
+latency.** maglev eats 41.3 ns per packet; dramblast's software prefetch pipeline
+hides all but 10.9 ns of the same access, removing about three quarters of the
+stall.
+
+And the cost of that hiding is **not** waiting. `C` decomposes as 551 cycles of
+executed work against 44 ns of stall — 86% CPU work. This kills the hypothesis
+that the per-burst cost is unhidden DRAM latency at the start of a short burst
+(a pipeline ramp), which predicted the opposite. What 551 cycles of executed work
+per burst actually *is* remains open; §5.9 is the experiment that settles it.
+
+This decomposition is done on the **fitted coefficients**, not point by point,
+and that is deliberate. The two arms never sit at the same burst size where an
+excess exists — a faster forwarder drains its queues sooner, so at q=5 the turbo
+arm is at burst 30 while the pinned arm is still at 64. Differencing at fixed `q`
+mixes the clock change with a burst-size change. `P` and `C` are free of burst
+size by construction, which is what makes them comparable.
+
+### 5.7 Two errors found in this session's own analysis code
+
+Recorded because the same class of error was being hunted in a peer's work at the
+same time, and it would be dishonest to report theirs and not these.
+
+**(a) `check_arms.py` computed the CPU-bound fraction with the wrong formula.**
+It used `((t_pinned/t_turbo) - 1) / (r - 1)` — a linear interpolation of the tick
+ratio between 1 (all memory) and `r` (all CPU). Both endpoints are correct, but
+the ratio is a ratio of two linear functions of the work fraction, not a linear
+one, so every intermediate value was wrong. It read maglev's plateau as 35.2% CPU
+work where the correct figure is 43.6%. The correct form, now used, is
+
+    cpu fraction = (1 - t_turbo/t_pinned) / (1 - f_pinned/f_turbo)
+
+The bug was found because `fit_burst_model.py`, working in core cycles, was
+already correct and the two disagreed. Two independent routes to one number is
+what caught it; a single route would have shipped it.
+
+**(b) `extract_results.py` destroyed four historical conditions.** It rebuilt
+`results_reproduced.json` from scratch on every invocation, so running it against
+a directory containing only the new arm's logs silently deleted every condition
+whose log directory no longer existed. They were recoverable from git; an
+uncommitted arm would not have been, and one — the 2026-09-12 pinned arm — was
+lost and is superseded rather than recovered. The extractor now merges, and only
+rewrites a condition when logs for it are actually found.
+
+### 5.8 Instructions per packet, and a scope caveat that must travel with them
+
+| mode | burst 64 | burst 8-10 | implied per-burst |
+|---|---|---|---|
+| dramblast | 400.8 | 496.0 | ~870 instructions/burst |
+| maglev | 285.1 | 315.3 | ~358 instructions/burst |
+
+**These are not commensurable with the tick counts above and must not be put in
+the same table without saying so.** `perf` counts the whole worker core,
+including the DPDK RX/TX driver path; `Cycle per fwd packet` brackets only the
+hash region (`main.c:305` to `main.c:355`, with `rte_eth_rx_burst` and
+`rte_eth_tx_burst` outside it). Instructions per packet therefore rise at high
+queue counts partly because polls per packet rise, which is driver work.
+
+Differencing the two modes removes it — same DPDK, same queues, same driver — and
+leaves roughly **512 extra instructions per burst** attributable to dramblast's
+batched path. Against 551 cycles of per-burst CPU work that implies an IPC near
+1.0 for whatever this work is.
+
+**The equal-work control, stated with its limits.** The decomposition in §5.6
+assumes both arms execute the same work, so that is checked at matched burst
+size rather than assumed:
+
+| mode | burst | pinned insn/pkt | turbo insn/pkt | difference |
+|---|---|---|---|---|
+| dramblast | 64 | 400.9 | 400.9 | **+0.00%** |
+| maglev | 64 | 285.6 | 285.8 | +0.08% |
+| dramblast | 30 | 416.6 | 419.0 | +0.57% |
+| dramblast | 8 | 496.0 | 530.4 | **+6.95%** |
+
+At burst 64 and 30 the arms are doing the same work to well under a percent, and
+`P` is determined mostly by those cells, so the per-packet decomposition rests on
+solid ground. **At burst 8 they do not agree**, and that cell matters for `C`
+because it is the longest lever on the slope. The likely cause is that the two
+arms reach burst 8 at different queue counts — q=10 pinned against q=8 turbo — so
+they differ in worker-core count and in empty-poll rate, and the burst-size
+*distribution* behind an equal mean need not match. The honest reading is that
+`C` carries an additional systematic uncertainty of several percent beyond the
+±55 cycles of fit error, on top of which the turbo arm's burst-4 point is
+non-monotone (535.6 instructions per packet against 552.1 at burst 7). `C` is
+resolved well enough to distinguish "large" from "zero", which is what §5.5
+claims; it is not resolved well enough to support a precise value, and no
+conclusion here depends on one.
+
+(This control exists because a peer session found a real, reproducible 0.19
+instructions/key asymmetry between its own two machine states. That number is
+specific to that workload and is **not** imported here; what transferred was the
+check, not the constant.)
+
+### 5.9 What is now queued, and what each run can refute
+
+The per-burst cost is 86% executed work, so the two surviving candidates are the
+allocator and the batching machinery itself. `l2fwd/run_matrix.sh` runs both, and
+they cannot mimic each other:
+
+- **`-A n`** sets the number of `aligned_alloc`/`free` pairs per burst: `-1`
+  hoists the buffer to a per-lcore allocation made once at init, `0` is as
+  shipped, `n > 0` adds `n` extra pairs. `C` must be linear in `n` if the
+  allocator is the cost, and the slope is what a pair costs on this machine —
+  replacing the 20-40 ns literature figure the earlier write-up leaned on.
+- **`-Q depth`** sets the prefetch pipeline depth (64 as shipped). A burst of `B`
+  packets can only fill `min(B, depth)` slots, so if `C` is a pipeline ramp it
+  must fall as depth falls while `P` rises. If `C` is the allocator, depth cannot
+  touch it.
+- **`-B backing`** puts each mode on the other's page size, plus 4 KiB which
+  neither ships with. Under the TLB reading of §5.2 this should move `P` and
+  leave `C` alone; anything else refutes it.
+
