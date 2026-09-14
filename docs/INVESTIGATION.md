@@ -2466,3 +2466,60 @@ three converge at the offered load; both that chart and the matrix panel now
 carry a separate key. All of these were found by extracting every `<text>` from
 the generated SVG and checking its extent against the viewBox, not by looking at
 the page — which is the only method that works on a host with no rasteriser.
+
+### 5.23 Validating a raw PMU encoding against a workload with a known answer
+
+`perf` has no JSON event file for this part (family 6 model 207, Emerald Rapids
+/ Raptor Cove), so `perf list` shows only the ~171 architectural events and
+every interesting counter has to be raw-encoded. §5.9 records what goes wrong
+when that is done by assumption: the generic `dTLB-load-misses` alias read zero
+on a core where the raw encoding read non-zero, and a counter that silently
+reads zero is indistinguishable from a real result of zero.
+
+A peer session needed `L1D_PEND_MISS.PENDING` and `.PENDING_CYCLES` for a
+fill-buffer occupancy figure, which is the same problem again. The method that
+settles it cheaply is to point the candidate encoding at a workload whose answer
+is known in advance rather than at the workload under study:
+
+```
+cpu/event=0x48,umask=0x01,name=l1d_pend_miss_pending/
+cpu/event=0x48,umask=0x01,cmask=0x01,name=l1d_pend_miss_pending_cycles/
+cpu/event=0x48,umask=0x02,name=l1d_pend_miss_fb_full/
+```
+
+The probe is a dependent pointer chase through a 128 MiB randomly-permuted
+cycle. Each load's address comes from the previous load's result, so **exactly
+one L1D miss can be outstanding at a time** — the memory-level parallelism is
+1.00 by construction, not by measurement. Over 400M chased loads on one pinned
+core:
+
+| counter | value |
+|---|---|
+| cycles | 67,643,556,510 |
+| instructions | 3,007,427,737 (IPC 0.04) |
+| `l1d_pend_miss_pending` | 64,096,891,488 |
+| `l1d_pend_miss_pending_cycles` | 63,479,999,439 |
+| `l1d_pend_miss_fb_full` | 16,372,232 |
+
+`pending / pending_cycles` = **1.0097** outstanding misses, against a ground
+truth of 1.00 — so the encoding counts what it claims. Two corroborating
+readings fall out of the same run: `pending_cycles / cycles` = 93.9%, i.e. the
+core has a miss in flight almost always, which is what a serial chase must look
+like; and `fb_full` is negligible, which it must be when one miss is outstanding.
+All six events ran together without multiplexing.
+
+The general point is worth stating separately from the encoding, because the
+encoding will be obsolete on the next part and the method will not: **an
+unverified raw encoding is a measurement of unknown provenance, and the cheapest
+way to verify one is a workload whose answer you already know.** A chase gives
+occupancy 1; a streaming read gives a known miss count per cache line; an empty
+loop gives zero. Ten seconds of that is worth more than any amount of reasoning
+about which umask the manual implies.
+
+Note also the distinction the ratio hides, since it decides what a figure's axis
+means: `pending / pending_cycles` is the average occupancy *while any miss is
+outstanding*, while `pending / cycles` is occupancy averaged over all cycles.
+On a batched, software-prefetched loop those differ substantially, and §5.22's
+result — that a prefetched path shows almost no demand misses while moving the
+same traffic — is precisely the regime where quoting the wrong one inverts the
+conclusion.
