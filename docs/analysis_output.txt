@@ -239,19 +239,32 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
 ====================================================================================
 3c. DEPTH 32 vs 64, DECIDED   three interleaved repeats at burst 64
 ====================================================================================
-   repeat   depth 32   depth 64    excess
-        1     102.00      99.80     +2.20   (5 and 5 queue counts)
-        2     102.00      99.50     +2.50   (5 and 4 queue counts)
-        3     101.50      99.50     +2.00   (4 and 4 queue counts)
+   repeat          matched q       tick differences    mean
+        1    [1, 2, 3, 4, 5]        [3, 2, 1, 1, 4]   2.200
+        2       [1, 2, 3, 4]           [3, 2, 2, 2]   2.250
+        3       [1, 2, 3, 4]           [3, 1, 2, 2]   2.000
 
-  paired mean excess  +2.23 cycles/packet
-  sd of the 3 pairs   0.25   standard error 0.15
-  95% interval (t, 2 dof)  [+1.61, +2.86]
+  excess, depth 32 over depth 64, in cycles per packet: +2.14
+    between-repeat error (3 repeat means, 2 dof):
+      sd 0.132  se 0.076   95% interval [+1.82, +2.47]
+    within-and-between (13 matched-q differences):
+      sd 0.899  se 0.249   95% interval [+1.61, +2.69]
+    The first uses only the spread of three numbers that happen to
+    lie close together; the second uses every measurement and is the
+    conservative one. Both are quoted because they disagree about
+    the prediction and agree about the null.
 
   ramp model predicts +2.58   null predicts 0.00
-  -> the interval contains the prediction and EXCLUDES the
-     null. The per-fill ramp model is confirmed at depth 32,
-     on a test that could have gone the other way.
+  -> THE NULL IS EXCLUDED by both intervals. Depth 32 really
+     does cost more than depth 64 at a matched burst; that part
+     is settled.
+  -> The prediction sits inside the conservative interval and
+     just outside the tighter one (2.58 against an upper
+     bound of 2.47). The measured excess is 17% below the predicted one.
+     So: the effect is real, the model has the right sign and
+     roughly the right size, and its point prediction is at the
+     edge of what this data can support. Calling that a clean
+     confirmation would be overreading it.
 
 ====================================================================================
 3d. ONE MODEL ACROSS ALL DEPTHS   W + ramp*ceil(B/Q)/B + K/B

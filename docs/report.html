@@ -142,7 +142,8 @@ footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);
   removing work.</b> Shortening it eightfold costs 4.1% more instructions per
   packet but 18.5% more cycles. That per-fill price was calibrated on two depths
   and then predicted a third before it was run: predicted +2.58 cycles per
-  packet, measured +2.23 ± 0.15 over three repeats, no-effect excluded.</p></div>
+  packet, measured +2.14 over three paired repeats, with no-effect
+  excluded and the point prediction at the edge of the tighter interval.</p></div>
 </div>
 </section>
 
@@ -346,28 +347,35 @@ before the shipped depth is reached, so the last doubling buys very
 little.</p>
 
 <h3>Resolving the depth-32 point</h3>
-<p>That 1.8-cycle step is the one measurement that <em>tests</em> the model of
+<p>That two-cycle step is the one measurement that <em>tests</em> the model of
 the pipeline ramp, and against the run-to-run floor a single sweep of each arm
 could not separate the model's prediction from no effect at all. So both arms
 were run three more times, alternating rather than one block after the other, so
 that any drift over the half hour would land on both instead of entirely on the
-second. The statistic is the paired difference within each repeat.</p>
+second. The comparison is paired queue count by queue count, because the repeats
+do not all hold a full burst at the same queue counts.</p>
 <div class="tablewrap"><table>
-<thead><tr><th>repeat</th><th class="num">depth 32</th><th class="num">depth 64</th>
-<th class="num">excess</th></tr></thead>
-<tbody><tr><td>1</td><td class="num">102.00</td><td class="num">99.80</td><td class="num">+2.20</td></tr><tr><td>2</td><td class="num">102.00</td><td class="num">99.50</td><td class="num">+2.50</td></tr><tr><td>3</td><td class="num">101.50</td><td class="num">99.50</td><td class="num">+2.00</td></tr></tbody>
+<thead><tr><th>repeat</th><th class="num">matched queues</th>
+<th class="num">differences, ticks</th><th class="num">mean</th></tr></thead>
+<tbody><tr><td>1</td><td class="num">1, 2, 3, 4, 5</td><td class="num">3, 2, 1, 1, 4</td><td class="num">2.20</td></tr><tr><td>2</td><td class="num">1, 2, 3, 4</td><td class="num">3, 2, 2, 2</td><td class="num">2.25</td></tr><tr><td>3</td><td class="num">1, 2, 3, 4</td><td class="num">3, 1, 2, 2</td><td class="num">2.00</td></tr></tbody>
 </table></div>
-<p>The paired mean is <b>+2.23 cycles per packet</b>, standard error
-0.15, 95% interval [+1.61, +2.86]. The model — calibrated on
-the depth-8 and depth-16 arms alone, so it shares nothing with these numbers —
-predicts +2.58; no effect predicts 0.00. <b>The interval contains the prediction
-and excludes the null.</b></p>
-<p>An earlier version of this page reported this same comparison as a 3.1σ
-confirmation on the strength of one sweep each. That figure used the scatter
-within a sweep, which cannot see drift between sweeps; once the repeat arm
-measured that drift, the same data said nothing at all. Running it three more
-times is what settled it, and the answer happens to be the one the first,
-unjustified version guessed.</p>
+<p>The excess is <b>+2.14 cycles per packet</b>, with two error bars
+that answer different questions: the spread of the three repeat means gives
+[+1.82, +2.47], and every one of the 13 matched
+differences gives the more conservative [+1.61, +2.69].
+<b>Both exclude no-effect</b>, so depth 32 really does cost more than depth 64 at
+a matched burst — which is the part the pipeline story needs, and it was
+established against a prediction made from the depth-8 and depth-16 arms alone.</p>
+
+<p>Its <em>point</em> prediction is another matter. 2.58 sits inside
+the conservative interval and just outside the tighter one, and the measured
+excess is 17% below it. The ramp model has the
+right sign and roughly the right size here; calling this a clean confirmation
+would be overreading it.</p>
+<p>An earlier version of this page reported this comparison as a 3.1σ
+confirmation on the strength of one sweep each, using an error bar taken from
+within a single sweep — which cannot see drift between sweeps. Once the repeat
+arm measured that drift, the same data said nothing at all.</p>
 
 <p>Fitting the per-burst model separately to each depth produces something
 impossible — at depth&nbsp;8 the per-burst term comes out

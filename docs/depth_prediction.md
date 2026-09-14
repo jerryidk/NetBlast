@@ -152,3 +152,34 @@ Both the earlier verdicts on this page were wrong in opposite directions, and
 for the same reason: neither had an error bar that included between-sweep drift.
 The first was too confident (3.1 sigma, confirmed); the second, once drift was
 included, was too weak to say anything. Only running the thing twice settled it.
+
+## Correction to the "Decided" section (same day, after an independent re-derivation)
+
+The paired means above (+2.20, +2.50, +2.00) compared each arm's *mean over the
+queue counts it happened to hold at burst 64*, and those sets differ: repeat 2's
+depth-32 sweep held burst 64 at five queue counts while its depth-64 partner
+held it at four. Since cost varies slightly with queue count, that compares
+different queue sets.
+
+Paired queue count by queue count instead:
+
+    repeat 1   q=1..5   differences 3, 2, 1, 1, 4   mean 2.200
+    repeat 2   q=1..4   differences 3, 2, 2, 2      mean 2.250
+    repeat 3   q=1..4   differences 3, 1, 2, 2      mean 2.000
+
+    excess +2.14 cycles/packet
+    between-repeat (3 means, 2 dof)          95% [+1.82, +2.47]
+    every matched-q difference (13, 12 dof)  95% [+1.61, +2.69]
+
+    ramp model predicts +2.58      null predicts 0.00
+
+**The null is excluded by both intervals**, so the effect is real. The model's
+point prediction sits inside the conservative interval and just outside the
+tighter one, and the measurement is 17% below it. The ramp model has the right
+sign and roughly the right size; "confirmed" was too strong.
+
+That is the third verdict this file has carried on the same comparison. The
+sequence — over-confident, then unable to say anything, then confident again,
+then this — is not a story about the ramp model. It is a story about error bars:
+each revision changed only which sources of variation the interval was allowed
+to see.

@@ -449,17 +449,96 @@ def repeat_rows(allc):
 
 
 def depth_pairs(allc):
-    """Paired depth-32 vs depth-64 differences from the interleaved repeats."""
+    """Depth-32 minus depth-64, paired queue count by queue count at burst 64.
+
+    Not arm mean against arm mean: the repeats do not all reach burst 64 at the
+    same queue counts, so that would compare different queue sets, and the
+    queue count moves the cost a little.
+    """
     out = []
     for i in (1, 2, 3):
-        def mean(cond):
-            runs = [r for r in allc.get(cond, {}).get("dramblast", {}).values()
-                    if r.get("rx_batch") == 64]
-            return sum(r["cycles_per_pkt"] for r in runs) / len(runs) if runs else None
-        a, b = mean(f"depth_32_r{i}"), mean(f"depth_64_r{i}")
-        if a and b:
-            out.append((i, a, b, a - b))
+        def t(cond):
+            return {int(q): (r["cycles_per_pkt"], r.get("rx_batch"))
+                    for q, r in allc.get(cond, {}).get("dramblast", {}).items()}
+        A, B = t(f"depth_32_r{i}"), t(f"depth_64_r{i}")
+        qs = [q for q in sorted(set(A) & set(B)) if A[q][1] == 64 == B[q][1]]
+        if len(qs) >= 2:
+            diffs = [A[q][0] - B[q][0] for q in qs]
+            out.append((i, qs, diffs, sum(diffs) / len(diffs)))
     return out
+
+def chart_depth(at64):
+    """Cycles and instructions per packet against pipeline depth, matched burst."""
+    import math
+    W, H = 720, 320
+    L, R, T, B = 62, 66, 26, 50
+    ds = sorted(at64)
+    cyc = [at64[d][0] for d in ds]
+    ins = [at64[d][1] for d in ds]
+    span = 0.26
+    clo, chi = min(cyc) * (1 - span / 6), min(cyc) * (1 + span)
+    ilo, ihi = min(ins) * (1 - span / 6), min(ins) * (1 + span)
+    lo, hi = math.log2(min(ds)), math.log2(max(ds))
+    X = lambda d: L + (math.log2(d) - lo) / (hi - lo) * (W - L - R)
+    YC = lambda v: T + (1 - (v - clo) / (chi - clo)) * (H - T - B)
+    YI = lambda v: T + (1 - (v - ilo) / (ihi - ilo)) * (H - T - B)
+    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Cycles and '
+         f'instructions per packet against prefetch pipeline depth">']
+    for i in range(5):
+        cv = clo + (chi - clo) * i / 4
+        iv = ilo + (ihi - ilo) * i / 4
+        y = YC(cv)
+        p.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W-R}" y2="{y:.1f}" '
+                 f'stroke="var(--rule)" stroke-width="1"/>')
+        p.append(f'<text x="{L-9}" y="{y+4:.1f}" text-anchor="end" class="tick" '
+                 f'fill="var(--a)">{cv:.0f}</text>')
+        p.append(f'<text x="{W-R+9}" y="{y+4:.1f}" class="tick" '
+                 f'fill="var(--b)">{iv:.0f}</text>')
+    for vals, Yf, col, dash in ((ins, YI, "var(--b)", ' stroke-dasharray="5 4"'),
+                                (cyc, YC, "var(--a)", "")):
+        pts = " ".join(f"{X(d):.1f},{Yf(v):.1f}" for d, v in zip(ds, vals))
+        p.append(f'<polyline points="{pts}" fill="none" stroke="{col}" '
+                 f'stroke-width="2.2"{dash}/>')
+        for d, v in zip(ds, vals):
+            p.append(f'<circle cx="{X(d):.1f}" cy="{Yf(v):.1f}" r="4.5" fill="{col}" '
+                     f'stroke="var(--ground)" stroke-width="1.8"/>')
+    for d in ds:
+        c, i_, sem, _ = at64[d]
+        if sem:
+            p.append(f'<line x1="{X(d):.1f}" y1="{YC(c-sem):.1f}" x2="{X(d):.1f}" '
+                     f'y2="{YC(c+sem):.1f}" stroke="var(--a)" stroke-width="1.6"/>')
+        p.append(f'<text x="{X(d):.1f}" y="{YC(c)+20:.1f}" text-anchor="middle" '
+                 f'class="tick">IPC {i_/c:.2f}</text>')
+        p.append(f'<text x="{X(d):.1f}" y="{H-B+20}" text-anchor="middle" '
+                 f'class="tick">{d}</text>')
+    p.append(f'<text x="{L}" y="{H-6}" class="axis">prefetch pipeline depth '
+             f'(burst held at 64)</text>')
+    p.append(f'<text x="{L}" y="{T-8}" class="tick" fill="var(--a)">cycles / packet</text>')
+    p.append(f'<text x="{W-R}" y="{T-8}" text-anchor="end" class="tick" '
+             f'fill="var(--b)">instructions / packet</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+
+def repeat_rows(allc):
+    """(mode, [(q, burst-matched?, run1, run2)], burst-64 rms) for the repeat arm."""
+    out = []
+    for mode in ("dramblast", "maglev"):
+        a = allc.get("pinned2_asshipped", {}).get(mode, {})
+        b = allc.get("pinned3_repeat", {}).get(mode, {})
+        if not a or not b:
+            continue
+        d64 = [b[q]["cycles_per_pkt"] - a[q]["cycles_per_pkt"]
+               for q in set(a) & set(b)
+               if a[q].get("rx_batch") == 64 and b[q].get("rx_batch") == 64]
+        dsm = [b[q]["cycles_per_pkt"] - a[q]["cycles_per_pkt"]
+               for q in set(a) & set(b)
+               if a[q].get("rx_batch") == b[q].get("rx_batch") != 64]
+        rms = lambda v: (sum(x * x for x in v) / len(v)) ** 0.5 if v else None
+        out.append((mode, len(d64), rms(d64), len(dsm), rms(dsm)))
+    return out
+
 
 
 
@@ -795,48 +874,71 @@ taken from a paper had quietly replaced a measurement.</p>
     # The depth-32 point is the one that tests the ramp model, and one sweep
     # each could not resolve it against the run-to-run floor. These are the
     # repeats that did.
+    at64 = depth_at64(allc)
     dprs = depth_pairs(allc)
     pairs_html = ""
+    pair_mean = pair_lo_b = pair_hi_b = pair_lo_p = pair_hi_p = None
+    ramp_cycles = ramp_pred = None
     if len(dprs) >= 3:
-        ds = [d for _, _, _, d in dprs]
-        n = len(ds)
-        m = sum(ds) / n
-        sd = (sum((v - m) ** 2 for v in ds) / (n - 1)) ** 0.5
-        sem = sd / n ** 0.5
-        tcrit = {2: 4.303, 3: 3.182, 4: 2.776}.get(n - 1, 2.0)
-        lo_i, hi_i = m - tcrit * sem, m + tcrit * sem
-        rowsh = "".join(f"<tr><td>{i}</td><td class=\"num\">{a:.2f}</td>"
-                        f"<td class=\"num\">{b:.2f}</td>"
-                        f"<td class=\"num\">{d:+.2f}</td></tr>"
-                        for i, a, b, d in dprs)
+        FQ = 2095.0 / 2100.0
+        ms = [m for _, _, _, m in dprs]
+        nn = len(ms)
+        mu = sum(ms) / nn
+        sd = (sum((v - mu) ** 2 for v in ms) / (nn - 1)) ** 0.5
+        sem = sd / nn ** 0.5
+        t2 = {2: 4.303, 3: 3.182, 4: 2.776}.get(nn - 1, 2.0)
+        flat = [v for _, _, ds, _ in dprs for v in ds]
+        mu2 = sum(flat) / len(flat)
+        sd2 = (sum((v - mu2) ** 2 for v in flat) / (len(flat) - 1)) ** 0.5
+        sem2 = sd2 / len(flat) ** 0.5
+        tf = 2.16 if len(flat) >= 13 else 2.45
+        pair_mean = mu * FQ
+        pair_lo_b, pair_hi_b = (mu - t2 * sem) * FQ, (mu + t2 * sem) * FQ
+        pair_lo_p, pair_hi_p = (mu2 - tf * sem2) * FQ, (mu2 + tf * sem2) * FQ
+        if at64 and 64 in at64 and 8 in at64 and 16 in at64:
+            xs = [(1.0 / q - 1.0 / 64.0) for q in (8, 16)]
+            ys = [at64[q][0] - at64[64][0] for q in (8, 16)]
+            ramp_cycles = sum(x * y for x, y in zip(xs, ys)) / sum(x * x for x in xs)
+            ramp_pred = ramp_cycles * (1.0 / 32 - 1.0 / 64)
+        rowsh = "".join(
+            f'<tr><td>{i}</td><td class="num">{", ".join(map(str, qs))}</td>'
+            f'<td class="num">{", ".join(map(str, ds))}</td>'
+            f'<td class="num">{m:.2f}</td></tr>' for i, qs, ds, m in dprs)
+        edge = "" if (ramp_pred and pair_lo_b <= ramp_pred <= pair_hi_b) else f"""
+<p>Its <em>point</em> prediction is another matter. {ramp_pred:.2f} sits inside
+the conservative interval and just outside the tighter one, and the measured
+excess is {100*(1-pair_mean/ramp_pred):.0f}% below it. The ramp model has the
+right sign and roughly the right size here; calling this a clean confirmation
+would be overreading it.</p>"""
         pairs_html = f"""
 <h3>Resolving the depth-32 point</h3>
-<p>That 1.8-cycle step is the one measurement that <em>tests</em> the model of
+<p>That two-cycle step is the one measurement that <em>tests</em> the model of
 the pipeline ramp, and against the run-to-run floor a single sweep of each arm
 could not separate the model's prediction from no effect at all. So both arms
 were run three more times, alternating rather than one block after the other, so
 that any drift over the half hour would land on both instead of entirely on the
-second. The statistic is the paired difference within each repeat.</p>
+second. The comparison is paired queue count by queue count, because the repeats
+do not all hold a full burst at the same queue counts.</p>
 <div class="tablewrap"><table>
-<thead><tr><th>repeat</th><th class="num">depth 32</th><th class="num">depth 64</th>
-<th class="num">excess</th></tr></thead>
+<thead><tr><th>repeat</th><th class="num">matched queues</th>
+<th class="num">differences, ticks</th><th class="num">mean</th></tr></thead>
 <tbody>{rowsh}</tbody>
 </table></div>
-<p>The paired mean is <b>{m:+.2f} cycles per packet</b>, standard error
-{sem:.2f}, 95% interval [{lo_i:+.2f}, {hi_i:+.2f}]. The model — calibrated on
-the depth-8 and depth-16 arms alone, so it shares nothing with these numbers —
-predicts +2.58; no effect predicts 0.00. <b>The interval contains the prediction
-and excludes the null.</b></p>
-<p>An earlier version of this page reported this same comparison as a 3.1σ
-confirmation on the strength of one sweep each. That figure used the scatter
-within a sweep, which cannot see drift between sweeps; once the repeat arm
-measured that drift, the same data said nothing at all. Running it three more
-times is what settled it, and the answer happens to be the one the first,
-unjustified version guessed.</p>
+<p>The excess is <b>{pair_mean:+.2f} cycles per packet</b>, with two error bars
+that answer different questions: the spread of the three repeat means gives
+[{pair_lo_b:+.2f}, {pair_hi_b:+.2f}], and every one of the {len(flat)} matched
+differences gives the more conservative [{pair_lo_p:+.2f}, {pair_hi_p:+.2f}].
+<b>Both exclude no-effect</b>, so depth 32 really does cost more than depth 64 at
+a matched burst — which is the part the pipeline story needs, and it was
+established against a prediction made from the depth-8 and depth-16 arms alone.</p>
+{edge}
+<p>An earlier version of this page reported this comparison as a 3.1σ
+confirmation on the strength of one sweep each, using an error bar taken from
+within a single sweep — which cannot see drift between sweeps. Once the repeat
+arm measured that drift, the same data said nothing at all.</p>
 """
 
     # The depth section exists only once the depth arms have run.
-    at64 = depth_at64(allc)
     depth_html = ""
     if len(at64) >= 3:
         d_lo, d_hi = min(at64), max(at64)
@@ -1090,7 +1192,8 @@ more waiting while one retiring at three instructions per cycle does not.</p>
   removing work.</b> Shortening it eightfold costs 4.1% more instructions per
   packet but 18.5% more cycles. That per-fill price was calibrated on two depths
   and then predicted a third before it was run: predicted +2.58 cycles per
-  packet, measured +2.23 ± 0.15 over three repeats, no-effect excluded.</p></div>
+  packet, measured {pair_mean:+.2f} over three paired repeats, with no-effect
+  excluded and the point prediction at the edge of the tighter interval.</p></div>
 </div>
 </section>
 

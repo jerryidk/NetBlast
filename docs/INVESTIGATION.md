@@ -1882,26 +1882,41 @@ those are the counts that stay there. The statistic is the **paired** difference
 within each repeat, so drift common to a pair cancels, and the spread of the
 three pairs is a measured error bar rather than an assumed one.
 
-| repeat | depth 32 | depth 64 | excess |
-|---|---|---|---|
-| 1 | 102.00 | 99.80 | +2.20 |
-| 2 | 102.00 | 99.50 | +2.50 |
-| 3 | 101.50 | 99.50 | +2.00 |
+The pairing is **queue count by queue count**, not arm mean against arm mean.
+The repeats do not all reach burst 64 at the same queue counts — one depth-64
+sweep left it at `q=5` while its depth-32 partner did not — so comparing arm
+means would silently compare different queue sets, and the queue count does move
+the cost a little.
 
-    paired mean excess   +2.23 cycles/packet
-    sd of the three       0.25      standard error 0.15
-    95% interval (t, 2 dof)   [+1.61, +2.86]
+| repeat | matched q | tick differences | mean |
+|---|---|---|---|
+| 1 | 1, 2, 3, 4, 5 | 3, 2, 1, 1, 4 | 2.200 |
+| 2 | 1, 2, 3, 4 | 3, 2, 2, 2 | 2.250 |
+| 3 | 1, 2, 3, 4 | 3, 1, 2, 2 | 2.000 |
+
+The excess is **+2.14 cycles per packet**, and it gets two error bars because
+they answer different questions and here they disagree about one of the two
+hypotheses:
+
+    between-repeat (3 repeat means, 2 dof)      95% [+1.82, +2.47]
+    every matched-q difference (13, 12 dof)     95% [+1.61, +2.69]
 
     ramp model predicts  +2.58        null predicts  0.00
 
-**The interval contains the prediction and excludes the null.** The per-fill
-ramp model is confirmed at depth 32, on a test that could have gone the other
-way — and the prediction it was tested against came from the depth-8 and
-depth-16 arms alone, so it shares nothing with the numbers that decided it.
+**The null is excluded by both.** Depth 32 really does cost more than depth 64
+at a matched burst; that part is settled, and it is the part the pipeline story
+needs.
 
-The four possible verdicts were written into `analyse_matrix.py` before the data
-existed, including the two that would have gone against the model and the
-instruction, for the case where the interval excluded both hypotheses, not to
+The model's *point prediction* is inside the conservative interval and just
+outside the tighter one — 2.58 against an upper bound of 2.47 — and the measured
+excess is 17% below it. So the ramp model has the right sign and roughly the
+right size, and calling this a clean confirmation would be overreading it. The
+first version of this paragraph did exactly that, on arm means that compared
+five queue counts against four.
+
+The verdicts were written into `analyse_matrix.py` before the data existed,
+including the ones that would have gone against the model, and including the
+instruction — for the case where the intervals excluded both hypotheses — not to
 pick the nearer one.
 
 #### One model across all four arms, and where it stops being a measurement
@@ -1985,15 +2000,14 @@ Against the burst-64 floor:
 |---|---|---|
 | the `aligned_alloc`/`free` pair | 7.0 cycles/packet | 6× |
 | depth 64 → 8 | 18.6 | 16× |
-| depth 64 → 32 | 1.8 (2.23 ± 0.15 from §5.14's repeats) | 2× (5× on the repeats) |
+| depth 64 → 32 | 1.8 (2.14 from §5.14's repeats) | 2× (5× on the repeats) |
 
 The first two are results. The third is why **one sweep per depth could not
 decide the ramp model** — at twice the floor, that is all the resolution a single
 sweep buys. §5.14 settled it a different way, with three interleaved paired
-repeats: +2.23 ± 0.15, a 95% interval of [+1.61, +2.86], containing the
-prediction and excluding the null. The repeats also put the effect itself at
-2.23 rather than the single sweep's 1.8 — five times the dramblast floor rather
-than four.
+repeats: +2.14 cycles/packet, with the null excluded by both of the error bars
+§5.14 quotes and the model's point prediction at the edge of the tighter one.
+The repeats also put the effect at 2.14 rather than the single sweep's 1.8.
 
 The fitted per-burst coefficients also reproduce: dramblast 718 then 689 (0.6σ
 of the two fits' own errors), maglev −36 then −26 (0.3σ). maglev's per-burst

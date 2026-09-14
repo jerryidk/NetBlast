@@ -684,67 +684,81 @@ def main():
     # pairing removes any drift common to a pair, and the spread of the three
     # paired differences is an honest error bar that needs no assumption about
     # which sources of variation the sweep did or did not see.
+    # Paired queue count by queue count, not arm mean against arm mean. The
+    # repeats do not all reach burst 64 at the same queue counts -- one d64
+    # sweep left it at q=5 while its d32 partner did not -- so comparing arm
+    # means silently compares different queue sets, and the queue count does
+    # move the cost slightly. Matching within each pair removes that.
     pairs = []
     for i in (1, 2, 3):
-        def armmean(cond):
-            runs = [r for r in allc.get(cond, {}).get("dramblast", {}).values()
-                    if r.get("rx_batch") == 64]
-            return (sum(r["cycles_per_pkt"] for r in runs) / len(runs),
-                    len(runs)) if runs else None
-        a = armmean(f"depth_32_r{i}")
-        b = armmean(f"depth_64_r{i}")
-        if a and b:
-            pairs.append((i, a[0], b[0], a[0] - b[0], a[1], b[1]))
+        def t(cond):
+            return {int(q): (r["cycles_per_pkt"], r.get("rx_batch"))
+                    for q, r in allc.get(cond, {}).get("dramblast", {}).items()}
+        A, B = t(f"depth_32_r{i}"), t(f"depth_64_r{i}")
+        qs = [q for q in sorted(set(A) & set(B)) if A[q][1] == 64 == B[q][1]]
+        if len(qs) < 2:
+            continue
+        diffs = [A[q][0] - B[q][0] for q in qs]
+        pairs.append((i, qs, diffs, sum(diffs) / len(diffs)))
     if len(pairs) >= 2:
         print()
         print("=" * 84)
         print("3c. DEPTH 32 vs 64, DECIDED   three interleaved repeats at burst 64")
         print("=" * 84)
-        print(f"  {'repeat':>7} {'depth 32':>10} {'depth 64':>10} {'excess':>9}")
-        for i, a, b, d, na, nb in pairs:
-            print(f"  {i:>7} {a:>10.2f} {b:>10.2f} {d:>+9.2f}   "
-                  f"({na} and {nb} queue counts)")
-        ds = [d for _, _, _, d, _, _ in pairs]
-        n = len(ds)
-        m = sum(ds) / n
-        sd = (sum((v - m) ** 2 for v in ds) / (n - 1)) ** 0.5 if n > 1 else 0.0
+        print(f"  {'repeat':>7} {'matched q':>18} {'tick differences':>22} {'mean':>7}")
+        for i, qs, diffs, m in pairs:
+            print(f"  {i:>7} {str(qs):>18} {str(diffs):>22} {m:>7.3f}")
+        # Two error bars, because they answer different questions and here they
+        # disagree about one of the two hypotheses. Neither is quietly dropped.
+        ms = [m for _, _, _, m in pairs]
+        n = len(ms)
+        mu = sum(ms) / n
+        sd = (sum((v - mu) ** 2 for v in ms) / (n - 1)) ** 0.5
         sem = sd / n ** 0.5
-        # t rather than z: three paired differences is two degrees of freedom,
-        # and a normal quantile would understate the interval by about a third.
-        tcrit = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571}.get(n - 1, 2.0)
-        print(f"\n  paired mean excess  {m:+.2f} cycles/packet")
-        print(f"  sd of the {n} pairs   {sd:.2f}   standard error {sem:.2f}")
-        print(f"  95% interval (t, {n-1} dof)  [{m - tcrit*sem:+.2f}, "
-              f"{m + tcrit*sem:+.2f}]")
-        # The prediction carried forward from the calibration above, which used
-        # only the depth-8 and depth-16 arms, so it is independent of every
-        # number in this block.
+        t2 = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776}.get(n - 1, 2.0)
+        flat = [v for _, _, ds, _ in pairs for v in ds]
+        mu2 = sum(flat) / len(flat)
+        sd2 = (sum((v - mu2) ** 2 for v in flat) / (len(flat) - 1)) ** 0.5
+        sem2 = sd2 / len(flat) ** 0.5
+        tf = 2.16 if len(flat) >= 13 else 2.45
+        f = 2095.0 / 2100.0
+        lo_b, hi_b = (mu - t2 * sem) * f, (mu + t2 * sem) * f
+        lo_p, hi_p = (mu2 - tf * sem2) * f, (mu2 + tf * sem2) * f
+        print(f"\n  excess, depth 32 over depth 64, in cycles per packet: {mu*f:+.2f}")
+        print(f"    between-repeat error ({n} repeat means, {n-1} dof):")
+        print(f"      sd {sd:.3f}  se {sem:.3f}   95% interval [{lo_b:+.2f}, {hi_b:+.2f}]")
+        print(f"    within-and-between ({len(flat)} matched-q differences):")
+        print(f"      sd {sd2:.3f}  se {sem2:.3f}   95% interval [{lo_p:+.2f}, {hi_p:+.2f}]")
+        print("    The first uses only the spread of three numbers that happen to")
+        print("    lie close together; the second uses every measurement and is the")
+        print("    conservative one. Both are quoted because they disagree about")
+        print("    the prediction and agree about the null.")
         pred = ramp_pred
         if pred is not None:
             print(f"\n  ramp model predicts {pred:+.2f}   null predicts 0.00")
-            inside_pred = m - tcrit * sem <= pred <= m + tcrit * sem
-            inside_null = m - tcrit * sem <= 0.0 <= m + tcrit * sem
-            if inside_pred and not inside_null:
-                print("  -> the interval contains the prediction and EXCLUDES the")
-                print("     null. The per-fill ramp model is confirmed at depth 32,")
-                print("     on a test that could have gone the other way.")
-            elif inside_null and not inside_pred:
-                print("  -> the interval contains the null and EXCLUDES the")
-                print("     prediction. The ramp calibrated on the two shallow arms")
-                print("     does not extrapolate to depth 32, so the per-fill cost")
-                print("     is not constant in the depth. The matched-burst")
-                print("     cycles-vs-instructions result is unaffected: it uses no")
-                print("     model.")
-            elif inside_pred and inside_null:
-                print("  -> the interval contains BOTH. Still inconclusive, now with")
-                print("     a measured error bar rather than an assumed one. Three")
-                print("     repeats were not enough; the effect is small relative to")
-                print("     the run-to-run spread and more repeats are the only")
-                print("     thing that would help.")
-            else:
-                print("  -> the interval excludes both hypotheses. Something other")
-                print("     than the two considered is happening; do not pick the")
-                print("     nearer one.")
+            in_b = lo_b <= pred <= hi_b
+            in_p = lo_p <= pred <= hi_p
+            null_out = not (lo_b <= 0 <= hi_b) and not (lo_p <= 0 <= hi_p)
+            if null_out:
+                print("  -> THE NULL IS EXCLUDED by both intervals. Depth 32 really")
+                print("     does cost more than depth 64 at a matched burst; that part")
+                print("     is settled.")
+            if in_b and in_p:
+                print("  -> The prediction sits inside both intervals: the per-fill")
+                print("     ramp model is confirmed at depth 32, on a test that could")
+                print("     have gone the other way.")
+            elif in_p and not in_b:
+                print(f"  -> The prediction sits inside the conservative interval and")
+                print(f"     just outside the tighter one ({pred:.2f} against an upper")
+                print(f"     bound of {hi_b:.2f}). The measured excess is "
+                      f"{100*(1-mu*f/pred):.0f}% below the predicted one.")
+                print("     So: the effect is real, the model has the right sign and")
+                print("     roughly the right size, and its point prediction is at the")
+                print("     edge of what this data can support. Calling that a clean")
+                print("     confirmation would be overreading it.")
+            elif not in_p:
+                print("  -> The prediction is outside both intervals. The ramp")
+                print("     calibrated on the shallow arms does not extrapolate here.")
 
     # ---- one model across every depth arm ---------------------------------
     # The per-arm P + C/B fits are four separate two-parameter models that
