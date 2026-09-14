@@ -37,7 +37,11 @@ THP_OK = 0.98
 
 rows = collections.defaultdict(list)
 for line in LOG.read_text(errors="replace").splitlines():
-    m = re.search(r"rss=(\d+) thp=(\d+) hugetlb=(\d+) cmd=(.*)", line)
+    # `total=` is optional: page_watch.sh gained that field when its own RSS
+    # threshold was found to exclude every hugetlb-backed run. Old lines in the
+    # log predate it, and both must parse or the fix would silently drop the
+    # history it was meant to complete.
+    m = re.search(r"rss=(\d+) thp=(\d+) hugetlb=(\d+)(?: total=\d+)? cmd=(.*)", line)
     if not m:
         continue
     rss, thp, htlb, cmd = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
@@ -71,7 +75,35 @@ for (flag, mode), v in sorted(rows.items()):
     print(f"{flag:12} {mode:10} {len(v):>4} {thp:>8.2f} {htlb:>12.2f}  "
           f"{'OK' if ok else '*** NOT ' + want + ' ***'}  (wanted {want})")
 
+# An arm with no samples must not pass silently. The loop above can only judge
+# rows that exist, so a watcher that never saw an arm produced a clean bill of
+# health for it -- which is exactly what happened: page_watch.sh gated on Rss,
+# hugetlb pages are not counted in Rss, and so every dramblast run on 1 GiB
+# pages was missing from the log while this script printed "every arm got the
+# backing it claims". Absence of evidence was being reported as evidence.
+EXPECTED = [("as-shipped", "dramblast"), ("as-shipped", "maglev"),
+            ("thp2m", "dramblast"), ("4k", "dramblast"),
+            ("1g", "maglev"), ("4k", "maglev")]
+missing = [k for k in EXPECTED if k not in rows]
+MIN_SAMPLES = 3
+thin = [(k, len(rows[k])) for k in EXPECTED
+        if k in rows and len(rows[k]) < MIN_SAMPLES]
+
 print()
-print("every arm got the backing it claims" if not bad else
-      f"{bad} arm(s) did NOT get their stated backing -- those rows are invalid")
-sys.exit(1 if bad else 0)
+for flag, mode in missing:
+    print(f"*** NO SAMPLES for {flag} / {mode} -- this arm was never verified")
+for (flag, mode), n in thin:
+    print(f"*** only {n} sample(s) for {flag} / {mode} -- below the {MIN_SAMPLES} "
+          f"needed to call it verified")
+if not bad and not missing and not thin:
+    print("every arm got the backing it claims")
+else:
+    parts = []
+    if bad:
+        parts.append(f"{bad} arm(s) did NOT get their stated backing")
+    if missing:
+        parts.append(f"{len(missing)} arm(s) were never sampled")
+    if thin:
+        parts.append(f"{len(thin)} arm(s) were sampled too thinly to judge")
+    print("; ".join(parts) + " -- do not read this as a clean verification")
+sys.exit(1 if (bad or missing or thin) else 0)

@@ -11,8 +11,17 @@ while true; do
     read -r RSS THP HTLB < <(sudo awk '
       /^Rss:/{r=$2} /^AnonHugePages:/{t=$2} /^Private_Hugetlb:/{h=$2}
       END{print r, t, h}' /proc/$P/smaps_rollup 2>/dev/null)
-    [ -n "$RSS" ] && [ "${RSS:-0}" -gt 1000000 ] 2>/dev/null && \
-      echo "$(date -u +%H:%M:%S) pid=$P rss=$RSS thp=$THP hugetlb=$HTLB cmd=$CMD" >> "$OUT"
+    # Gate on RSS + Private_Hugetlb, not RSS alone. hugetlb pages are NOT
+    # counted in Rss -- they appear only in Private_Hugetlb -- so a threshold on
+    # Rss silently skips every run whose table is on 1 GiB pages, which is every
+    # dramblast run as shipped, i.e. the allocator and depth blocks entirely.
+    # The log looked healthy throughout because the maglev and 4 KiB/THP arms,
+    # whose pages DO land in Rss, kept writing lines. A verifier that quietly
+    # stops covering the arms it exists for is worse than none, because its
+    # output is then read as confirmation of something it never looked at.
+    TOTAL=$(( ${RSS:-0} + ${HTLB:-0} ))
+    [ -n "$RSS" ] && [ "$TOTAL" -gt 1000000 ] 2>/dev/null && \
+      echo "$(date -u +%H:%M:%S) pid=$P rss=$RSS thp=$THP hugetlb=$HTLB total=$TOTAL cmd=$CMD" >> "$OUT"
   done
   sleep 3
 done
