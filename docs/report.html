@@ -250,6 +250,43 @@ regimes apart.</p>
 
 
 <section class="wrap">
+<h2>Was it ever about page size?</h2>
+<p>The two engines do not only differ in how they look a key up. They differ in
+how their table is mapped: dramblast takes 8 GiB of 1 GiB hugepages, eight TLB
+entries; maglev's ordinary allocation is promoted by transparent hugepages to
+2 MiB pages, four thousand and ninety-six of them against a translation buffer
+that holds about two thousand. Every comparison between the two was therefore a
+comparison of algorithm <em>and</em> address translation at once. So each engine
+was run on the other's page size, and on 4 KiB pages, which neither ships
+with.</p>
+</section>
+
+<div class="wide">
+<figure>
+  <svg viewBox="0 0 720 229" role="img" aria-label="Per-packet cost of each mode on each page backing"><text x="138" y="41" text-anchor="end" class="barlab">dramblast &#183; 1 GiB pages</text><rect x="150" y="24" width="245.2" height="26" fill="var(--a)"/><text x="404.2" y="41" class="tick">98</text><text x="138" y="76" text-anchor="end" class="barlab">dramblast &#183; 2 MiB THP</text><rect x="150" y="59" width="255.2" height="26" fill="var(--a)"/><rect x="150" y="59" width="91.3" height="26" fill="var(--ink)" opacity="0.45"/><text x="414.2" y="76" class="tick">102   (36 in page walks)</text><text x="138" y="111" text-anchor="end" class="barlab">dramblast &#183; 4 KiB pages</text><rect x="150" y="94" width="292.7" height="26" fill="var(--a)"/><rect x="150" y="94" width="269.0" height="26" fill="var(--ink)" opacity="0.45"/><text x="451.7" y="111" class="tick">117   (107 in page walks)</text><text x="138" y="166" text-anchor="end" class="barlab">maglev &#183; 1 GiB pages</text><rect x="150" y="149" width="385.3" height="26" fill="var(--b)"/><text x="544.3" y="166" class="tick">154</text><text x="138" y="201" text-anchor="end" class="barlab">maglev &#183; 2 MiB THP</text><rect x="150" y="184" width="420.3" height="26" fill="var(--b)"/><rect x="150" y="184" width="64.3" height="26" fill="var(--ink)" opacity="0.45"/><text x="579.3" y="201" class="tick">168   (26 in page walks)</text></svg>
+  <div class="legend">
+    <span class="key"><span class="sw" style="background:var(--a)"></span>dramblast</span>
+    <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
+    <span class="key"><span class="sw" style="background:var(--ink);opacity:.45"></span>cycles spent walking page tables</span>
+  </div>
+  <figcaption>Cost at a single queue with a full 64-packet burst, so neither
+  the per-burst term nor cross-core page-table contention is in the number.
+  Page-walk cycles, shown inside each bar, are counted directly
+  (<span class="mono">dtlb_walk_active</span>) rather than inferred from a miss
+  rate times an assumed latency — and they are consistently larger than the cost
+  the page change actually adds, because a good deal of walking happens
+  underneath other work.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>Giving maglev dramblast's 1 GiB pages moves its per-packet cost by
+14 cycles — 20% of the 70-cycle gap between the two
+engines. Address translation is a real cost and it is not the explanation. The
+prefetch pipeline is.</p>
+</section>
+
+<section class="wrap">
 <h2>How much of this is the measurement rig</h2>
 <p>Two properties of the machine turned out to matter more than expected, and
 both are recorded as conditions of the experiment rather than corrected away.</p>

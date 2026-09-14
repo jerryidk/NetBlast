@@ -245,15 +245,18 @@ def crossover_rows(allc):
     out = []
     for mode, lab, cond in spec:
         d = allc.get(cond, {}).get(mode, {})
-        pts = series({mode: d}, mode)
-        f = lsq(pts)
-        if not f:
+        r = d.get("1")
+        if not r or not r.get("freq_mhz"):
             continue
-        # Page-walk cycles are read at the largest burst available, where the
-        # per-burst term is smallest and P dominates -- the same cell the bar
-        # length is dominated by.
-        best = max(d.values(), key=lambda r: r.get("rx_batch", 0))
-        out.append((mode, lab, f[0], tlb_cycles_per_pkt(best)))
+        # q=1: one worker, a full 64-packet burst. Deliberately NOT the fitted
+        # intercept. On 4 KiB pages the cost rises with queue count at constant
+        # burst size -- ten cores each walking a two-million-entry page table
+        # put the page table's own working set into cache contention -- so the
+        # two-parameter fit acquires a third term it cannot express and its
+        # intercept stops meaning "per-packet cost". q=1 carries neither the
+        # per-burst term nor the contention term.
+        out.append((mode, lab, r["cycles_per_pkt"] * r["freq_mhz"] / TSC_MHZ,
+                    tlb_cycles_per_pkt(r)))
     return out
 
 
@@ -466,10 +469,13 @@ with.</p>
     <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
     <span class="key"><span class="sw" style="background:var(--ink);opacity:.45"></span>cycles spent walking page tables</span>
   </div>
-  <figcaption>Per-packet cost on each backing, with the measured page-walk
-  cycles shown inside each bar. Page-walk cycles are counted directly
-  (<span class="mono">dtlb_walk_active</span>), not inferred from a miss rate
-  multiplied by an assumed latency.</figcaption>
+  <figcaption>Cost at a single queue with a full 64-packet burst, so neither
+  the per-burst term nor cross-core page-table contention is in the number.
+  Page-walk cycles, shown inside each bar, are counted directly
+  (<span class="mono">dtlb_walk_active</span>) rather than inferred from a miss
+  rate times an assumed latency — and they are consistently larger than the cost
+  the page change actually adds, because a good deal of walking happens
+  underneath other work.</figcaption>
 </figure>
 </div>
 
