@@ -28,6 +28,10 @@
 #             the per-burst cost that is not the allocator. This replaces
 #             quoting 20-40 ns from the literature.
 #
+#   pinned3   REPEATABILITY. The as-shipped condition again, hours after the
+#             control block, so every coefficient gets a run-to-run error bar
+#             and not merely a within-fit one.
+#
 #   d8 d16    PIPELINE DEPTH. The other candidate for C. A burst of B packets
 #   d32       can only fill min(B, depth) slots of the prefetch queue, so short
 #             bursts run a pipeline that never reaches steady state. If C is
@@ -50,8 +54,8 @@ set -u
 cd "$(dirname "$0")"
 
 OUT=${OUT:-/users/sohamb/sweeps}
-BLOCKS=("${@:-control crossover alloc depth}")
-[ "$#" -eq 0 ] && BLOCKS=(control crossover alloc depth)
+BLOCKS=("${@:-control crossover alloc depth repeat}")
+[ "$#" -eq 0 ] && BLOCKS=(control crossover alloc depth repeat)
 
 # Every invocation goes through a subshell. A `VAR=x run ...` prefix would NOT
 # be scoped to the call: bash keeps variable assignments that precede a shell
@@ -87,6 +91,14 @@ for b in "${BLOCKS[@]}"; do
     ( run a2     dramblast -A 2 )
     ( run a4     dramblast -A 4 )
     ( run a8     dramblast -A 8 ) ;;
+  repeat)
+    # Re-take the as-shipped condition last. Every uncertainty quoted so far is
+    # the scatter of one fit about one dataset; this is the only thing that says
+    # how much a coefficient moves when the identical condition is simply run
+    # again, hours later. Without it a 5% difference between two arms has
+    # nothing to be compared against.
+    ( run pinned3 dramblast )
+    ( run pinned3 maglev ) ;;
   depth)
     ( run d8  dramblast -Q 8 )
     ( run d16 dramblast -Q 16 )

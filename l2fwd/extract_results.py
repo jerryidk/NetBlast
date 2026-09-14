@@ -66,6 +66,8 @@ CONDS = {
     # is its control: same flags-free invocation as `pinned_2100mhz`, so any
     # difference between the two is the refactor and not the experiment.
     "pinned2_asshipped": "pinned2",
+    # the same condition re-run hours later: the only run-to-run error bar
+    "pinned3_repeat": "pinned3",
     # crossover: each mode on the other's page backing (and on 4 KiB, which
     # neither ships with, to turn a two-point swap into a three-point trend)
     "xover_dram_thp2m": "xdram2m", "xover_dram_4k": "xdram4k",

@@ -439,12 +439,14 @@ regimes apart.</p>
 
     xrows = crossover_rows(allc)
     crossover_html = ""
-    if len(xrows) >= 4:
+    if len(xrows) >= 6:
         by = {(m, l): (P, t) for m, l, P, t in xrows}
         d1 = by.get(("dramblast", "1 GiB pages"), (None,))[0]
         d4 = by.get(("dramblast", "4 KiB pages"), (None,))[0]
         m2 = by.get(("maglev", "2 MiB THP"), (None,))[0]
         m1 = by.get(("maglev", "1 GiB pages"), (None,))[0]
+        d2 = by.get(("dramblast", "2 MiB THP"), (None,))[0]
+        m4 = by.get(("maglev", "4 KiB pages"), (None,))[0]
         gap = m2 - d1 if (m2 and d1) else None
         moved = (m2 - m1) if (m2 and m1) else None
         share = f"{moved/gap*100:.0f}%" if (moved and gap) else "?"
@@ -482,8 +484,23 @@ with.</p>
 <section class="wrap">
 <p>Giving maglev dramblast's 1 GiB pages moves its per-packet cost by
 {abs(moved):.0f} cycles — {share} of the {abs(gap):.0f}-cycle gap between the two
-engines. Address translation is a real cost and it is not the explanation. The
-prefetch pipeline is.</p>
+engines. So the confound was real, and it was worth finding, and it is a fifth
+of the story. Address translation is not the explanation.</p>
+<p>The sharper result is in how differently the two engines react to the same
+change. Dropping from 1 GiB pages to 4 KiB costs dramblast {d4-d1:.0f} cycles
+and maglev {m4-m1:.0f} — close to three times as much. The prefetch pipeline is
+not only hiding the data access; it is hiding the <em>page walk</em>, which the
+prefetch itself triggers, early, so it completes underneath later work. That is
+why the gap between the engines widens as pages shrink, from {m1-d1:.0f} cycles
+at 1 GiB to {m4-d4:.0f} at 4 KiB. A configuration change that hurts both engines
+hurts the unprefetched one three times harder.</p>
+<p>And the counters make a trap visible. maglev on 2 MiB pages spends 25.6
+cycles per packet with a page walk in flight, but removing the walks entirely
+saves only {m2-m1:.0f} — so even the engine with no prefetching at all overlaps
+about 45% of its walking under other work. dramblast on 2 MiB pages spends 27%
+of every core cycle with a walk outstanding and pays {d2-d1:.0f} cycles for it.
+Walk occupancy is not walk cost, and reading it as cost would have overstated
+this whole section sixfold.</p>
 </section>
 """
 

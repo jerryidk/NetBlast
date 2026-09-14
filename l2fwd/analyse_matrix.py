@@ -237,18 +237,28 @@ def main():
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 
     ax = axes[0]
-    labels, Ps, Cs, cols = [], [], [], []
-    for lab, f, col in (("dram\n1 GiB", base_d, BLUE),
-                        ("dram\n2 MiB", g("xover_dram_thp2m", "dramblast"), BLUE),
-                        ("dram\n4 KiB", g("xover_dram_4k", "dramblast"), BLUE),
-                        ("mag\n1 GiB", g("xover_mag_1g", "maglev"), ORANGE),
-                        ("mag\n2 MiB", base_m, ORANGE),
-                        ("mag\n4 KiB", g("xover_mag_4k", "maglev"), ORANGE)):
-        if f:
-            labels.append(lab); Ps.append(f["P"]); Cs.append(f["C"]); cols.append(col)
-    ax.bar(range(len(Ps)), Ps, color=cols, width=0.62)
+    # q=1 rather than the fitted intercept: on 4 KiB pages the fit absorbs a
+    # core-count term it cannot represent, and for maglev on 4 KiB there is no
+    # fit at all because that arm never saturates the link and so never leaves a
+    # 64-packet burst. q=1 is defined for every arm and means the same thing in
+    # each of them.
+    labels, vals, cols = [], [], []
+    for lab, mode, cond, col in (("dram\n1 GiB", "dramblast", base_cond, BLUE),
+                                 ("dram\n2 MiB", "dramblast", "xover_dram_thp2m", BLUE),
+                                 ("dram\n4 KiB", "dramblast", "xover_dram_4k", BLUE),
+                                 ("mag\n1 GiB", "maglev", "xover_mag_1g", ORANGE),
+                                 ("mag\n2 MiB", "maglev", base_cond, ORANGE),
+                                 ("mag\n4 KiB", "maglev", "xover_mag_4k", ORANGE)):
+        v = at_q1(allc, cond, mode)
+        if v:
+            labels.append(lab); vals.append(v); cols.append(col)
+    bars = ax.bar(range(len(vals)), vals, color=cols, width=0.62)
+    for b, v in zip(bars, vals):
+        ax.text(b.get_x() + b.get_width() / 2, v + 3, f"{v:.0f}",
+                ha="center", fontsize=9, color=INK_2)
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, fontsize=8.5)
-    ax.set_ylabel("P  (core cycles per packet)")
+    ax.set_ylabel("core cycles per packet   (q=1, burst 64)")
+    ax.set_ylim(0, max(vals) * 1.16 if vals else 1)
     ax.set_title("1. Page backing moves the per-packet cost", fontsize=11,
                  loc="left", pad=10)
 
