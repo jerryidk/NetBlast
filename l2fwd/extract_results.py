@@ -2,14 +2,35 @@
 
 Parses the per-run logs written by sweep.sh.
 
-Usage: python3 extract_results.py <log_dir> ../docs/results_reproduced.json
+Usage: python3 extract_results.py <log_dir> ../docs/results_reproduced.json [sweep_stdout ...]
 
-Conditions:
-  linerate_2tx_instr logs tagged "instr"  -- 2 TX gen, line rate, post-7ebf038 (float stats),
-                                            plus per-run 1 GiB hugepage and delivered-frequency samples
-  linerate_93mpps  logs tagged "linerate" -- generator -l 0-16 (8 TX cores), 100 GbE line rate
-  linerate_2tx_gen logs tagged "gen2tx"   -- generator -l 0-4  (2 TX cores), 100 GbE line rate
-  capped_72mpps    logs tagged "sweep"    -- generator -l 0-2  (1 TX core),  72 Mpps
+Conditions (all at 100 GbE line rate unless noted):
+  pinned_2100mhz     logs tagged "pinned"   -- every core pinned to 2.100 GHz, turbo off,
+                                               cpuset-isolated (INVESTIGATION.md 3.4b/3.4c).
+                                               TSC ticks == core cycles in this arm.
+  turbo_instr        logs tagged "turbo"    -- same code and cpuset, turbo ON. The
+                                               representative arm: production runs with turbo.
+  linerate_2tx_instr logs tagged "instr"    -- 2 TX gen, post-7ebf038 (float stats). Turbo,
+                                               NO frequency instrumentation -- see caveat below.
+  linerate_93mpps    logs tagged "linerate" -- generator -l 0-16 (8 TX cores)
+  linerate_2tx_gen   logs tagged "gen2tx"   -- generator -l 0-4  (2 TX cores)
+  capped_72mpps      logs tagged "sweep"    -- generator -l 0-2  (1 TX core), 72 Mpps
+
+Caveat on cycles_per_pkt across conditions
+------------------------------------------
+l2fwd measures with rte_rdtsc() and this SKU's TSC is invariant at 2.1 GHz, so
+"Cycle per fwd packet" is TSC ticks = elapsed time, in EVERY condition. It is
+therefore comparable across conditions as time, but it equals core cycles only
+where the core clock is also 2.1 GHz, i.e. the pinned_2100mhz arm. For the turbo
+arms multiply by the recorded freq_mhz/2100 to get core cycles; where freq_mhz is
+absent (linerate_2tx_instr predates the instrumentation) that conversion is not
+available and must not be guessed.
+
+Delivered frequency and 1 GiB backing
+-------------------------------------
+sweep.sh samples both per run but prints them on its own stdout summary line, not
+into the per-run log. Pass the tee'd sweep stdout as a trailing argument and they
+are merged in by (mode, q); omit it and freq_mhz/hp1g are simply absent.
 """
 import json, re, sys, pathlib, statistics
 
@@ -37,14 +58,69 @@ pats = {
 # those, excluding the cold first sample: immune to all three defects.
 SAMPLE_RE = re.compile(r"^([0-9.]+) Mpps", re.M)
 # condition -> log filename prefix
-CONDS = {"linerate_2tx_instr": "instr", "linerate_93mpps": "linerate",
-         "linerate_2tx_gen": "gen2tx", "capped_72mpps": "sweep"}
+CONDS = {
+    # the two clock arms: identical binary, cpuset and harness, differing only
+    # in turbo and the frequency governor
+    "pinned_2100mhz": "pinned", "turbo_instr": "turbo",
+    # everything below was taken with the -B/-A/-Q build. `pinned2_asshipped`
+    # is its control: same flags-free invocation as `pinned_2100mhz`, so any
+    # difference between the two is the refactor and not the experiment.
+    "pinned2_asshipped": "pinned2",
+    # crossover: each mode on the other's page backing (and on 4 KiB, which
+    # neither ships with, to turn a two-point swap into a three-point trend)
+    "xover_dram_thp2m": "xdram2m", "xover_dram_4k": "xdram4k",
+    "xover_mag_1g": "xmag1g", "xover_mag_4k": "xmag4k",
+    # allocator amplification: C should be linear in the number of pairs
+    "alloc_hoisted": "ahoist", "alloc_x2": "a2", "alloc_x4": "a4",
+    "alloc_x8": "a8",
+    # prefetch pipeline depth
+    "depth_8": "d8", "depth_16": "d16", "depth_32": "d32",
+    # historical arms, kept as the record; no delivered clock was recorded for
+    # any of them, so their ticks cannot be put on a core-cycle axis
+    "linerate_2tx_instr": "instr", "linerate_93mpps": "linerate",
+    "linerate_2tx_gen": "gen2tx", "capped_72mpps": "sweep",
+}
 
-out = {}
+# sweep.sh's stdout summary line, e.g.
+#   q=3  lcores=0,2,4,6  min=... hp1g=16->7 freq=2095MHz
+# preceded by "=== mode=dramblast  tag=pinned ===" headers.
+HDR_RE = re.compile(r"^=== mode=(\w+)\s+tag=(\w+) ===", re.M)
+ROW_RE = re.compile(
+    r"^q=(\d+)\s+.*?hp1g=(\d+)->(\d+)\s+freq=(\w+)MHz\s+insns=(\w+)", re.M)
+
+
+def sidecar(paths):
+    """(tag, mode, q) -> {hp1g_before, hp1g_during, freq_mhz} from sweep stdout."""
+    got = {}
+    for path in paths:
+        txt = pathlib.Path(path).read_text(errors="replace").replace("\x1b", "")
+        # Split on the mode headers so each row is attributed to the right mode.
+        marks = [(m.start(), m.group(1), m.group(2)) for m in HDR_RE.finditer(txt)]
+        for i, (pos, mode, tag) in enumerate(marks):
+            end = marks[i + 1][0] if i + 1 < len(marks) else len(txt)
+            for q, before, during, freq, insns in ROW_RE.findall(txt[pos:end]):
+                rec = {"hp1g_before": int(before), "hp1g_during": int(during)}
+                if freq.isdigit():
+                    rec["freq_mhz"] = int(freq)
+                if insns.isdigit():
+                    rec["insns"] = int(insns)
+                got[(tag, mode, int(q))] = rec
+    return got
+
+
+SIDE = sidecar(sys.argv[3:])
+
+# Merge, do not clobber. Each invocation sees only the logs of the sweep that
+# just ran, so rebuilding the file from scratch would silently delete every
+# condition whose log directory is no longer on disk -- which is what happened
+# once here, taking four historical conditions with it (they were recoverable
+# from git; an uncommitted arm would not have been). A condition is now only
+# rewritten when logs for it are actually found.
+out = json.loads(OUT.read_text()) if OUT.exists() else {}
 for cond, prefix in CONDS.items():
-    out[cond] = {}
+    fresh = {}
     for mode in ("maglev", "dramblast"):
-        out[cond][mode] = {}
+        fresh[mode] = {}
         for q in range(1, 11):
             log = SP / f"{prefix}_{mode}_q{q}.log"
             if not log.exists():
@@ -63,8 +139,20 @@ for cond, prefix in CONDS.items():
                 rec["steady_max"] = round(max(samples[1:]), 2)
                 rec["cold_sample0_mpps"] = round(samples[0], 2)
                 rec["n_samples"] = len(samples)
+            rec.update(SIDE.get((prefix, mode, q), {}))
+            # per-run PMU sidecar written by sweep.sh, one `value,,event,...`
+            # line per counter. Carried through verbatim so a question asked
+            # later can be answered from data already on disk.
+            perf = log.with_suffix(".perf")
+            if perf.exists():
+                for line in perf.read_text(errors="replace").splitlines():
+                    f = line.split(",")
+                    if len(f) >= 3 and f[0].strip().isdigit() and f[2].strip():
+                        rec["pmu_" + f[2].strip()] = int(f[0])
             if rec:
-                out[cond][mode][str(q)] = rec
+                fresh[mode][str(q)] = rec
+    if any(fresh[m] for m in fresh):
+        out[cond] = fresh
 
 OUT.write_text(json.dumps(out, indent=4) + "\n")
 print(f"wrote {OUT}")

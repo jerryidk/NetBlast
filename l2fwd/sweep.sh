@@ -41,6 +41,27 @@ MODES=("${@:-dramblast maglev}")
 BENCH_CPUS="${BENCH_CPUS:-0-23}"
 
 MAX_QUEUES="${MAX_QUEUES:-10}"
+# Explicit queue-count list. Defaults to 1..MAX_QUEUES; set it to sweep a subset
+# when only the spread of RX burst sizes matters (fitting the per-burst model
+# needs a range of bursts, not every queue count), e.g. QUEUES="1 4 7 8 9 10".
+QUEUES="${QUEUES:-$(seq 1 "$MAX_QUEUES")}"
+
+# Extra arguments appended to l2fwd's own (post `--`) argument list, e.g.
+# "-B 4k" or "-A 8". They go in argv rather than the environment on purpose:
+# these runs are launched through `sudo systemd-run`, which strips the
+# environment, so an env-var knob would silently fall back to its default and
+# report a plausible wrong number. A peer session lost a whole dataset to
+# exactly that. Anything in argv also lands in the run's log, so each log says
+# what produced it.
+L2FWD_EXTRA="${L2FWD_EXTRA:-}"
+
+# Counters sampled per run. cycles gives the delivered clock, instructions the
+# equal-work control. The extras are what decide where the per-burst cost goes:
+# dTLB-load-misses separates address translation from data access (the two modes
+# ship on different page sizes), and stalls_l3_miss is the cycles actually spent
+# waiting on memory rather than inferred from a clock ratio. Verified to fit the
+# PMU without multiplexing on this part: all six report 100.00% enabled.
+PERF_EVENTS="${PERF_EVENTS:-cycles,instructions,dTLB-load-misses,LLC-load-misses,cpu/event=0xa3,umask=0x06,cmask=0x06,name=stalls_l3_miss/}"
 CAPACITY="${CAPACITY:-536870912}"   # 2^29 entries x 16 B = 8 GiB table
 DPDK_MEM="${DPDK_MEM:-2000}"
 
@@ -48,7 +69,7 @@ mkdir -p "$OUT_DIR"
 
 for MODE in "${MODES[@]}"; do
   echo "=== mode=$MODE  tag=$TAG ==="
-  for q in $(seq 1 "$MAX_QUEUES"); do
+  for q in $QUEUES; do
     # N+1 lcores: lcore 0 is the main/stats core, 2..2q are the N queue workers.
     CORE_LIST=$(seq -s, 0 2 $(( q * 2 )))
     LOG="$OUT_DIR/${TAG}_${MODE}_q${q}.log"
@@ -74,7 +95,7 @@ for MODE in "${MODES[@]}"; do
         -q "$q" \
         --no-mac-updating \
         -m "$MODE" \
-        -c "$CAPACITY" > "$LOG" 2>&1 &
+        -c "$CAPACITY" $L2FWD_EXTRA > "$LOG" 2>&1 &
     RUN_PID=$!
 
     # Sample mid-run, past main.c's 5 s settle and the 8 GiB table allocation.
@@ -108,13 +129,29 @@ for MODE in "${MODES[@]}"; do
     WORKER_CPUS=$(echo "$CORE_LIST" | cut -d, -f2-)
     NWORKERS=$(echo "$WORKER_CPUS" | tr ',' '\n' | grep -c .)
     PERF_WINDOW=${PERF_WINDOW:-8}
-    CYCLES=$(sudo perf stat -e cycles -C "$WORKER_CPUS" -x, -- \
-                 sleep "$PERF_WINDOW" 2>&1 | awk -F, '/cycles/{print $1; exit}')
+    # INSTRUCTIONS are counted alongside cycles for an equal-work control. The
+    # collapse test reads any vertical gap between the two clock arms as the
+    # memory-latency fraction, which is only valid if both arms execute the SAME
+    # work. A peer session checked that assumption on its own two arms and found
+    # a real, reproducible 0.19 instructions/key asymmetry between machine
+    # states -- the same order as the effect it was measuring. So it must be
+    # measured here rather than assumed. Compare arms only at equal burst size:
+    # instructions per packet legitimately depend on burst size.
+    PERF=$(sudo perf stat -e "$PERF_EVENTS" -C "$WORKER_CPUS" -x, -- \
+                 sleep "$PERF_WINDOW" 2>&1)
+    # Keep the raw counter output next to the run's log. The summary line below
+    # can only carry a couple of numbers, and which counters matter changes as
+    # the investigation moves; a sidecar means a later question can be answered
+    # from data already taken rather than by re-running the sweep.
+    printf '%s\n' "$PERF" > "${LOG%.log}.perf"
+    CYCLES=$(awk -F, '/cycles/{print $1; exit}'       <<<"$PERF")
+    INSNS=$(awk  -F, '/instructions/{print $1; exit}' <<<"$PERF")
     if [ -n "${CYCLES:-}" ] && [ "$CYCLES" -gt 0 ] 2>/dev/null; then
         FREQ_MHZ=$(( CYCLES / PERF_WINDOW / NWORKERS / 1000000 ))
     else
         FREQ_MHZ=NA
     fi
+    IPS=${INSNS:-NA}
 
     wait $RUN_PID
 
@@ -127,10 +164,11 @@ for MODE in "${MODES[@]}"; do
     MIS=$(grep -oP 'RX-Missed \(Dropped\): \K[0-9]+'  <<<"$T" | tail -1)
     ERR=$(grep -oP 'Cause: \K.*'                      <<<"$T" | tail -1)
 
-    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s cyc=%-6s batch=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz %s\n" \
+    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s cyc=%-6s batch=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz insns=%s extra='%s' %s\n" \
       "$q" "$CORE_LIST" "${MIN:-NA}" "${MAX:-NA}" "${AVG:-NA}" \
       "${CYC:-NA}" "${BAT:-NA}" "${MIS:-NA}" \
-      "${HP_BEFORE:-NA}" "${HP_DURING:-NA}" "${FREQ_MHZ:-NA}" "$ERR"
+      "${HP_BEFORE:-NA}" "${HP_DURING:-NA}" "${FREQ_MHZ:-NA}" "${IPS:-NA}" \
+      "$L2FWD_EXTRA" "$ERR"
   done
 done
 
