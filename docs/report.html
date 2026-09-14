@@ -521,6 +521,15 @@ optimistic by a factor nobody could have known.</p>
 <h2>How much of this is the measurement rig</h2>
 <p>Two properties of the machine turned out to matter more than expected, and
 both are recorded as conditions of the experiment rather than corrected away.</p>
+<p>A third property is the instrument itself. Cycles per packet are reported as
+an <b>integer</b>, so at a 64-packet burst the smallest distinguishable step is
+one tick. Counted that way, every claim on this page is many ticks wide — the
+engine gap 64, the page-size effects 19 to 44, the allocator round trip 8 — with
+three exceptions that are stated as approximate where they appear: the
+<span class="mono">-B/-A/-Q</span> refactor at 3 ticks, dramblast's 1 GiB to
+2 MiB step at 3, and the depth-32 point at 1.8, which is why that one needed six
+runs. Re-running the identical condition lands below one tick, which is both the
+right answer and the scale for reading the rest.</p>
 <p>Idle states are disabled on all 56 cores, so every core spins unhalted and the
 package never goes quiet. The all-core turbo ceiling is therefore pinned near
 2.99&nbsp;GHz regardless of load — measured at 2993 MHz on every one of ten
