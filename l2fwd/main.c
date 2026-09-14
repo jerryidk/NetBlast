@@ -38,6 +38,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "backing.h"
 #include "dramblast.h"
 #include "generic/rte_cycles.h"
 #include "generic/rte_pause.h"
@@ -393,6 +394,17 @@ static void l2fwd_usage(const char *prgname) {
          "  -q NQ: number of queues per port (multithread scaling, default 1)\n"
          "  -T PERIOD: statistics refresh period in seconds\n"
          "  -c CAPACITY: hashtable capacity\n"
+         "  -B BACKING: page backing for the hash table, overriding each\n"
+         "      mode's own default (as-shipped | 1g | thp2m | 4k).\n"
+         "      dramblast ships on 1g and maglev on thp2m, so -B is what\n"
+         "      makes the two modes comparable at equal address translation.\n"
+         "  -A N: dramblast aligned_alloc/free pairs per burst. -1 hoists the\n"
+         "      buffer to a per-lcore allocation made once at init; 0 is as\n"
+         "      shipped; N>0 adds N extra pairs, so that sweeping N measures\n"
+         "      what a pair actually costs instead of assuming it.\n"
+         "  -Q DEPTH: dramblast prefetch pipeline depth (power of two, 64 as\n"
+         "      shipped). Separates a pipeline-ramp cost from an allocator cost:\n"
+         "      only the former responds to this.\n"
          "  --[no-]mac-updating: Enable/disable MAC updating\n",
          prgname);
 }
@@ -408,7 +420,7 @@ static int l2fwd_parse_args(int argc, char **argv) {
       {"no-mac-updating", no_argument, &mac_updating, 0},
       {NULL, 0, 0, 0}};
 
-  while ((opt = getopt_long(argc, argvopt, "p:q:T:m:c:", lgopts,
+  while ((opt = getopt_long(argc, argvopt, "p:q:T:m:c:B:A:Q:", lgopts,
                             &option_index)) != EOF) {
     switch (opt) {
     case 0:
@@ -428,6 +440,32 @@ static int l2fwd_parse_args(int argc, char **argv) {
         l2fwd_sashstore_enabled = 0;
       } else
         return -1;
+      break;
+    case 'A':
+      dramblast_alloc_pairs = (int)strtol(optarg, NULL, 10);
+      printf("dramblast alloc pairs per burst: %d%s\n", dramblast_alloc_pairs,
+             dramblast_alloc_pairs < 0 ? " (hoisted to a per-lcore buffer)" : "");
+      break;
+    case 'Q':
+      dramblast_queue_depth = (int)strtol(optarg, NULL, 10);
+      if (dramblast_queue_depth <= 0 ||
+          (dramblast_queue_depth & (dramblast_queue_depth - 1)) != 0) {
+        fprintf(stderr, "Error: -Q %s must be a power of two (head/tail wrap "
+                        "with & (size-1)).\n", optarg);
+        return -1;
+      }
+      printf("dramblast prefetch pipeline depth: %d\n", dramblast_queue_depth);
+      break;
+    case 'B':
+      if (backing_parse(optarg, &g_backing) < 0) {
+        fprintf(stderr,
+                "Error: -B %s unrecognised "
+                "(as-shipped | 1g | thp2m | 4k).\n",
+                optarg);
+        return -1;
+      }
+      printf("page backing forced to %s for every hashtable\n",
+             backing_name(g_backing));
       break;
     case 'c':
       CAPACITY = strtoull(optarg, NULL, 10);

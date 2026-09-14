@@ -1,3 +1,4 @@
+#include "backing.h"
 #include "conshash.h"
 #include "hashmap.h"
 #include "packettool.h"
@@ -41,7 +42,10 @@ uint64_t maglev_process_frame(void *frame) {
 
 void maglev_init(void) {
   size_t size = CAPACITY * sizeof(struct maglev_kv_pair);
-  maglev_conntrack.pairs = aligned_alloc(4096, size);
+  /* aligned_alloc(4096, 8 GiB) as shipped, which THP promotes to 2 MiB pages
+     (measured: whole table shows up in AnonHugePages). Stated explicitly here
+     so the -B matrix can move it to 1 GiB or hold it down at 4 KiB. */
+  maglev_conntrack.pairs = backing_alloc(size, BACKING_THP2M);
 
   if (!maglev_conntrack.pairs) {
     printf("Aligned alloc failed!\n");

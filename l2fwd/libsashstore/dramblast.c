@@ -1,5 +1,6 @@
 
 #include "dramblast.h"
+#include "backing.h"
 #include "conshash.h"
 #include "packettool.h"
 #include "rte_branch_prediction.h"
@@ -144,7 +145,7 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
 
     // push as many as possible without stalling on LFB.
     while (args_head < args_len &&
-           dramblast_get_queue_sz(ht, id) < DRAMBLAST_FIND_QUEUE_SIZE - 1) {
+           dramblast_get_queue_sz(ht, id) < ht->queues[id].find_queue_size - 1) {
       dramblast_arg_t *arg = &args[args_head];
       args_head++;
       idx = dramblast_hash(ht, arg->k);
@@ -207,10 +208,61 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
 }
 
 // return number of frames modified.
+/*
+ * How many aligned_alloc/free round trips each burst pays.
+ *
+ *   -1  hoisted: none at all, a per-lcore buffer allocated once at init
+ *    0  as shipped: exactly one pair, the aligned_alloc/free below
+ *    n  as shipped plus n extra pairs, to calibrate what a pair costs here
+ *
+ * This exists because the per-burst cost C is measurable (~645 cycles/burst for
+ * dramblast, against ~0 for maglev) but its composition is not. A hot-tcache
+ * pair is usually quoted at 20-40 ns, which would be at most ~11% of C -- but
+ * that is a literature number, and the whole point of the pinned rig is to stop
+ * relying on those. Sweeping n turns C into a line: the slope is what a pair
+ * actually costs on this machine, and the intercept at n = -1 is whatever the
+ * per-burst cost is that has nothing to do with the allocator.
+ */
+int dramblast_alloc_pairs = 0;
+
+/*
+ * Depth of the software prefetch pipeline, DRAMBLAST_FIND_QUEUE_SIZE as shipped.
+ *
+ * This is the second of the two candidates for the per-burst cost C. The find
+ * loop issues a prefetch and queues an item, then pops and processes one, so a
+ * deep queue keeps many cache lines in flight and hides DRAM latency -- but a
+ * burst of B packets can only ever fill min(B, depth) slots, so a short burst
+ * runs a pipeline that never reaches steady state. If that ramp is what C is
+ * made of, C must fall when the depth is cut (there is less pipeline to fill)
+ * while P rises (less latency hidden in steady state). If C is the allocator
+ * instead, depth changes nothing about C. The two knobs therefore separate the
+ * two hypotheses without either being able to mimic the other.
+ *
+ * Must stay a power of two: the head and tail wrap with & (size - 1).
+ */
+int dramblast_queue_depth = DRAMBLAST_FIND_QUEUE_SIZE;
+static dramblast_result_t *dramblast_hoisted[MAX_CPU];
+
 void dramblast_process_frames(dramblast_arg_t *args, unsigned int args_len,
                               uint64_t *ret, unsigned int id) {
-  dramblast_result_t *results =
-      dramblast_alloc64(sizeof(dramblast_result_t) * args_len);
+  dramblast_result_t *results;
+
+  if (dramblast_alloc_pairs < 0) {
+    results = dramblast_hoisted[id];
+  } else {
+    results = dramblast_alloc64(sizeof(dramblast_result_t) * args_len);
+    /* Extra pairs are the same size and the same call as the real one, so they
+       exercise the identical tcache path rather than a cheaper one. Touch each
+       one so the compiler cannot discard the round trip. */
+    for (int e = 0; e < dramblast_alloc_pairs; e++) {
+      dramblast_result_t *scratch =
+          dramblast_alloc64(sizeof(dramblast_result_t) * args_len);
+      if (scratch) {
+        scratch[0].v = (uint64_t)e;
+        free(scratch);
+      }
+    }
+  }
 
   unsigned int len =
       dramblast_find_batch_sync(dramblast_ht, args, args_len, results, id);
@@ -240,46 +292,20 @@ void dramblast_process_frames(dramblast_arg_t *args, unsigned int args_len,
     ret[result->id] = backend_mac_addr;
   }
 
-  free(results);
+  if (dramblast_alloc_pairs >= 0)
+    free(results);
 }
 
-#define MAP_HUGE_2MB (21 << 26)
-#define MAP_HUGE_1GB (30 << 26)
-#define PAGE_SIZE_2MB (2ULL * 1024 * 1024)
+/* The page-size choice and the round-up that has to agree with it both moved
+   into backing.c, so that maglev can reach the same code. Only the threshold
+   stays here, because it is dramblast's own as-shipped policy. */
 #define PAGE_SIZE_1GB (1024ULL * 1024 * 1024)
-#define ALIGN_UP(x, align) (((x) + (align) - 1) & ~((align) - 1))
-
-// Helper function to guarantee consistent alignment across init and destroy
-static inline size_t get_aligned_table_size(size_t bytes) {
-  if (bytes > PAGE_SIZE_1GB) {
-    return ALIGN_UP(bytes, PAGE_SIZE_1GB);
-  }
-  return ALIGN_UP(bytes, PAGE_SIZE_2MB);
-}
 
 void *allocate_dramblast_table(size_t bytes) {
-  int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB;
-  size_t aligned_bytes = get_aligned_table_size(bytes);
-
-  if (bytes > PAGE_SIZE_1GB) {
-    flags |= MAP_HUGE_1GB;
-    printf("try to allocated %lu 1gb pages\n",
-           (uint64_t)(bytes / PAGE_SIZE_1GB));
-  } else {
-    flags |= MAP_HUGE_2MB;
-    printf("try to allocated %lu 2mb pages\n",
-           (uint64_t)(bytes / PAGE_SIZE_2MB));
-  }
-
-  void *ptr = mmap(NULL, aligned_bytes, PROT_READ | PROT_WRITE, flags, -1, 0);
-
-  if (ptr == MAP_FAILED) {
-    perror("mmap hugepages failed");
-    return NULL;
-  }
-
-  memset(ptr, 0, aligned_bytes);
-  return ptr;
+  /* As shipped this was an unconditional MAP_HUGETLB|MAP_HUGE_1GB mmap (2 MiB
+     below 1 GiB). It now goes through backing_alloc so -B can put dramblast on
+     maglev's page size and vice versa; with no -B the behaviour is unchanged. */
+  return backing_alloc(bytes, bytes > PAGE_SIZE_1GB ? BACKING_1G : BACKING_THP2M);
 }
 
 void dramblast_init(void) {
@@ -296,9 +322,14 @@ void dramblast_init(void) {
     dramblast_queue_t *q = &dramblast_ht->queues[i];
     q->find_queue_head = 0;
     q->find_queue_tail = 0;
-    q->find_queue_size = DRAMBLAST_FIND_QUEUE_SIZE;
+    q->find_queue_size = dramblast_queue_depth;
     q->find_queue =
         dramblast_alloc64(sizeof(dramblast_queue_item_t) * q->find_queue_size);
+    /* MAX_PKT_BURST in main.c is 64 and args_len can never exceed it, so one
+       burst-sized buffer per lcore is enough for the hoisted arm. Allocated
+       unconditionally: it costs 1 KiB per lcore and keeps the two arms'
+       initialisation identical. */
+    dramblast_hoisted[i] = dramblast_alloc64(sizeof(dramblast_result_t) * 64);
   }
 
   dramblast_ht->len = CAPACITY;
@@ -326,7 +357,8 @@ void dramblast_destroy() {
     uint64_t bytes = (uint64_t)dramblast_ht->len * sizeof(dramblast_kv_t);
 
     // FIX: Calculate the exact aligned size that was mapped
-    size_t aligned_bytes = get_aligned_table_size(bytes);
+    size_t aligned_bytes =
+        backing_alloc_size(bytes, bytes > PAGE_SIZE_1GB ? BACKING_1G : BACKING_THP2M);
 
     if (munmap(dramblast_ht->table, aligned_bytes) != 0) {
       perror("munmap failed during dramblast_destroy");
