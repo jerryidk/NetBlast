@@ -1379,7 +1379,7 @@ worth recording.
 | | P (cycles/packet) | C (cycles/burst) | at burst 64 | at burst 8 |
 |---|---|---|---|---|
 | dramblast, pre-refactor | 95.2 | 644.5 ± 41 | 105.3 | 175.8 |
-| dramblast, refactored | 87.7 | 717.6 ± 42 | **98.9 (−6.1%)** | 177.4 (+0.9%) |
+| dramblast, refactored | 87.7 | 717.6 ± 42 | **98.9 (−6.1% fitted, −3.3% measured)** | 177.4 (+0.9%) |
 | maglev, pre-refactor | 163.4 | not resolved | 162.7 | 157.8 |
 | maglev, refactored | 163.0 | not resolved | 162.4 (−0.2%) | 158.5 (+0.4%) |
 
@@ -1391,9 +1391,16 @@ reaches 99.98% THP coverage against the old path's 99.3%. That is a real
 difference in what the kernel did, and it is worth 0.2% of run time — so it can
 be set aside, having been measured rather than argued away.
 
-**dramblast is 6.1% cheaper at a full burst and unchanged at a short one.** The
-per-burst coefficient moved by 1.2σ of the combined fit error, i.e. not at all;
-the per-packet coefficient moved by 7.6 cycles. Behaviour is identical — the
+**dramblast is cheaper at a full burst and unchanged at a short one**, and the
+size depends on how you ask. Evaluating the two *fits* at burst 64 gives
+105.3 → 98.9, a 6.1% drop — but that differences two extrapolations. Measured
+directly at a matched burst of 64 and a matched queue count, the five paired
+differences are −3, −4, −4, −3, −3 ticks: **−3.4 ticks, −3.3%** (§5.19 audits
+every claim this way). Half the size, same sign, same systematic character, and
+the direct measurement is the one to believe. The per-burst coefficient moved by
+1.2σ of the combined fit error — that σ is within-sweep, and §5.15 puts the
+run-to-run drift on this coefficient at ~29 cycles, so "not measurably" is the
+most that can be claimed and "not at all" would be too strong. Behaviour is identical — the
 push-loop bound is 63 either way — so this is codegen, most plausibly register
 allocation around a bound that changed from a compile-time constant to a loaded
 field. It is small, but it is systematic and it has the same sign at every
@@ -1536,7 +1543,7 @@ the 8 GiB table.
 Cost at q=1 — one worker, a full 64-packet burst — in core cycles per packet.
 (Shipped dramblast appears at several values across this document — 101, 98.9,
 100.4, 99.5 — and they are not inconsistent: 101 is the **pre-refactor** binary,
-everything from §5.10 onward is the **refactored** one, which is 6.1% cheaper at
+everything from §5.10 onward is the **refactored** one, which is 3.3% cheaper at
 a full burst, and the remaining spread is the ±1-tick print resolution plus the
 small reproducible variation with queue count. Any comparison in this document
 is made within one binary.)
@@ -2201,3 +2208,67 @@ for a day and was answered in ten minutes from counters already on disk. The
 `.perf` sidecar next to every run exists precisely because which counter matters
 changes as an investigation moves, and a question that can be answered from data
 already taken should be, before any machine time is asked for.
+
+### 5.19 Every claim, counted in ticks
+
+§5.13 records a result that stood for six hours, survived peer review, and was
+one printed tick. `l2fwd` reports "Cycle per fwd packet" as an **integer**, so at
+a 64-packet burst the smallest distinguishable step is one tick — 64 cycles per
+burst. That instrument underlies every matched-burst number in this document,
+so the obvious question is which *other* claims here are a tick or two wide.
+
+Each row is recomputed identically — matched burst of 64, matched queue count,
+paired then averaged — so the table is comparable across rows and independent of
+how each result happens to be quoted elsewhere. It regenerates with the rest of
+the analysis.
+
+| claim | n | ticks | sem | status |
+|---|---|---|---|---|
+| engine gap, as shipped | 5 | 64.40 | 1.63 | safe |
+| engine gap, matched 1 GiB | 5 | 52.00 | 1.30 | safe |
+| maglev: 2 MiB → 4 KiB | 6 | 44.17 | 0.98 | safe |
+| dramblast: 1 GiB → 4 KiB | 5 | 19.40 | 1.33 | safe |
+| depth 64 → 8 | 5 | 18.60 | 0.68 | safe |
+| maglev: 2 MiB → 1 GiB | 5 | −12.40 | 0.68 | safe |
+| the allocator round trip | 4 | 8.25 | 0.75 | safe |
+| depth 64 → 16 | 5 | 6.40 | 0.51 | safe |
+| the `-B`/`-A`/`-Q` refactor | 5 | −3.40 | 0.24 | **3-5 ticks, no spare digits** |
+| dramblast: 1 GiB → 2 MiB | 4 | 3.00 | 0.41 | **3-5 ticks, no spare digits** |
+| depth 64 → 32 | 5 | 1.80 | 0.37 | **1-2 ticks, approximate only** |
+| the repeat arm (should be 0) | 5 | −0.20 | 0.20 | below one tick |
+
+**Every headline survives.** The engine gap, the page-size effects, the allocator
+round trip and the eightfold depth change are all many ticks wide, and the
+allocator result — the one that was wrong — is 8.25 ticks when measured properly
+rather than the 7 it showed at the single queue count it was read from.
+
+**Three rows needed the text changed.**
+
+- **The refactor was quoted at 6.1%.** That figure differences two *fits* at
+  burst 64. Measured directly it is 3.4 ticks, **3.3%** — half the size. The
+  conclusion it supports is untouched (every later condition is still read
+  against the refactored control, and 3.4 ticks with a 0.24 standard error is
+  systematic, not noise), but the number was inflated by the model.
+- **dramblast on 2 MiB versus 1 GiB is 3 ticks.** Real, and not a quantity to
+  quote to two significant figures.
+- **depth 64 → 32 is 1.8 ticks**, which is why §5.14 needed six repeats to say
+  anything about it and why the verdict there is hedged.
+
+**The repeat arm coming out below one tick is the intended result** — the same
+condition re-run should not differ — and it sets the scale for reading the rest
+of the table: a difference of that size anywhere else is indistinguishable from
+simply running the identical experiment again.
+
+One caution about the standard errors in that table. They describe the scatter
+of numbers that were all rounded the same way, so a tight `sem` on a one-tick
+difference is not evidence of anything; the tick count is the check and the
+`sem` is secondary. This is the same mistake in a new costume, and it is why the
+status column is computed from the tick count alone.
+
+**What would remove the limit.** `main.c:217` divides a cumulative cycle total by
+a cumulative packet count and prints the integer quotient. Both operands are
+already `uint64_t` and are printed elsewhere; emitting the ratio as a float, or
+simply emitting the two totals, would give roughly four more significant digits
+for a one-line change. That has deliberately not been done, because it would
+change the binary the whole dataset was taken with. It is the first thing to do
+before the next campaign.

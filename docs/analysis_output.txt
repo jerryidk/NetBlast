@@ -407,3 +407,28 @@ CONTROL   the -B/-A/-Q build with no flags must reproduce the original
   measured in the DURATION of a walk, not in how many walks happen,
   and it vanishes entirely on 1 GiB pages where there are none.
   No new runs were needed -- the counters were already in the logs.
+
+====================================================================================
+6. RESOLUTION AUDIT   how many printed ticks is each claim?
+====================================================================================
+  claim                           n    ticks    sem  status
+  engine gap, as shipped          5    64.40   1.63  safe
+  engine gap, matched 1 GiB       5    52.00   1.30  safe
+  maglev: 2 MiB -> 4 KiB          6    44.17   0.98  safe
+  dramblast: 1 GiB -> 4 KiB       5    19.40   1.33  safe
+  depth 64 -> 8                   5    18.60   0.68  safe
+  maglev: 2 MiB -> 1 GiB          5   -12.40   0.68  safe
+  the allocator round trip        4     8.25   0.75  safe
+  depth 64 -> 16                  5     6.40   0.51  safe
+  the -B/-A/-Q refactor           5    -3.40   0.24  3-5 ticks -- no spare digits
+  dramblast: 1 GiB -> 2 MiB       4     3.00   0.41  3-5 ticks -- no spare digits
+  depth 64 -> 32                  5     1.80   0.37  1-2 ticks -- approximate only
+  the repeat arm (should be 0)    5    -0.20   0.20  BELOW ONE TICK -- not a measurement
+
+  Read the standard errors with care: they describe the scatter of
+  numbers that were all rounded the same way, so a tight sem on a
+  one-tick difference is not evidence. The tick count is the check.
+  The repeat arm coming out below one tick is the intended result --
+  the same condition re-run should not differ -- and it also sets the
+  scale: anything of that size elsewhere is indistinguishable from
+  re-running the identical experiment.

@@ -1026,6 +1026,72 @@ def main():
     print("  and it vanishes entirely on 1 GiB pages where there are none.")
     print("  No new runs were needed -- the counters were already in the logs.")
 
+    # ---- every claim, in units of the instrument's resolution -------------
+    # Added after a result that stood for six hours turned out to be one
+    # printed tick (section 2). "Cycle per fwd packet" is an integer, so at a
+    # 64-packet burst the smallest distinguishable step is one tick. Any
+    # difference of a tick or two is not a measurement however tight its
+    # standard error looks, because the standard error describes the scatter of
+    # numbers that were all rounded the same way.
+    #
+    # Every claim below is recomputed the same way -- matched burst of 64,
+    # matched queue count, paired then averaged -- so the table is comparable
+    # across rows and independent of how each result happens to be quoted
+    # elsewhere.
+    print()
+    print("=" * 84)
+    print("6. RESOLUTION AUDIT   how many printed ticks is each claim?")
+    print("=" * 84)
+
+    def paired(c1, c2, m1="dramblast", m2=None, burst=64):
+        m2 = m2 or m1
+        A = {int(q): (r["cycles_per_pkt"], r.get("rx_batch"))
+             for q, r in allc.get(c1, {}).get(m1, {}).items()}
+        B = {int(q): (r["cycles_per_pkt"], r.get("rx_batch"))
+             for q, r in allc.get(c2, {}).get(m2, {}).items()}
+        qs = [q for q in sorted(set(A) & set(B))
+              if A[q][1] == burst == B[q][1]]
+        return [A[q][0] - B[q][0] for q in qs]
+
+    CLAIMS = [
+        ("engine gap, as shipped", "pinned2_asshipped", "pinned2_asshipped", "maglev", "dramblast"),
+        ("engine gap, matched 1 GiB", "xover_mag_1g", "pinned2_asshipped", "maglev", "dramblast"),
+        ("maglev: 2 MiB -> 4 KiB", "xover_mag_4k", "pinned2_asshipped", "maglev", "maglev"),
+        ("dramblast: 1 GiB -> 4 KiB", "xover_dram_4k", "pinned2_asshipped", "dramblast", "dramblast"),
+        ("depth 64 -> 8", "depth_8", "pinned2_asshipped", "dramblast", "dramblast"),
+        ("maglev: 2 MiB -> 1 GiB", "xover_mag_1g", "pinned2_asshipped", "maglev", "maglev"),
+        ("the allocator round trip", "pinned2_asshipped", "alloc_hoisted", "dramblast", "dramblast"),
+        ("depth 64 -> 16", "depth_16", "pinned2_asshipped", "dramblast", "dramblast"),
+        ("the -B/-A/-Q refactor", "pinned2_asshipped", "pinned_2100mhz", "dramblast", "dramblast"),
+        ("dramblast: 1 GiB -> 2 MiB", "xover_dram_thp2m", "pinned2_asshipped", "dramblast", "dramblast"),
+        ("depth 64 -> 32", "depth_32", "pinned2_asshipped", "dramblast", "dramblast"),
+        ("the repeat arm (should be 0)", "pinned3_repeat", "pinned2_asshipped", "dramblast", "dramblast"),
+    ]
+    rows = []
+    for lab, c1, c2, m1, m2 in CLAIMS:
+        ds = paired(c1, c2, m1, m2)
+        if len(ds) < 2:
+            continue
+        mean = sum(ds) / len(ds)
+        var = sum((v - mean) ** 2 for v in ds) / (len(ds) - 1)
+        rows.append((lab, len(ds), mean, (var / len(ds)) ** 0.5))
+    rows.sort(key=lambda r: -abs(r[2]))
+    print(f"  {'claim':30} {'n':>2} {'ticks':>8} {'sem':>6}  status")
+    for lab, n, mean, sem in rows:
+        t = abs(mean)
+        st = ("BELOW ONE TICK -- not a measurement" if t < 1.0 else
+              "1-2 ticks -- approximate only" if t < 2.0 else
+              "3-5 ticks -- no spare digits" if t < 5.0 else
+              "safe")
+        print(f"  {lab:30} {n:>2} {mean:>8.2f} {sem:>6.2f}  {st}")
+    print("\n  Read the standard errors with care: they describe the scatter of")
+    print("  numbers that were all rounded the same way, so a tight sem on a")
+    print("  one-tick difference is not evidence. The tick count is the check.")
+    print("  The repeat arm coming out below one tick is the intended result --")
+    print("  the same condition re-run should not differ -- and it also sets the")
+    print("  scale: anything of that size elsewhere is indistinguishable from")
+    print("  re-running the identical experiment.")
+
     if "--plot" not in sys.argv:
         return
 
