@@ -1229,7 +1229,8 @@ packet barely moves while its burst collapses from 64 packets to 10
 same range.
 
 The crossover follows directly: dramblast is cheaper than maglev while
-`644.5 / B < 163.4 − 95.2`, i.e. while **B > 9.4 packets**. Above that burst size
+`644.5 / B < 163.4 − 95.2`, i.e. while **B > 9.4 packets** (9.5 on the refactored
+coefficients §5.10 says to use). Above that burst size
 dramblast wins by up to 40%; below it, it loses. That is the whole shape of the
 queue-count dependence in one inequality.
 
@@ -1314,7 +1315,10 @@ queue counts partly because polls per packet rise, which is driver work.
 Differencing the two modes removes it — same DPDK, same queues, same driver — and
 leaves roughly **512 extra instructions per burst** attributable to dramblast's
 batched path. Against 551 cycles of per-burst CPU work that implies an IPC near
-1.0 for whatever this work is.
+**1.0 for the per-burst path specifically** — not for the forwarder, which
+§5.14 measures at 3.96 overall. The two are different quantities, and an IPC of
+1.0 for several hundred instructions of chunk-splitting under an arena lock is
+exactly what §5.13 later found that work to be.
 
 **The equal-work control, stated with its limits.** The decomposition in §5.6
 assumes both arms execute the same work, so that is checked at matched burst
@@ -1529,7 +1533,13 @@ the 8 GiB table.
 > that the flag does what it says and is not evidence about those specific runs.
 > The pool count of 16 → 7 free pages did cover them at the time.
 
-Cost at q=1 — one worker, a full 64-packet burst — in core cycles per packet:
+Cost at q=1 — one worker, a full 64-packet burst — in core cycles per packet.
+(Shipped dramblast appears at several values across this document — 101, 98.9,
+100.4, 99.5 — and they are not inconsistent: 101 is the **pre-refactor** binary,
+everything from §5.10 onward is the **refactored** one, which is 6.1% cheaper at
+a full burst, and the remaining spread is the ±1-tick print resolution plus the
+small reproducible variation with queue count. Any comparison in this document
+is made within one binary.)
 
 | | 1 GiB | 2 MiB THP | 4 KiB |
 |---|---|---|---|
