@@ -39,6 +39,17 @@
 #             less latency is hidden. If C is the allocator, depth cannot touch
 #             it. The two knobs cannot mimic each other, which is the point.
 #
+#   depthrep  THE DEPTH-32 TEST, PROPERLY. The first depth block left the only
+#             arm that TESTS the per-fill ramp model unresolved: depth 32's
+#             excess over depth 64 is 1.8 cycles/packet against a measured
+#             run-to-run floor of 0.45, so one sweep each separates the model
+#             (2.6 predicted) from no effect (0.0) at neither. The fix is
+#             repeats, not a better fit. Only q=1..5 is swept, because the whole
+#             comparison is made at a 64-packet burst and those are the queue
+#             counts that stay there -- and because the two arms are interleaved
+#             rather than run in two blocks, so any drift over the half hour
+#             lands on both equally instead of entirely on the second one.
+#
 # All blocks sweep the full queue range. A reduced list was tempting -- fitting
 # P and C needs a spread of BURST sizes, not every queue count -- but the burst
 # size at a given q is not a property of q: it is set by how fast the forwarder
@@ -103,6 +114,15 @@ for b in "${BLOCKS[@]}"; do
     ( run d8  dramblast -Q 8 )
     ( run d16 dramblast -Q 16 )
     ( run d32 dramblast -Q 32 ) ;;
+  depthrep)
+    # Interleaved, not blocked: three of one then three of the other would put
+    # any drift over the half hour entirely into the difference the block
+    # exists to measure. q=1..5 only -- those are the counts whose burst stays
+    # at 64, and the comparison is made there.
+    for i in 1 2 3; do
+      ( export QUEUES="1 2 3 4 5"; run "d32r$i" dramblast -Q 32 )
+      ( export QUEUES="1 2 3 4 5"; run "d64r$i" dramblast )
+    done ;;
   *) echo "unknown block: $b" >&2; exit 1 ;;
  esac
 done

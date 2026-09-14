@@ -77,6 +77,12 @@ CONDS = {
     "alloc_x8": "a8",
     # prefetch pipeline depth
     "depth_8": "d8", "depth_16": "d16", "depth_32": "d32",
+    # depth 32 against the shipped 64, three interleaved repeats each, q=1..5
+    # only. The single-sweep comparison was 1.8 cycles/packet against a 0.45
+    # run-to-run floor, which separates the ramp model from no effect at
+    # neither; these are the repeats that decide it.
+    "depth_32_r1": "d32r1", "depth_32_r2": "d32r2", "depth_32_r3": "d32r3",
+    "depth_64_r1": "d64r1", "depth_64_r2": "d64r2", "depth_64_r3": "d64r3",
     # historical arms, kept as the record; no delivered clock was recorded for
     # any of them, so their ticks cannot be put on a core-cycle axis
     "linerate_2tx_instr": "instr", "linerate_93mpps": "linerate",
