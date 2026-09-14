@@ -587,6 +587,103 @@ def main():
                     print("    -> the measurement sits between the two hypotheses and")
                     print("       separates neither. Reported as inconclusive.")
 
+    # ---- one model across every depth arm ---------------------------------
+    # The per-arm P + C/B fits are four separate two-parameter models that
+    # share nothing, and for the shallow arms the straight line is the wrong
+    # shape: the number of pipeline fills is ceil(B/Q), a step function, so a
+    # line in 1/B is a mis-specification wherever B > Q. Fitting the step model
+    # to all four arms at once is the right comparison, and it has a property
+    # the per-arm fits do not: its per-burst constant is a prediction of a
+    # quantity that a completely different experiment -- the allocator
+    # amplification sweep, which never varied the queue depth -- measured
+    # independently.
+    print()
+    print("=" * 84)
+    print("3c. ONE MODEL ACROSS ALL DEPTHS   W + ramp*ceil(B/Q)/B + K/B")
+    print("=" * 84)
+
+    def depth_rows(depths):
+        out = []
+        for Q, cond in ((8, "depth_8"), (16, "depth_16"), (32, "depth_32"),
+                        (64, "pinned2_asshipped")):
+            if Q not in depths:
+                continue
+            for r in allc.get(cond, {}).get("dramblast", {}).values():
+                if r.get("rx_batch"):
+                    out.append((Q, r["rx_batch"], r["cycles_per_pkt"]))
+        return out
+
+    def ols3(rows):
+        """Three-parameter least squares with standard errors."""
+        import math as _m
+        A = [[1.0, _m.ceil(B / Q) / B, 1.0 / B] for Q, B, _ in rows]
+        y = [c for _, _, c in rows]
+        if len(y) < 5:
+            return None
+        N = [[sum(a[i] * a[j] for a in A) for j in range(3)] for i in range(3)]
+        rhs = [sum(A[k][i] * y[k] for k in range(len(y))) for i in range(3)]
+        M = [N[i][:] + [1.0 if i == j else 0.0 for j in range(3)] for i in range(3)]
+        for i in range(3):
+            piv_row = max(range(i, 3), key=lambda r: abs(M[r][i]))
+            M[i], M[piv_row] = M[piv_row], M[i]
+            piv = M[i][i]
+            if piv == 0:
+                return None
+            M[i] = [v / piv for v in M[i]]
+            for r in range(3):
+                if r != i:
+                    f = M[r][i]
+                    M[r] = [a - f * b for a, b in zip(M[r], M[i])]
+        inv = [row[3:] for row in M]
+        b = [sum(inv[i][j] * rhs[j] for j in range(3)) for i in range(3)]
+        res = [y[k] - sum(A[k][i] * b[i] for i in range(3)) for k in range(len(y))]
+        s2 = sum(r * r for r in res) / (len(y) - 3)
+        se = [(s2 * inv[i][i]) ** 0.5 for i in range(3)]
+        return b, se, s2 ** 0.5, len(y), res, rows
+
+    full = ols3(depth_rows({8, 16, 32, 64}))
+    if full:
+        b, se, rms, n, res, rows = full
+        print(f"  n={n} points from four depth arms, three parameters")
+        print(f"    steady per-packet work   W    = {b[0]:6.1f} +/- {se[0]:.1f} cycles")
+        print(f"    cost of one pipeline fill ramp = {b[1]:6.0f} +/- {se[1]:.0f} cycles")
+        print(f"    per-burst constant        K    = {b[2]:6.0f} +/- {se[2]:.0f} cycles")
+        print(f"    residual rms {rms:.2f} cycles over a 98-172 range")
+        print("\n    K is the interesting one. Nothing in this fit knows about the")
+        print("    allocator -- the queue depth was varied, the number of")
+        print(f"    alloc/free pairs was not -- yet K = {b[2]:.0f} lands on the")
+        if shipped_pair:
+            zk = abs(b[2] - shipped_pair) / se[2]
+            print(f"    {shipped_pair:.0f} cycles the amplification sweep measured for that")
+            print(f"    pair directly: {zk:.1f} sigma apart.")
+        print("\n    per-arm residual rms (the step model's own fit quality):")
+        for Q in (8, 16, 32, 64):
+            rr = [res[k] for k, (qq, _, _) in enumerate(rows) if qq == Q]
+            if rr:
+                arms = (sum(v * v for v in rr) / len(rr)) ** 0.5
+                print(f"      Q={Q:>2}  n={len(rr)}  rms {arms:5.2f}  worst {max(rr, key=abs):+6.2f}")
+        # Leave-one-arm-out. Reported whatever it says: a parameter that moves
+        # when the worst-fitting arm is dropped is not a measurement.
+        print("\n    Sensitivity -- refit without the arm the step model fits worst:")
+        red = ols3(depth_rows({16, 32, 64}))
+        if red:
+            b2, se2, rms2, n2, _, _ = red
+            print(f"      without Q=8:  W = {b2[0]:.1f} +/- {se2[0]:.1f}   "
+                  f"ramp = {b2[1]:.0f} +/- {se2[1]:.0f}   K = {b2[2]:.0f} +/- {se2[2]:.0f}"
+                  f"   rms {rms2:.2f}")
+            dz = abs(b2[2] - b[2]) / ((se[2] ** 2 + se2[2] ** 2) ** 0.5)
+            print(f"      K moves by {b2[2] - b[2]:+.0f} cycles, {dz:.1f} sigma.")
+            if dz > 2:
+                print("      -> K IS NOT STABLE. The agreement with the measured")
+                print("         allocator pair holds only with the shallowest arm")
+                print("         included, and that arm is the one the step model")
+                print("         describes worst. Report the convergence as")
+                print("         suggestive, not as a second measurement of the")
+                print("         allocator. The ramp, which barely moves, is the")
+                print("         parameter this fit actually determines.")
+            else:
+                print("      -> stable to dropping the worst arm.")
+
     if "--plot" not in sys.argv:
         return
 
