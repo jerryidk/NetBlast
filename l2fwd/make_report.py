@@ -260,6 +260,61 @@ def crossover_rows(allc):
     return out
 
 
+def alloc_rows(allc):
+    """[(pairs, C, se)] for the allocator sweep, hoisted first."""
+    spec = [(-1, "alloc_hoisted"), (0, "pinned2_asshipped"), (2, "alloc_x2"),
+            (4, "alloc_x4"), (8, "alloc_x8")]
+    out = []
+    for n, cond in spec:
+        d = allc.get(cond, {}).get("dramblast", {})
+        f = lsq(series({"dramblast": d}, "dramblast")) if d else None
+        if f:
+            out.append((n, f[0], f[1]))          # (pairs, P, C)
+    return out
+
+
+def chart_alloc(rows):
+    """Per-burst cost against the number of alloc/free pairs, with the fit."""
+    W, H = 720, 300
+    L, R, T, B = 66, 24, 20, 46
+    xs = [n + 1 if n >= 0 else 0 for n, _, _ in rows]
+    ys = [C for _, _, C in rows]
+    xmax, ymax = max(xs) * 1.12 + 0.4, max(ys) * 1.15
+    X = lambda v: L + v / xmax * (W - L - R)
+    Y = lambda v: T + (1 - v / ymax) * (H - T - B)
+    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Per-burst cost '
+         f'against number of allocator round trips">']
+    step = 400 if ymax > 1200 else 200
+    v = 0
+    while v <= ymax:
+        p.append(f'<line x1="{L}" y1="{Y(v):.1f}" x2="{W-R}" y2="{Y(v):.1f}" '
+                 f'stroke="var(--rule)" stroke-width="1"/>')
+        p.append(f'<text x="{L-9}" y="{Y(v)+4:.1f}" text-anchor="end" class="tick">{v}</text>')
+        v += step
+    for x in sorted(set(xs)):
+        p.append(f'<text x="{X(x):.1f}" y="{H-B+20}" text-anchor="middle" class="tick">{x}</text>')
+    # least squares through the points, drawn across the whole range
+    n = len(xs)
+    sx, sy = sum(xs), sum(ys)
+    sxx = sum(x * x for x in xs); sxy = sum(x * y for x, y in zip(xs, ys))
+    den = n * sxx - sx * sx
+    if den:
+        b = (n * sxy - sx * sy) / den
+        a = (sy - b * sx) / n
+        p.append(f'<line x1="{X(0):.1f}" y1="{Y(a):.1f}" x2="{X(xmax):.1f}" '
+                 f'y2="{Y(a + b * xmax):.1f}" stroke="var(--a)" stroke-width="1.6" '
+                 f'opacity="0.55"/>')
+    for x, y in zip(xs, ys):
+        p.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="4.5" fill="var(--a)" '
+                 f'stroke="var(--ground)" stroke-width="1.8"/>')
+        p.append(f'<text x="{X(x):.1f}" y="{Y(y)-12:.1f}" text-anchor="middle" '
+                 f'class="tick">{y:.0f}</text>')
+    p.append(f'<text x="{L}" y="{H-6}" class="axis">aligned_alloc / free round trips per burst</text>')
+    p.append(f'<text x="14" y="{T+4}" class="axis" transform="rotate(-90 14 {T+4})">cycles per burst</text>')
+    p.append("</svg>")
+    return "".join(p), (a, b) if den else (None, None)
+
+
 CSS = """
 :root{
   --ground:#f5f7f7; --panel:#ffffff; --ink:#10181a; --ink-2:#55635f;
@@ -436,6 +491,77 @@ throughput — and the two measurements diverging is how you tell those two
 regimes apart.</p>
 </section>
 """
+
+    # The allocator section replaces the "not yet established" note once its
+    # conditions exist.
+    arows = alloc_rows(allc)
+    alloc_html = ""
+    if len(arows) >= 3:
+        asvg, (a0, per_pair) = chart_alloc(arows)
+        byn = {n: (P, C) for n, P, C in arows}
+        hoisted = byn.get(-1, (None, None))[1]
+        shipped = byn.get(0, (None, None))[1]
+        pair_cost = (shipped - hoisted) if (hoisted and shipped) else None
+        alloc_html = f"""
+<section class="wrap">
+<h2>What the per-burst cost is made of</h2>
+<p>Two candidates survived: the <span class="mono">aligned_alloc</span> /
+<span class="mono">free</span> round trip the batched path performs once per
+burst, and the batching machinery itself. They can be separated because only one
+of them responds to being multiplied. The code now takes a count of allocator
+round trips per burst — minus one meaning none at all, with the buffer allocated
+once per core at start-up — so the per-burst cost becomes a straight line whose
+slope is what a round trip costs <em>on this machine</em>, rather than what the
+literature says one costs somewhere else.</p>
+</section>
+
+<div class="wide">
+<figure>
+  {asvg}
+  <figcaption>Each point is a full ten-run queue sweep refitted. The leftmost
+  point has no allocation in the burst path at all.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>Removing the single shipped round trip takes the per-burst cost from
+{shipped:.0f} cycles to {hoisted:.0f} — so that one pair is worth
+<b>{pair_cost:.0f} cycles</b>, about {pair_cost/shipped*100:.0f}% of it. An
+incremental pair added on top costs {per_pair:.0f} cycles, which is the
+back-to-back, warmest-possible-cache case and therefore a floor rather than an
+estimate.</p>
+<p>This reverses an earlier conclusion in the investigation log, and the way it
+was wrong is worth more than the correction. The allocator had been dismissed by
+comparing the measured per-burst cost against a published figure of 20-40&nbsp;ns
+for a hot allocator round trip. But that figure describes the fast path, and
+this call is not on it. The binary links glibc 2.33, where
+<span class="mono">aligned_alloc</span> is a nine-byte jump into
+<span class="mono">_mid_memalign</span>, which relays to plain
+<span class="mono">malloc</span> only when the requested alignment is at most
+16 bytes. This call asks for 64. So it takes
+<span class="mono">_int_memalign</span> instead: 453 bytes of code that allocates
+oversized, computes the aligned address, splits the chunk and frees the leader,
+with the arena lock held throughout.</p>
+<p>The 64-byte alignment buys nothing — the array holds 16-byte elements written
+in order. The earlier finding that the per-burst cost is overwhelmingly executed
+instructions rather than waiting should have pointed here immediately; several
+hundred instructions of chunk-splitting is exactly what that looks like. It was
+read as evidence against the allocator instead of for it, because a constant
+taken from a paper had quietly replaced a measurement.</p>
+</section>
+"""
+
+    # The open-question note stands only until the allocator sweep answers it.
+    note_html = "" if alloc_html else f"""<div class="note">
+<b>What this page does not yet establish.</b> The composition of the
+{dC:.0f}-cycle per-burst cost is still open. Two candidates remain — the
+<span class="mono">aligned_alloc</span>/<span class="mono">free</span> round
+trip the batched path performs once per burst, and the batching machinery
+itself. Run-time knobs now exist for both, and they cannot mimic each other:
+sweeping the number of allocator round trips makes the per-burst cost a straight
+line whose slope is what a round trip costs on this machine, while changing the
+prefetch pipeline depth moves a pipeline cost and cannot move an allocator one.
+</div>"""
 
     xrows = crossover_rows(allc)
     crossover_html = ""
@@ -631,18 +757,10 @@ would show up as <em>stall</em>. It does not: it is
 executed work. Whatever dramblast is doing once per burst, it is doing it, not
 waiting for it.</p>
 
-<div class="note">
-<b>What this page does not yet establish.</b> The composition of the
-{dC:.0f}-cycle per-burst cost is still open. Two candidates remain — the
-<span class="mono">aligned_alloc</span>/<span class="mono">free</span> round
-trip the batched path performs once per burst, and the batching machinery
-itself. Run-time knobs now exist for both, and they cannot mimic each other:
-sweeping the number of allocator round trips makes the per-burst cost a straight
-line whose slope is what a round trip costs on this machine, while changing the
-prefetch pipeline depth moves a pipeline cost and cannot move an allocator one.
-</div>
+{note_html}
 </section>
 
+{alloc_html}
 {check_html}
 {crossover_html}
 <section class="wrap">
