@@ -333,6 +333,83 @@ def chart_alloc(rows):
     return "".join(p), (a, b) if den else (None, None)
 
 
+
+def depth_at64(allc):
+    """Depth arms compared at a matched 64-packet burst: {Q: (cyc, insns, sem, n)}.
+
+    Both counters, because the whole point of the depth arm is to separate
+    doing more work from waiting longer, and a cycle count alone cannot.
+    """
+    PERF_WINDOW = 8.0
+    out = {}
+    for Q, cond in ((8, "depth_8"), (16, "depth_16"), (32, "depth_32"),
+                    (64, "pinned2_asshipped")):
+        runs = [r for r in allc.get(cond, {}).get("dramblast", {}).values()
+                if r.get("rx_batch") == 64 and r.get("insns") and r.get("steady_mpps")]
+        if not runs:
+            continue
+        cyc = sum(r["cycles_per_pkt"] for r in runs) / len(runs)
+        ipp = sum(r["insns"] / (r["steady_mpps"] * 1e6 * PERF_WINDOW)
+                  for r in runs) / len(runs)
+        var = sum((r["cycles_per_pkt"] - cyc) ** 2 for r in runs)
+        sem = (var / (len(runs) * (len(runs) - 1))) ** 0.5 if len(runs) > 1 else None
+        out[Q] = (cyc, ipp, sem, len(runs))
+    return out
+
+
+def chart_depth(at64):
+    """Cycles and instructions per packet against pipeline depth, matched burst."""
+    import math
+    W, H = 720, 320
+    L, R, T, B = 62, 66, 26, 50
+    ds = sorted(at64)
+    cyc = [at64[d][0] for d in ds]
+    ins = [at64[d][1] for d in ds]
+    span = 0.26
+    clo, chi = min(cyc) * (1 - span / 6), min(cyc) * (1 + span)
+    ilo, ihi = min(ins) * (1 - span / 6), min(ins) * (1 + span)
+    lo, hi = math.log2(min(ds)), math.log2(max(ds))
+    X = lambda d: L + (math.log2(d) - lo) / (hi - lo) * (W - L - R)
+    YC = lambda v: T + (1 - (v - clo) / (chi - clo)) * (H - T - B)
+    YI = lambda v: T + (1 - (v - ilo) / (ihi - ilo)) * (H - T - B)
+    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Cycles and '
+         f'instructions per packet against prefetch pipeline depth">']
+    for i in range(5):
+        cv = clo + (chi - clo) * i / 4
+        iv = ilo + (ihi - ilo) * i / 4
+        y = YC(cv)
+        p.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W-R}" y2="{y:.1f}" '
+                 f'stroke="var(--rule)" stroke-width="1"/>')
+        p.append(f'<text x="{L-9}" y="{y+4:.1f}" text-anchor="end" class="tick" '
+                 f'fill="var(--a)">{cv:.0f}</text>')
+        p.append(f'<text x="{W-R+9}" y="{y+4:.1f}" class="tick" '
+                 f'fill="var(--b)">{iv:.0f}</text>')
+    for vals, Yf, col, dash in ((ins, YI, "var(--b)", ' stroke-dasharray="5 4"'),
+                                (cyc, YC, "var(--a)", "")):
+        pts = " ".join(f"{X(d):.1f},{Yf(v):.1f}" for d, v in zip(ds, vals))
+        p.append(f'<polyline points="{pts}" fill="none" stroke="{col}" '
+                 f'stroke-width="2.2"{dash}/>')
+        for d, v in zip(ds, vals):
+            p.append(f'<circle cx="{X(d):.1f}" cy="{Yf(v):.1f}" r="4.5" fill="{col}" '
+                     f'stroke="var(--ground)" stroke-width="1.8"/>')
+    for d in ds:
+        c, i_, sem, _ = at64[d]
+        if sem:
+            p.append(f'<line x1="{X(d):.1f}" y1="{YC(c-sem):.1f}" x2="{X(d):.1f}" '
+                     f'y2="{YC(c+sem):.1f}" stroke="var(--a)" stroke-width="1.6"/>')
+        p.append(f'<text x="{X(d):.1f}" y="{YC(c)+20:.1f}" text-anchor="middle" '
+                 f'class="tick">IPC {i_/c:.2f}</text>')
+        p.append(f'<text x="{X(d):.1f}" y="{H-B+20}" text-anchor="middle" '
+                 f'class="tick">{d}</text>')
+    p.append(f'<text x="{L}" y="{H-6}" class="axis">prefetch pipeline depth '
+             f'(burst held at 64)</text>')
+    p.append(f'<text x="{L}" y="{T-8}" class="tick" fill="var(--a)">cycles / packet</text>')
+    p.append(f'<text x="{W-R}" y="{T-8}" text-anchor="end" class="tick" '
+             f'fill="var(--b)">instructions / packet</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
 CSS = """
 :root{
   --ground:#f5f7f7; --panel:#ffffff; --ink:#10181a; --ink-2:#55635f;
@@ -642,6 +719,55 @@ taken from a paper had quietly replaced a measurement.</p>
 </section>
 """
 
+    # The depth section exists only once the depth arms have run.
+    at64 = depth_at64(allc)
+    depth_html = ""
+    if len(at64) >= 3:
+        d_lo, d_hi = min(at64), max(at64)
+        c_lo, i_lo = at64[d_lo][0], at64[d_lo][1]
+        c_hi, i_hi = at64[d_hi][0], at64[d_hi][1]
+        depth_html = f"""
+<section class="wrap">
+<h2>What the prefetch pipeline actually buys</h2>
+<p>The remaining candidate for the per-burst cost was the prefetch pipeline's
+own fill and drain. It can be shortened — <span class="mono">-Q</span> sets the
+find queue's depth — and at a matched 64-packet burst the four depths separate
+cleanly.</p>
+</section>
+
+<div class="wide">
+<figure>
+  {chart_depth(at64)}
+  <figcaption>Each point averages the five queue counts whose burst stayed at
+  64, so every depth is read at the same burst size and nothing is fitted.
+  Error bars are the standard error of that mean.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>Shortening the pipeline from {d_hi} to {d_lo} raises instructions per packet
+by <b>{100*(i_lo-i_hi)/i_hi:.1f}%</b> and cycles per packet by
+<b>{100*(c_lo-c_hi)/c_hi:.1f}%</b>. IPC falls from {i_hi/c_hi:.2f} to
+{i_lo/c_lo:.2f}. The forwarder is not doing meaningfully more work with a
+shallow pipeline; it is waiting. That is the whole claim, and it needs two
+counters rather than a model — a cycle count on its own cannot tell those two
+apart, which is why the instruction counter has been read alongside it
+throughout.</p>
+<p>It also prices the design decision. Halving the shipped depth {d_hi} to 32
+costs {at64[32][0]-c_hi:.1f} cycles per packet; going all the way down to
+{d_lo} costs {c_lo-c_hi:.1f}. The returns are nearly exhausted before the
+shipped depth is reached, so the last doubling buys very little.</p>
+<p>Fitting the per-burst model separately to each depth produces something
+impossible — at depth&nbsp;8 the per-burst term comes out
+<em>below</em> the cost of the single <span class="mono">aligned_alloc</span>
+pair that every burst pays. The model is the wrong shape there, not the
+measurement: the pipeline fills <span class="mono">ceil(B/Q)</span> times per
+burst, so a straight line in <span class="mono">1/B</span> is mis-specified
+wherever the burst exceeds the queue depth. At the shipped depth the burst never
+does, which is why every earlier result on this page is unaffected.</p>
+</section>
+"""
+
     # The open-question note stands only until the allocator sweep answers it.
     note_html = "" if alloc_html else f"""<div class="note">
 <b>What this page does not yet establish.</b> The composition of the
@@ -852,6 +978,7 @@ waiting for it.</p>
 </section>
 
 {alloc_html}
+{depth_html}
 {check_html}
 {crossover_html}
 <section class="wrap">
