@@ -1,0 +1,241 @@
+<title>The Burst-Size Crossover</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&family=Spectral:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+:root{
+  --ground:#f5f7f7; --panel:#ffffff; --ink:#10181a; --ink-2:#55635f;
+  --rule:#dde4e3; --a:#12707f; --b:#bb551c; --bad:#9b2c2c; --good:#2f6b46;
+  --shadow:0 1px 2px rgba(16,24,26,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0d1416; --panel:#131d20; --ink:#e7eeed; --ink-2:#94a5a2;
+    --rule:#24343a; --a:#4bb6c8; --b:#e8894a; --bad:#e08585; --good:#7ec79b;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0d1416; --panel:#131d20; --ink:#e7eeed; --ink-2:#94a5a2;
+  --rule:#24343a; --a:#4bb6c8; --b:#e8894a; --bad:#e08585; --good:#7ec79b;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:Spectral,Georgia,"Times New Roman",serif;
+  font-size:17px; line-height:1.62; margin:0;
+  padding-block:0 72px; padding-left:20px; padding-right:20px;
+}
+.wrap{max-width:760px;margin:0 auto}
+.wide{max-width:940px;margin:0 auto}
+h1,h2,h3,.eyebrow,.tick,.axis,.barlab,.mono,.stat b,code,th{
+  font-family:Archivo,"Helvetica Neue",Arial,sans-serif;
+}
+h1{font-size:clamp(30px,5.2vw,46px);line-height:1.06;letter-spacing:-.022em;
+   font-weight:700;margin:0 0 18px;text-wrap:balance}
+h2{font-size:25px;letter-spacing:-.014em;font-weight:700;margin:56px 0 14px;
+   text-wrap:balance;padding-top:20px;border-top:1px solid var(--rule)}
+h3{font-size:18px;letter-spacing:-.008em;font-weight:600;margin:32px 0 8px}
+p{margin:0 0 16px}
+.eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-2);font-weight:600;margin:0 0 14px}
+.lede{font-size:20px;line-height:1.5;color:var(--ink-2);margin:0 0 34px}
+header{padding-block:64px 8px}
+.mono,code{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  font-size:.86em;font-variant-numeric:tabular-nums}
+code{background:var(--panel);border:1px solid var(--rule);border-radius:3px;
+  padding:1px 5px}
+.findings{display:grid;gap:14px;margin:34px 0 10px}
+.finding{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:start;
+  padding:16px 18px;background:var(--panel);border:1px solid var(--rule);
+  border-radius:4px;box-shadow:var(--shadow)}
+.finding .n{font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:600;
+  color:var(--a);padding-top:4px;letter-spacing:.06em}
+.finding p{margin:0;font-size:16px;line-height:1.5}
+.finding b{font-weight:600}
+figure{margin:30px 0 26px}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:14px;line-height:1.5;color:var(--ink-2);margin-top:12px;
+  font-family:Archivo,sans-serif}
+.tick{font-size:11px;fill:var(--ink-2)}
+.axis{font-size:12px;fill:var(--ink-2);font-weight:600}
+.barlab{font-size:13px;fill:var(--ink);font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;font-family:Archivo,sans-serif;
+  font-size:13px;color:var(--ink-2);margin:6px 0 0}
+.key{display:inline-flex;align-items:center;gap:7px}
+.sw{width:13px;height:13px;border-radius:2px;display:inline-block}
+.tablewrap{overflow-x:auto;margin:22px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{text-align:left;padding:9px 14px 9px 0;border-bottom:1px solid var(--rule);
+  vertical-align:baseline}
+th{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);
+  font-weight:600}
+td.num,th.num{text-align:right;font-family:"IBM Plex Mono",monospace;
+  font-variant-numeric:tabular-nums;font-size:14px}
+blockquote{margin:26px 0;padding:2px 0 2px 22px;border-left:3px solid var(--a);
+  font-size:19px;line-height:1.45;color:var(--ink)}
+.note{background:var(--panel);border:1px solid var(--rule);border-left:3px solid var(--bad);
+  border-radius:3px;padding:16px 18px;margin:26px 0;font-size:15.5px;line-height:1.55}
+.note b{font-weight:600}
+footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);
+  font-size:14px;color:var(--ink-2);font-family:Archivo,sans-serif}
+@media (max-width:560px){
+  body{font-size:16px}
+  .finding{grid-template-columns:1fr;gap:6px}
+}
+</style>
+
+<header class="wrap">
+  <p class="eyebrow">NetBlast &middot; l2fwd on Intel E810-C, 100 GbE</p>
+  <h1>Why the forwarder looked like it fell off a cliff</h1>
+  <p class="lede">The reported collapse at specific queue-pair counts was a
+  harness bug. Underneath it there is a real, much smaller queue-count effect —
+  and measuring it properly turns out to say something precise about what the
+  two lookup engines are actually trading against each other.</p>
+</header>
+
+<main>
+<section class="wrap">
+<div class="findings">
+  <div class="finding"><span class="n">01</span><p><b>The dips are not a
+  performance phenomenon.</b> <code>run.sh</code> gave N lcores for N queues,
+  but serving N queues needs N+1 — one worker each plus the main lcore. Above a
+  threshold the run died in <code>rte_exit("Not enough cores")</code> and the
+  reported figure was a floor, not a measurement. With the corrected invocation
+  both engines scale cleanly to line rate.</p></div>
+
+  <div class="finding"><span class="n">02</span><p><b>The real effect is a cost
+  paid once per RX burst, not per packet.</b> Fitting
+  <span class="mono">cycles/packet = P + C/B</span> across the sweep gives
+  dramblast <span class="mono">C = 645</span> cycles per burst
+  (R&sup2; 0.968); maglev's slope is indistinguishable from zero. As the
+  queue count rises the same packet stream is split over more queues, bursts
+  shrink, and dramblast's fixed cost is amortised over fewer packets.</p></div>
+
+  <div class="finding"><span class="n">03</span><p><b>The two engines do the
+  same CPU work per packet. The whole difference is exposed memory latency.</b>
+  72 cycles of work for dramblast against 77 for maglev —
+  within 6% — while maglev waits 41.3 ns per
+  packet and dramblast only 10.9 ns. The software prefetch pipeline hides
+  about 74% of the same memory access.</p></div>
+</div>
+</section>
+
+<div class="wide">
+<figure>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Reported throughput collapse versus the corrected invocation"><line x1="52" y1="256.0" x2="704" y2="256.0" stroke="var(--rule)" stroke-width="1"/><text x="43" y="260.0" text-anchor="end" class="tick">0</text><line x1="52" y1="196.5" x2="704" y2="196.5" stroke="var(--rule)" stroke-width="1"/><text x="43" y="200.5" text-anchor="end" class="tick">25</text><line x1="52" y1="137.0" x2="704" y2="137.0" stroke="var(--rule)" stroke-width="1"/><text x="43" y="141.0" text-anchor="end" class="tick">50</text><line x1="52" y1="77.5" x2="704" y2="77.5" stroke="var(--rule)" stroke-width="1"/><text x="43" y="81.5" text-anchor="end" class="tick">75</text><line x1="52" y1="18.0" x2="704" y2="18.0" stroke="var(--rule)" stroke-width="1"/><text x="43" y="22.0" text-anchor="end" class="tick">100</text><text x="52.0" y="276" text-anchor="middle" class="tick">1</text><text x="124.4" y="276" text-anchor="middle" class="tick">2</text><text x="196.9" y="276" text-anchor="middle" class="tick">3</text><text x="269.3" y="276" text-anchor="middle" class="tick">4</text><text x="341.8" y="276" text-anchor="middle" class="tick">5</text><text x="414.2" y="276" text-anchor="middle" class="tick">6</text><text x="486.7" y="276" text-anchor="middle" class="tick">7</text><text x="559.1" y="276" text-anchor="middle" class="tick">8</text><text x="631.6" y="276" text-anchor="middle" class="tick">9</text><text x="704.0" y="276" text-anchor="middle" class="tick">10</text><path d="M52.0,208.7 L124.4,162.6 L196.9,113.1 L269.3,72.5 L341.8,79.4 L414.2,253.5 L486.7,253.5 L559.1,253.5 L631.6,253.5 L704.0,253.5" fill="none" stroke="var(--a)" stroke-width="1.6" stroke-dasharray="4 3" opacity="0.85"/><circle cx="52.0" cy="208.7" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="124.4" cy="162.6" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="196.9" cy="113.1" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="269.3" cy="72.5" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="341.8" cy="79.4" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="414.2" cy="253.5" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="486.7" cy="253.5" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="559.1" cy="253.5" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="631.6" cy="253.5" r="2.6" fill="var(--a)" opacity="0.85"/><circle cx="704.0" cy="253.5" r="2.6" fill="var(--a)" opacity="0.85"/><path d="M52.0,218.8 L124.4,184.8 L196.9,147.7 L269.3,110.7 L341.8,76.6 L414.2,47.5 L486.7,34.7 L559.1,46.7 L631.6,36.8 L704.0,42.1" fill="none" stroke="var(--a)" stroke-width="2.4"/><circle cx="52.0" cy="218.8" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="124.4" cy="184.8" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="196.9" cy="147.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="269.3" cy="110.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="341.8" cy="76.6" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="414.2" cy="47.5" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="486.7" cy="34.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="559.1" cy="46.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="631.6" cy="36.8" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="704.0" cy="42.1" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.6"/><path d="M52.0,224.7 L124.4,190.2 L196.9,150.2 L269.3,120.3 L341.8,84.4 L414.2,53.6 L486.7,62.5 L559.1,252.0 L631.6,90.5 L704.0,251.1" fill="none" stroke="var(--b)" stroke-width="1.6" stroke-dasharray="4 3" opacity="0.85"/><circle cx="52.0" cy="224.7" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="124.4" cy="190.2" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="196.9" cy="150.2" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="269.3" cy="120.3" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="341.8" cy="84.4" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="414.2" cy="53.6" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="486.7" cy="62.5" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="559.1" cy="252.0" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="631.6" cy="90.5" r="2.6" fill="var(--b)" opacity="0.85"/><circle cx="704.0" cy="251.1" r="2.6" fill="var(--b)" opacity="0.85"/><path d="M52.0,230.6 L124.4,205.4 L196.9,179.9 L269.3,154.0 L341.8,127.3 L414.2,98.7 L486.7,72.2 L559.1,45.9 L631.6,34.9 L704.0,35.3" fill="none" stroke="var(--b)" stroke-width="2.4"/><circle cx="52.0" cy="230.6" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="124.4" cy="205.4" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="196.9" cy="179.9" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="269.3" cy="154.0" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="341.8" cy="127.3" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="414.2" cy="98.7" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="486.7" cy="72.2" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="559.1" cy="45.9" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="631.6" cy="34.9" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><circle cx="704.0" cy="35.3" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.6"/><text x="52" y="294" class="axis">RX/TX queue pairs</text><text x="14" y="22" class="axis" transform="rotate(-90 14 22)">Mpps</text></svg>
+  <div class="legend">
+    <span class="key"><span class="sw" style="background:var(--a)"></span>dramblast</span>
+    <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
+    <span class="key">dashed: as reported &middot; solid: corrected invocation</span>
+  </div>
+  <figcaption>The committed data falls roughly seventyfold to a quantised floor
+  and never recovers. That floor is <span class="mono">rte_exit</span>, not
+  throughput. Re-run with one lcore per queue plus the main lcore, both engines
+  scale linearly until they meet the 93.28&nbsp;Mpps line rate of the
+  generator.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<h2>What is actually queue-count dependent</h2>
+<p>Offered load is held at line rate while the queue count rises, so the same
+packet stream is divided over more queues and the average RX burst shrinks —
+from 64 packets down to 4 — with nothing else about the workload changing. That
+makes the sweep an instrument for separating a per-packet cost from a per-burst
+one, because only the second depends on burst size.</p>
+</section>
+
+<div class="wide">
+<figure>
+  <svg viewBox="0 0 720 330" role="img" aria-label="Core cycles per packet against one over burst size"><line x1="56" y1="284.0" x2="704" y2="284.0" stroke="var(--rule)" stroke-width="1"/><text x="47" y="288.0" text-anchor="end" class="tick">0</text><line x1="56" y1="195.3" x2="704" y2="195.3" stroke="var(--rule)" stroke-width="1"/><text x="47" y="199.3" text-anchor="end" class="tick">100</text><line x1="56" y1="106.7" x2="704" y2="106.7" stroke="var(--rule)" stroke-width="1"/><text x="47" y="110.7" text-anchor="end" class="tick">200</text><line x1="56" y1="18.0" x2="704" y2="18.0" stroke="var(--rule)" stroke-width="1"/><text x="47" y="22.0" text-anchor="end" class="tick">300</text><text x="93.5" y="304" text-anchor="middle" class="tick">64</text><text x="206.0" y="304" text-anchor="middle" class="tick">16</text><text x="356.0" y="304" text-anchor="middle" class="tick">8</text><text x="656.0" y="304" text-anchor="middle" class="tick">4</text><line x1="56.0" y1="199.6" x2="704.0" y2="45.3" stroke="var(--a)" stroke-width="1.8" opacity="0.9"/><circle cx="93.5" cy="194.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="190.3" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="192.2" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="192.9" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="191.1" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="94.7" cy="185.8" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="136.0" cy="180.5" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="227.4" cy="159.3" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="240.6" cy="146.9" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="356.0" cy="132.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><line x1="56.0" y1="190.9" x2="704.0" y2="27.0" stroke="var(--a)" stroke-width="1.8" stroke-dasharray="5 4" opacity="0.9"/><circle cx="93.5" cy="188.0" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="185.4" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="186.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="110.5" cy="186.7" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="136.0" cy="169.0" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="170.3" cy="152.6" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="256.0" cy="134.9" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="356.0" cy="110.9" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="398.9" cy="83.1" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="656.0" cy="55.2" r="3.4" fill="var(--a)" stroke="var(--ground)" stroke-width="1.5"/><line x1="56.0" y1="139.1" x2="704.0" y2="149.8" stroke="var(--b)" stroke-width="1.8" opacity="0.9"/><circle cx="93.5" cy="135.4" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="136.3" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="137.2" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="138.0" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="139.8" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="143.4" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="94.1" cy="143.4" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="96.7" cy="144.4" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="296.0" cy="143.5" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="296.0" cy="142.5" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><line x1="56.0" y1="106.2" x2="704.0" y2="112.7" stroke="var(--b)" stroke-width="1.8" stroke-dasharray="5 4" opacity="0.9"/><circle cx="93.5" cy="99.5" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="102.1" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="102.0" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="104.6" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="93.5" cy="107.1" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="94.7" cy="114.7" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="141.7" cy="113.4" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="216.0" cy="110.9" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="356.0" cy="112.1" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><circle cx="656.0" cy="109.6" r="3.4" fill="var(--b)" stroke="var(--ground)" stroke-width="1.5"/><text x="56" y="324" class="axis">RX burst size (packets, reciprocal scale)</text><text x="14" y="22" class="axis" transform="rotate(-90 14 22)">core cycles / packet</text></svg>
+  <div class="legend">
+    <span class="key"><span class="sw" style="background:var(--a)"></span>dramblast</span>
+    <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
+    <span class="key">solid line: 2.100 GHz arm &middot; dashed: 2.993 GHz arm</span>
+  </div>
+  <figcaption>Each point is one queue-pair count. A straight line here means the
+  model holds: the intercept is the per-packet cost, the slope is the cost paid
+  once per burst. dramblast climbs; maglev is flat, which is the same statement
+  as &ldquo;maglev has no per-burst cost&rdquo;.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>The crossover follows from the two fits without any further measurement.
+dramblast is cheaper than maglev exactly while</p>
+<blockquote>the RX burst holds more than 9.5 packets.</blockquote>
+<p>Above that, dramblast wins by up to 40%. Below it, it loses. That single
+inequality is the whole shape of the queue-count dependence — and it is why the
+engine that looks faster in a microbenchmark can be the slower one in a
+deployment that spreads traffic across many queues.</p>
+
+<h2>Splitting the cost into work and waiting</h2>
+<p>A cost measured in core cycles at two different clock speeds separates
+computation from memory access, because the two scale differently: instructions
+retire in a fixed number of <em>cycles</em>, while a DRAM access takes a fixed
+number of <em>nanoseconds</em> and therefore costs more cycles on a faster core.
+Running the identical binary at 2.094 GHz and 2.993 GHz gives
+two equations and two unknowns.</p>
+</section>
+
+<div class="wide">
+<figure>
+  <svg viewBox="0 0 720 210" role="img" aria-label="CPU work versus exposed memory stall per packet"><text x="120" y="43" text-anchor="end" class="barlab">dramblast / packet</text><rect x="132" y="22" width="57.4" height="34" fill="var(--a)" rx="1"/><rect x="189.4" y="22" width="18.1" height="34" fill="var(--b)" rx="1"/><text x="195.4" y="71" class="tick">72 cycles of work</text><text x="215.5" y="43" class="tick">23 stall</text><text x="120" y="97" text-anchor="end" class="barlab">maglev / packet</text><rect x="132" y="76" width="61.0" height="34" fill="var(--a)" rx="1"/><rect x="193.0" y="76" width="68.5" height="34" fill="var(--b)" rx="1"/><text x="199.0" y="125" class="tick">77 cycles of work</text><text x="269.5" y="97" class="tick">86 stall</text><text x="120" y="151" text-anchor="end" class="barlab">dramblast / burst</text><rect x="132" y="130" width="437.0" height="34" fill="var(--a)" rx="1"/><rect x="569.0" y="130" width="73.7" height="34" fill="var(--b)" rx="1"/><text x="575.0" y="179" class="tick">551 cycles of work</text><text x="650.7" y="151" class="tick">93 stall</text></svg>
+  <div class="legend">
+    <span class="key"><span class="sw" style="background:var(--a)"></span>CPU work</span>
+    <span class="key"><span class="sw" style="background:var(--b)"></span>exposed memory stall</span>
+    <span class="key">cycles at 2.100 GHz</span>
+  </div>
+  <figcaption>The per-packet bars are nearly the same length in their work
+  component and very different in their stall component. The per-burst bar is
+  the surprise: the price dramblast pays for hiding latency is overwhelmingly
+  executed instructions, not waiting.</figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>That last row matters because it kills the obvious explanation. If the
+per-burst cost were the prefetch pipeline failing to fill on a short burst, it
+would show up as <em>stall</em>. It does not: it is
+86%
+executed work. Whatever dramblast is doing once per burst, it is doing it, not
+waiting for it.</p>
+
+<div class="note">
+<b>What this page does not yet establish.</b> The composition of the
+645-cycle per-burst cost is still open. Two candidates remain — the
+<span class="mono">aligned_alloc</span>/<span class="mono">free</span> round
+trip the batched path performs once per burst, and the batching machinery
+itself. Run-time knobs now exist for both, and they cannot mimic each other:
+sweeping the number of allocator round trips makes the per-burst cost a straight
+line whose slope is what a round trip costs on this machine, while changing the
+prefetch pipeline depth moves a pipeline cost and cannot move an allocator one.
+</div>
+
+<h2>How much of this is the measurement rig</h2>
+<p>Two properties of the machine turned out to matter more than expected, and
+both are recorded as conditions of the experiment rather than corrected away.</p>
+<p>Idle states are disabled on all 56 cores, so every core spins unhalted and the
+package never goes quiet. The all-core turbo ceiling is therefore pinned near
+2.99&nbsp;GHz regardless of load — measured at 2993 MHz on every one of ten
+runs spanning one to ten busy cores, with 1 MHz of spread. Nothing here should
+be described as running at the 3.7&nbsp;GHz nominal.</p>
+<p>The two engines also ship on different page sizes: dramblast maps its 8 GiB
+table on 1 GiB pages, while maglev's plain
+<span class="mono">aligned_alloc</span> is silently promoted by transparent
+hugepages to 2 MiB pages. That is 8 TLB entries against 4096. Every comparison
+between them was therefore a comparison of algorithm <em>and</em> address
+translation at once — a confound found by looking for one, not by it causing
+trouble.</p>
+
+<footer>
+Measured on a single-socket Intel Xeon Gold 5512U with an E810-C 100 GbE NIC,
+DPDK 21.11, against a hardware generator holding 93.28 Mpps of 110-byte frames
+across 16.8M flows. Every figure on this page is generated from the measured
+data by <span class="mono">l2fwd/make_report.py</span>; the full reasoning,
+including the mistakes, is in <span class="mono">docs/INVESTIGATION.md</span>.
+</footer>
+</section>
+</main>

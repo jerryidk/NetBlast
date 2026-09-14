@@ -1290,3 +1290,83 @@ they cannot mimic each other:
   neither ships with. Under the TLB reading of §5.2 this should move `P` and
   leave `C` alone; anything else refutes it.
 
+### 5.10 The control that had to be run, and the review that had to happen
+
+Three knobs were added to the source to settle §5.9. That makes the binary a
+variable, so before any of those knobs is used the flag-free build has to
+reproduce the build it replaced. It does not, quite, and the way it fails is
+worth recording.
+
+| | P (cycles/packet) | C (cycles/burst) | at burst 64 | at burst 8 |
+|---|---|---|---|---|
+| dramblast, pre-refactor | 95.2 | 644.5 ± 41 | 105.3 | 175.8 |
+| dramblast, refactored | 87.7 | 717.6 ± 42 | **98.9 (−6.1%)** | 177.4 (+0.9%) |
+| maglev, pre-refactor | 163.4 | not resolved | 162.7 | 157.8 |
+| maglev, refactored | 163.0 | not resolved | 162.4 (−0.2%) | 158.5 (+0.4%) |
+
+**maglev is unchanged**, which matters more than it looks: maglev's allocation
+mechanism genuinely changed (`aligned_alloc(4096, 8 GiB)` became an explicit
+`mmap` plus `MADV_HUGEPAGE`), and on this host `defrag=madvise`, so the new path
+takes synchronous compaction where the old one did not. Measured, the new path
+reaches 99.98% THP coverage against the old path's 99.3%. That is a real
+difference in what the kernel did, and it is worth 0.2% of run time — so it can
+be set aside, having been measured rather than argued away.
+
+**dramblast is 6.1% cheaper at a full burst and unchanged at a short one.** The
+per-burst coefficient moved by 1.2σ of the combined fit error, i.e. not at all;
+the per-packet coefficient moved by 7.6 cycles. Behaviour is identical — the
+push-loop bound is 63 either way — so this is codegen, most plausibly register
+allocation around a bound that changed from a compile-time constant to a loaded
+field. It is small, but it is systematic and it has the same sign at every
+queue count, so **every later condition is read against the refactored control
+and never against the pre-refactor arm.** Without this run the crossover would
+have been compared to the wrong baseline and a 6% instrument artefact would have
+been reported as a page-size effect.
+
+#### What an adversarial review of the new code found
+
+The changes were reviewed specifically for the failure mode that matters here —
+not crashes, which are visible, but changes that would silently produce a wrong
+number. Two findings were serious enough to change what was done.
+
+**The harness could not verify the thing the experiment is about.** `sweep.sh`
+samples `hugepages-1048576kB/free_hugepages` per run, which distinguishes 1 GiB
+from not-1 GiB and nothing else. It cannot tell a 2 MiB arm from a 4 KiB one.
+And both of those are *advisory*: `MADV_HUGEPAGE` may be declined under
+fragmentation and `MADV_NOHUGEPAGE` can fail, in either case leaving a complete,
+plausible, wrongly-labelled dataset and no error anywhere. The crossover block
+could have run entirely on 4 KiB pages while reporting itself as 2 MiB.
+
+Rather than edit the harness mid-experiment, the page backing every run actually
+got is now sampled from outside, from the process's own `smaps_rollup`
+(`AnonHugePages` and `Private_Hugetlb`), so the label is checked against the
+kernel for every run rather than trusted. The 99.3%/99.98% figures above came
+from that sampler on its first run, which is the sort of thing only visible once
+the real quantity is being measured.
+
+**A guard against the compiler had itself been compiled away.** The
+amplification arm adds N `aligned_alloc`/`free` pairs per burst; a store into
+the scratch buffer was supposed to stop the compiler discarding them. GCC 11
+deletes that store — it is a dead store to an object about to be freed — and
+disassembly of the shipped binary shows it gone while the pairs survive only
+because the compiler happened not to apply `-fallocation-dce`. The arm as built
+is valid, and was measured with that binary. But the failure mode if a later
+toolchain does apply it is not a crash or noise: it is the allocator round trip
+reporting **zero cycles**, which is a clean and publishable number and is exactly
+the answer the experiment exists to rule out.
+
+So `l2fwd/check_codegen.sh` now asserts, after every build and before any
+measurement, that the alloc/free calls are still reachable and that software
+prefetch instructions are still present at all. The second is the more important
+assertion: the whole dramblast-versus-maglev result is a claim about
+prefetching, and a build with the prefetches optimised out would measure a
+different algorithm and still produce a well-behaved dataset.
+
+Smaller findings, fixed after the measurements so that the data continues to
+correspond to a single committed tree: `-Q 1` passed validation and then read an
+uninitialised queue slot and used the unmasked result as a table index; `-A` with
+any negative value silently selected the hoisted arm while printing the value
+back; the hoisted buffer's size was a bare literal decoupled from
+`MAX_PKT_BURST`, so raising that constant would have overflowed a heap buffer in
+that one arm and read as a hoisting result.
+

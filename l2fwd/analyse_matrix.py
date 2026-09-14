@@ -77,13 +77,33 @@ def main():
     # Only meaningful once the refactored build has actually been swept; before
     # that base_d IS the original arm and comparing it to itself would print a
     # reassuring 0.0% that means nothing.
-    orig_d = g("pinned_2100mhz", "dramblast")
-    if base_d and orig_d and "pinned2_asshipped" in allc:
-        dp = abs(base_d["P"] - orig_d["P"]) / orig_d["P"] * 100
-        dc = abs(base_d["C"] - orig_d["C"]) / abs(orig_d["C"]) * 100
-        print(f"    dramblast vs the pre-refactor arm: P differs {dp:.1f}%, C differs {dc:.1f}%")
-        print("    -> the refactor is innocent" if dp < 5 and dc < 15 else
-              "    -> REFACTOR CHANGED BEHAVIOUR; nothing below can be read until this is resolved")
+    # Compare against the pre-refactor arm coefficient by coefficient, and in
+    # units of the fit's own uncertainty rather than in percent. P and C trade
+    # off against each other in a least-squares fit, so a small shift in the
+    # data moves both and a bare percentage on either one overstates the case.
+    for mode, orig_key in (("dramblast", "pinned_2100mhz"), ("maglev", "pinned_2100mhz")):
+        new_f = g("pinned2_asshipped", mode)
+        old_f = g(orig_key, mode)
+        if not (new_f and old_f):
+            continue
+        print(f"\n    {mode} vs the pre-refactor arm")
+        dp = new_f["P"] - old_f["P"]
+        print(f"      P {old_f['P']:7.1f} -> {new_f['P']:7.1f}   "
+              f"{dp:+.1f} cycles ({dp/old_f['P']*100:+.1f}%)")
+        sig = (new_f["se"] ** 2 + old_f["se"] ** 2) ** 0.5 if new_f["se"] and old_f["se"] else None
+        dc = new_f["C"] - old_f["C"]
+        if sig:
+            print(f"      C {old_f['C']:7.1f} -> {new_f['C']:7.1f}   "
+                  f"{dc:+.1f} cycles = {abs(dc)/sig:.1f} sigma of the combined fit error"
+                  + ("  (not significant)" if abs(dc) < 2 * sig else "  (SIGNIFICANT)"))
+        # The cost at the two ends of the burst range is what a reader actually
+        # cares about, and it is not hostage to how the fit split P from C.
+        for b in (64, 8):
+            o, n = old_f["P"] + old_f["C"] / b, new_f["P"] + new_f["C"] / b
+            print(f"      at burst {b:>2}: {o:6.1f} -> {n:6.1f} cycles/packet "
+                  f"({(n-o)/o*100:+.1f}%)")
+    print("\n    Read every row below against `pinned2_asshipped`, never against the")
+    print("    pre-refactor arm: the two binaries are not interchangeable.")
 
     print()
     print("=" * 84)
