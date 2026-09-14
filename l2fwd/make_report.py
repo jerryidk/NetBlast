@@ -410,6 +410,26 @@ def chart_depth(at64):
     return "".join(p)
 
 
+
+def repeat_rows(allc):
+    """(mode, [(q, burst-matched?, run1, run2)], burst-64 rms) for the repeat arm."""
+    out = []
+    for mode in ("dramblast", "maglev"):
+        a = allc.get("pinned2_asshipped", {}).get(mode, {})
+        b = allc.get("pinned3_repeat", {}).get(mode, {})
+        if not a or not b:
+            continue
+        d64 = [b[q]["cycles_per_pkt"] - a[q]["cycles_per_pkt"]
+               for q in set(a) & set(b)
+               if a[q].get("rx_batch") == 64 and b[q].get("rx_batch") == 64]
+        dsm = [b[q]["cycles_per_pkt"] - a[q]["cycles_per_pkt"]
+               for q in set(a) & set(b)
+               if a[q].get("rx_batch") == b[q].get("rx_batch") != 64]
+        rms = lambda v: (sum(x * x for x in v) / len(v)) ** 0.5 if v else None
+        out.append((mode, len(d64), rms(d64), len(dsm), rms(dsm)))
+    return out
+
+
 CSS = """
 :root{
   --ground:#f5f7f7; --panel:#ffffff; --ink:#10181a; --ink-2:#55635f;
@@ -754,9 +774,10 @@ counters rather than a model — a cycle count on its own cannot tell those two
 apart, which is why the instruction counter has been read alongside it
 throughout.</p>
 <p>It also prices the design decision. Halving the shipped depth {d_hi} to 32
-costs {at64[32][0]-c_hi:.1f} cycles per packet; going all the way down to
-{d_lo} costs {c_lo-c_hi:.1f}. The returns are nearly exhausted before the
-shipped depth is reached, so the last doubling buys very little.</p>
+costs {at64[32][0]-c_hi:.1f} cycles per packet — only about twice the
+run-to-run floor measured below, so read it as "very little" rather than as a
+number — while going all the way down to {d_lo} costs {c_lo-c_hi:.1f}. The
+returns are nearly exhausted before the shipped depth is reached.</p>
 <p>Fitting the per-burst model separately to each depth produces something
 impossible — at depth&nbsp;8 the per-burst term comes out
 <em>below</em> the cost of the single <span class="mono">aligned_alloc</span>
@@ -765,6 +786,51 @@ measurement: the pipeline fills <span class="mono">ceil(B/Q)</span> times per
 burst, so a straight line in <span class="mono">1/B</span> is mis-specified
 wherever the burst exceeds the queue depth. At the shipped depth the burst never
 does, which is why every earlier result on this page is unaffected.</p>
+</section>
+"""
+
+    # The repeat arm is the error bar everything else is measured against, so
+    # it gets a section rather than a footnote.
+    rrows = repeat_rows(allc)
+    repeat_html = ""
+    if rrows:
+        tr = "".join(
+            f"<tr><td>{m}</td><td>{n64}</td>"
+            f"<td>{('%.2f' % r64) if r64 else '—'}</td>"
+            f"<td>{nsm}</td><td>{('%.2f' % rsm) if rsm else '—'}</td></tr>"
+            for m, n64, r64, nsm, rsm in rrows)
+        all64 = [r for _, n, r, _, _ in rrows if r for _ in range(n)]
+        pooled = (sum(r * r for r in all64) / len(all64)) ** 0.5 if all64 else None
+        dram64 = next((r for m, _, r, _, _ in rrows if m == "dramblast"), None)
+        repeat_html = f"""
+<section class="wrap">
+<h2>The error bar everything else is measured against</h2>
+<p>The shipped condition was run again at the end of the matrix — same binary,
+same core assignment, same invocation, hours later with every other experiment
+in between. Until that ran, every error bar on this page came from <em>inside</em>
+a single sweep: the scatter of ten one-second samples in a twelve-second window,
+which by construction cannot see anything that drifts between sweeps.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>engine</th><th>points at burst 64</th><th>rms</th>
+<th>points at smaller bursts</th><th>rms</th></tr></thead>
+<tbody>{tr}</tbody>
+</table></div>
+<p>The floor is not one number. At a 64-packet burst the forwarder is
+oversubscribed and the operating point is pinned by the offered load, so the run
+reproduces to about {dram64:.2f} cycles per packet for dramblast. At the small
+bursts a saturated link produces, the burst size is an <em>outcome</em> rather
+than a setting and it wanders between runs, costing several times that. Every
+matched-burst comparison on this page is made at burst 64, which is the stable
+end.</p>
+<p>Folding this into the depth arms changed a verdict. The depth-32 point — the
+one that tests the pipeline-ramp model — is an effect of 1.8 cycles per packet,
+about twice this floor. Quoted against within-sweep scatter alone it looked like
+a 3.1σ confirmation; against the measured run-to-run spread it is 1.6σ from no
+effect and 0.7σ from the prediction: consistent with the model, and not
+excluding the alternative. The larger results are not close to this line — the
+allocator pair is six times the floor and the eightfold pipeline shortening is
+sixteen times — but the sigma attached to anything smaller than that was
+optimistic until this arm existed.</p>
 </section>
 """
 
@@ -981,6 +1047,7 @@ waiting for it.</p>
 {depth_html}
 {check_html}
 {crossover_html}
+{repeat_html}
 <section class="wrap">
 <h2>How much of this is the measurement rig</h2>
 <p>Two properties of the machine turned out to matter more than expected, and
