@@ -257,10 +257,23 @@ void dramblast_process_frames(dramblast_arg_t *args, unsigned int args_len,
     for (int e = 0; e < dramblast_alloc_pairs; e++) {
       dramblast_result_t *scratch =
           dramblast_alloc64(sizeof(dramblast_result_t) * args_len);
-      if (scratch) {
-        scratch[0].v = (uint64_t)e;
-        free(scratch);
+      if (scratch == NULL) {
+        printf("dramblast: amplification alloc failed, measurement invalid\n");
+        exit(-1);
       }
+      /* The obvious guard here -- a store into scratch -- does not work, and
+         silently did not work: GCC 11 deletes a store to an object that is
+         about to be freed, and disassembly of the shipped binary showed the
+         store gone while the alloc/free pair survived only because the
+         compiler happened to be conservative. -fallocation-dce (on by default
+         at -O2 since GCC 11) is one toolchain bump from removing the pair
+         outright and reporting that an allocator round trip costs nothing --
+         which is exactly the wrong answer this arm exists to rule out, with no
+         symptom. Making the pointer escape into an opaque asm prevents the
+         allocation from being elided at all. No "memory" clobber: that would
+         force spills around the loop and change the cost being measured. */
+      __asm__ volatile("" :: "r"(scratch));
+      free(scratch);
     }
   }
 
@@ -329,7 +342,12 @@ void dramblast_init(void) {
        burst-sized buffer per lcore is enough for the hoisted arm. Allocated
        unconditionally: it costs 1 KiB per lcore and keeps the two arms'
        initialisation identical. */
-    dramblast_hoisted[i] = dramblast_alloc64(sizeof(dramblast_result_t) * 64);
+    dramblast_hoisted[i] =
+        dramblast_alloc64(sizeof(dramblast_result_t) * DRAMBLAST_MAX_BURST);
+    if (dramblast_hoisted[i] == NULL) {
+      printf("Aligned alloc failed!\n");
+      exit(1);
+    }
   }
 
   dramblast_ht->len = CAPACITY;

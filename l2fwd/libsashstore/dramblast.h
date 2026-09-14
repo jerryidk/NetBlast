@@ -54,6 +54,10 @@ typedef struct {
 } dramblast_ht_t;
 
 #define DRAMBLAST_FIND_QUEUE_SIZE 64
+/* Must equal main.c's MAX_PKT_BURST: the hoisted -A -1 buffer is sized
+   from it, and only that arm would overflow if MAX_PKT_BURST were raised,
+   which would read as a hoisting result rather than as corruption. */
+#define DRAMBLAST_MAX_BURST 64
 // make multiple of 4.
 #define DRAMBLAST_BUCKET_IDX_MASK ~0x3
 #define DRAMBLAST_SIMD_KEY_MASK 0b01010101

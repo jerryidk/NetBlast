@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Three-panel summary figure for the experiment matrix, as dependency-free SVG.
 
-Why SVG by hand rather than matplotlib: matplotlib and numpy are not installed
-on this node (they were on 2026-09-11 and are not on 2026-09-14; the node has
-not rebooted, so something removed them, and another session is working on this
-machine). Installing them back is a system-level change to shared research
-hardware made for the sake of a figure, and it could collide with whatever that
-other work is doing. The figure is worth less than that, and the report already
-draws its charts as hand-written SVG, so this reuses that approach.
+Why SVG by hand: this runs with nothing but the standard library, so it works
+from a plain shell. The project's toolchain -- meson, ninja, matplotlib -- lives
+in the nix dev shell (`nix develop`), not on the system Python, and running
+outside it makes them all look uninstalled. That misread cost time here and
+produced a commit message claiming they had been removed from the node; they had
+not. The lesson is cheap to state and was not: on this repo, check whether you
+are inside the dev shell before concluding a tool is missing.
+
+The script is kept because the report draws all of its charts as hand-written
+SVG anyway, an SVG scales better in the page than a rasterised PNG, and a figure
+that needs no environment at all is one less thing to be wrong about.
+analyse_matrix.py --plot uses matplotlib when it is importable and falls back
+here when it is not.
 
     python3 l2fwd/plot_matrix.py          -> docs/matrix.svg
 """

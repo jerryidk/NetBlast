@@ -49,6 +49,9 @@
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
 #define MAX_PKT_BURST 64
+_Static_assert(MAX_PKT_BURST == DRAMBLAST_MAX_BURST,
+               "dramblast's hoisted result buffer is sized from "
+               "DRAMBLAST_MAX_BURST and must match MAX_PKT_BURST");
 #define BURST_TX_DRAIN_US 100
 #define MEMPOOL_CACHE_SIZE 256
 
@@ -443,15 +446,26 @@ static int l2fwd_parse_args(int argc, char **argv) {
       break;
     case 'A':
       dramblast_alloc_pairs = (int)strtol(optarg, NULL, 10);
+      if (dramblast_alloc_pairs < -1 || dramblast_alloc_pairs > 64) {
+        fprintf(stderr, "Error: -A %s out of range (-1 hoisted, 0 as shipped, "
+                        "up to 64 extra pairs).\n", optarg);
+        return -1;
+      }
       printf("dramblast alloc pairs per burst: %d%s\n", dramblast_alloc_pairs,
              dramblast_alloc_pairs < 0 ? " (hoisted to a per-lcore buffer)" : "");
       break;
     case 'Q':
       dramblast_queue_depth = (int)strtol(optarg, NULL, 10);
-      if (dramblast_queue_depth <= 0 ||
+      /* Lower bound 4, not 1. At depth 1 the push loop's bound is size-1 = 0,
+         so nothing is ever pushed, the first pop reads an uninitialised queue
+         slot, and the unmasked index goes straight into a 512-bit load off the
+         table -- a segfault if you are lucky and silent memory corruption of
+         the caller's stack array if you are not. 4 is the bucket stride. */
+      if (dramblast_queue_depth < 4 ||
           (dramblast_queue_depth & (dramblast_queue_depth - 1)) != 0) {
-        fprintf(stderr, "Error: -Q %s must be a power of two (head/tail wrap "
-                        "with & (size-1)).\n", optarg);
+        fprintf(stderr, "Error: -Q %s must be a power of two and at least 4 "
+                        "(head/tail wrap with & (size-1), and a depth of 1 "
+                        "leaves the queue empty at the first pop).\n", optarg);
         return -1;
       }
       printf("dramblast prefetch pipeline depth: %d\n", dramblast_queue_depth);

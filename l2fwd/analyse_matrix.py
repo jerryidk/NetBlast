@@ -892,11 +892,10 @@ def main():
     if "--plot" not in sys.argv:
         return
 
-    # matplotlib and numpy are not installed on this node any more (they were
-    # on 2026-09-11; the node has not rebooted since, and another session is
-    # working on this machine). Reinstalling them is a system-level change to
-    # shared research hardware for the sake of a figure, so the figure is drawn
-    # without them instead. plot_matrix.py writes the same three panels as SVG.
+    # matplotlib lives in the nix dev shell, not on the system Python, so this
+    # import succeeds under `nix develop` and fails from a plain shell. Both
+    # paths draw the same three panels; plot_matrix.py needs only the standard
+    # library and writes SVG.
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -940,14 +939,37 @@ def main():
                  loc="left", pad=10)
 
     ax = axes[1]
-    if len(have) >= 2:
-        xs = [n + 1 if n >= 0 else 0 for n, _ in have]
-        ys = [f["C"] for _, f in have]
+    # Matched-burst excess, NOT the fitted C. The +8 arm is so slow it never
+    # leaves a 64-packet burst, so its own slope is unmeasurable (R^2 0.62) --
+    # it is excluded from the line for that reason, and plotting its fitted C
+    # drew a curve that rises to five pairs and then falls, which is not a
+    # result but a bad fit given a marker. The estimator quoted in the text is
+    # the cost at a matched burst, and that is what belongs on the axis.
+    if len(q1pts) >= 2:
+        pts = sorted(q1pts)
+        xs = [n for n, _ in pts]
+        ys = [c for _, c in pts]
         ax.plot(xs, ys, marker="o", color=BLUE, linewidth=2, markersize=7,
                 markeredgecolor=SURFACE, markeredgewidth=1.8)
-        ax.set_xlabel("aligned_alloc/free pairs per burst")
-        ax.set_ylabel("C  (core cycles per burst)")
-    ax.set_title("2. The allocator's real share of C", fontsize=11, loc="left", pad=10)
+        multi = [(n, c) for n, c in pts if n >= 3]
+        if len(multi) >= 2:
+            nn = len(multi)
+            sx = sum(n for n, _ in multi); sy = sum(c for _, c in multi)
+            sxx = sum(n * n for n, _ in multi)
+            sxy = sum(n * c for n, c in multi)
+            den = nn * sxx - sx * sx
+            if den:
+                b = (nn * sxy - sx * sy) / den
+                a = (sy - b * sx) / nn
+                hi = max(xs) * 1.05
+                ax.plot([0, hi], [a, a + b * hi], color=INK_2, linewidth=1.4,
+                        linestyle="--",
+                        label=f"{b:.0f} cycles/pair, intercept {a:+.0f}")
+                ax.legend(fontsize=8.5, frameon=False, loc="upper left")
+        ax.set_xlabel("aligned_alloc/free round trips per burst")
+        ax.set_ylabel("core cycles per burst, above the hoisted arm")
+    ax.set_title("2. What one allocator round trip costs", fontsize=11,
+                 loc="left", pad=10)
 
     ax = axes[2]
     # Deliberately NOT P and C against depth. That figure would draw the
@@ -977,7 +999,7 @@ def main():
         ax2.set_ylim(min(ins) * (1 - span / 6), min(ins) * (1 + span))
         for d in dpts:
             ax.annotate(f"IPC {at64[d][1] / at64[d][0]:.2f}", (d, at64[d][0]),
-                        textcoords="offset points", xytext=(0, -15),
+                        textcoords="offset points", xytext=(0, 12),
                         ha="center", fontsize=8, color=INK_2)
         ax.set_xscale("log", base=2)
         ax.set_xticks(dpts); ax.set_xticklabels([str(d) for d in dpts])
