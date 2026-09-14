@@ -514,12 +514,16 @@ prefetch pipeline is.</p>
   queue count rises the same packet stream is split over more queues, bursts
   shrink, and dramblast's fixed cost is amortised over fewer packets.</p></div>
 
-  <div class="finding"><span class="n">03</span><p><b>The two engines do the
-  same CPU work per packet. The whole difference is exposed memory latency.</b>
-  {dwork:.0f} cycles of work for dramblast against {mwork:.0f} for maglev —
-  within {abs(mwork-dwork)/dwork*100:.0f}% — while maglev waits {mns:.1f} ns per
-  packet and dramblast only {dns:.1f} ns. The software prefetch pipeline hides
-  about {(1-dns/mns)*100:.0f}% of the same memory access.</p></div>
+  <div class="finding"><span class="n">03</span><p><b>Both engines spend nearly
+  the same number of cycles computing. The whole difference is time spent
+  waiting.</b> {dwork:.0f} cycles of computation for dramblast against
+  {mwork:.0f} for maglev — within {abs(mwork-dwork)/dwork*100:.0f}% — while
+  maglev waits {mns:.1f} ns per packet and dramblast only {dns:.1f} ns. The
+  software prefetch pipeline hides about {(1-dns/mns)*100:.0f}% of the same
+  memory access. Note that equal <em>cycles</em> is not equal work: dramblast
+  retires about 40% more instructions per packet, at more than twice the
+  instructions-per-cycle. Doing more, faster, to wait less is the
+  trade.</p></div>
 </div>
 </section>
 
