@@ -66,6 +66,63 @@ def ygrid(g, L, R, T, B, lo, hi, fmt="{:.0f}", ticks=5, colour=INK_2, side="left
     return y
 
 
+GREY = "#5a5a5a"
+LINE_RATE = 93.28
+
+
+def panel_engines(x0, allc):
+    """Delivered throughput against queue count for both engines and no table.
+
+    `-m none` is the forwarding loop with the lookup removed and nothing else
+    changed (main.c, third branch). It is the only arm that says how much of the
+    distance between the two engines is the engines at all, rather than the
+    forwarder they are both embedded in -- and it reaches the offered load on
+    two cores, which neither engine does anywhere in the sweep.
+    """
+    g, (L, R, T, B) = frame(x0, "0. The lookup is what costs, not the forwarder",
+                            "delivered Mpps against queue pairs, offered 93.28")
+    trio = allc.get("engine_trio", {})
+    series = []
+    for mode, col, lab in (("maglev", ORANGE, "maglev"),
+                           ("dramblast", BLUE, "dramblast"),
+                           ("none", GREY, "no hash table")):
+        pts = [(int(q), r["steady_mpps"])
+               for q, r in trio.get(mode, {}).items() if r.get("steady_mpps")]
+        if pts:
+            series.append((lab, col, sorted(pts)))
+    if not series:
+        return g
+    qs = [q for _, _, pts in series for q, _ in pts]
+    qlo, qhi = min(qs), max(qs)
+    y = ygrid(g, L, R, T, B, 0, 100)
+
+    def x(q):
+        return L + (q - qlo) / max(1, qhi - qlo) * (R - L)
+
+    g.append(f'<line x1="{L}" y1="{y(LINE_RATE):.1f}" x2="{R}" '
+             f'y2="{y(LINE_RATE):.1f}" stroke="{INK}" stroke-width="1" '
+             f'stroke-dasharray="3 4" opacity="0.5"/>')
+    g.append(f'<text x="{R}" y="{y(LINE_RATE) - 7:.1f}" class="note" '
+             f'text-anchor="end">offered load</text>')
+    for lab, col, pts in series:
+        d = " ".join(f"{'M' if i == 0 else 'L'}{x(q):.1f},{y(v):.1f}"
+                     for i, (q, v) in enumerate(pts))
+        g.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="2.2"/>')
+        for q, v in pts:
+            g.append(f'<circle cx="{x(q):.1f}" cy="{y(v):.1f}" r="3.4" '
+                     f'fill="{col}"/>')
+        lq, lv = pts[-1]
+        g.append(f'<text x="{x(lq) - 6:.1f}" y="{y(lv) - 10:.1f}" class="val" '
+                 f'text-anchor="end" fill="{col}">{esc(lab)}</text>')
+    for q in range(qlo, qhi + 1):
+        g.append(f'<text x="{x(q):.1f}" y="{B + 20:.1f}" class="tick" '
+                 f'text-anchor="middle">{q}</text>')
+    g.append(f'<line x1="{L}" y1="{B}" x2="{R}" y2="{B}" class="axis"/>')
+    g.append(f'<text x="{(L + R) / 2:.0f}" y="{B + 42:.0f}" class="tick" '
+             f'text-anchor="middle">RX/TX queue pairs</text>')
+    return g
+
+
 def panel_backing(x0, allc, base_cond):
     """Per-packet cost of each mode on each page size, at q=1 and burst 64.
 
@@ -242,14 +299,22 @@ def main():
         sem = (var / (len(runs) * (len(runs) - 1))) ** 0.5 if len(runs) > 1 else None
         at64[Q] = (cyc, ipp, sem, len(runs))
 
-    W, H = PW * 3, PH
-    body = []
-    body += panel_backing(0, allc, base_cond)
-    body += panel_alloc(PW, arows, shipped_pair, aerr)
-    body += panel_depth(PW * 2, at64)
+    # Panel 0 is only drawn once the trio arm exists; without it the figure
+    # keeps its original three panels rather than showing an empty frame.
+    has_trio = len(allc.get("engine_trio", {})) == 3
+    npanels = 4 if has_trio else 3
+    W, H = PW * npanels, PH
+    body, x0 = [], 0
+    if has_trio:
+        body += panel_engines(0, allc)
+        x0 = PW
+    body += panel_backing(x0, allc, base_cond)
+    body += panel_alloc(x0 + PW, arows, shipped_pair, aerr)
+    body += panel_depth(x0 + PW * 2, at64)
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
            f'width="{W}" height="{H}" role="img" '
-           f'aria-label="Three panels: page backing, allocator share, pipeline depth">'
+           f'aria-label="Panels: engines against the no-table floor, page '
+           f'backing, allocator share, pipeline depth">'
            f'<style>'
            f'.ttl{{font:600 15px Archivo,system-ui,sans-serif;fill:{INK}}}'
            f'.sub{{font:13px Spectral,Georgia,serif;fill:{INK_2}}}'

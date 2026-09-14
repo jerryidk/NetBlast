@@ -9,6 +9,10 @@ Run:  nix develop .. -c python3 make_report.py
 
 import json
 import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from analyse_matrix import fit_of            # noqa: E402  (fit errors, shared)
 
 DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
 TSC_MHZ = 2100.0
@@ -467,81 +471,6 @@ def depth_pairs(allc):
             out.append((i, qs, diffs, sum(diffs) / len(diffs)))
     return out
 
-def chart_depth(at64):
-    """Cycles and instructions per packet against pipeline depth, matched burst."""
-    import math
-    W, H = 720, 320
-    L, R, T, B = 62, 66, 26, 50
-    ds = sorted(at64)
-    cyc = [at64[d][0] for d in ds]
-    ins = [at64[d][1] for d in ds]
-    span = 0.26
-    clo, chi = min(cyc) * (1 - span / 6), min(cyc) * (1 + span)
-    ilo, ihi = min(ins) * (1 - span / 6), min(ins) * (1 + span)
-    lo, hi = math.log2(min(ds)), math.log2(max(ds))
-    X = lambda d: L + (math.log2(d) - lo) / (hi - lo) * (W - L - R)
-    YC = lambda v: T + (1 - (v - clo) / (chi - clo)) * (H - T - B)
-    YI = lambda v: T + (1 - (v - ilo) / (ihi - ilo)) * (H - T - B)
-    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Cycles and '
-         f'instructions per packet against prefetch pipeline depth">']
-    for i in range(5):
-        cv = clo + (chi - clo) * i / 4
-        iv = ilo + (ihi - ilo) * i / 4
-        y = YC(cv)
-        p.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W-R}" y2="{y:.1f}" '
-                 f'stroke="var(--rule)" stroke-width="1"/>')
-        p.append(f'<text x="{L-9}" y="{y+4:.1f}" text-anchor="end" class="tick" '
-                 f'fill="var(--a)">{cv:.0f}</text>')
-        p.append(f'<text x="{W-R+9}" y="{y+4:.1f}" class="tick" '
-                 f'fill="var(--b)">{iv:.0f}</text>')
-    for vals, Yf, col, dash in ((ins, YI, "var(--b)", ' stroke-dasharray="5 4"'),
-                                (cyc, YC, "var(--a)", "")):
-        pts = " ".join(f"{X(d):.1f},{Yf(v):.1f}" for d, v in zip(ds, vals))
-        p.append(f'<polyline points="{pts}" fill="none" stroke="{col}" '
-                 f'stroke-width="2.2"{dash}/>')
-        for d, v in zip(ds, vals):
-            p.append(f'<circle cx="{X(d):.1f}" cy="{Yf(v):.1f}" r="4.5" fill="{col}" '
-                     f'stroke="var(--ground)" stroke-width="1.8"/>')
-    for d in ds:
-        c, i_, sem, _ = at64[d]
-        if sem:
-            p.append(f'<line x1="{X(d):.1f}" y1="{YC(c-sem):.1f}" x2="{X(d):.1f}" '
-                     f'y2="{YC(c+sem):.1f}" stroke="var(--a)" stroke-width="1.6"/>')
-        p.append(f'<text x="{X(d):.1f}" y="{YC(c)+20:.1f}" text-anchor="middle" '
-                 f'class="tick">IPC {i_/c:.2f}</text>')
-        p.append(f'<text x="{X(d):.1f}" y="{H-B+20}" text-anchor="middle" '
-                 f'class="tick">{d}</text>')
-    p.append(f'<text x="{L}" y="{H-6}" class="axis">prefetch pipeline depth '
-             f'(burst held at 64)</text>')
-    p.append(f'<text x="{L}" y="{T-8}" class="tick" fill="var(--a)">cycles / packet</text>')
-    p.append(f'<text x="{W-R}" y="{T-8}" text-anchor="end" class="tick" '
-             f'fill="var(--b)">instructions / packet</text>')
-    p.append("</svg>")
-    return "".join(p)
-
-
-
-def repeat_rows(allc):
-    """(mode, [(q, burst-matched?, run1, run2)], burst-64 rms) for the repeat arm."""
-    out = []
-    for mode in ("dramblast", "maglev"):
-        a = allc.get("pinned2_asshipped", {}).get(mode, {})
-        b = allc.get("pinned3_repeat", {}).get(mode, {})
-        if not a or not b:
-            continue
-        d64 = [b[q]["cycles_per_pkt"] - a[q]["cycles_per_pkt"]
-               for q in set(a) & set(b)
-               if a[q].get("rx_batch") == 64 and b[q].get("rx_batch") == 64]
-        dsm = [b[q]["cycles_per_pkt"] - a[q]["cycles_per_pkt"]
-               for q in set(a) & set(b)
-               if a[q].get("rx_batch") == b[q].get("rx_batch") != 64]
-        rms = lambda v: (sum(x * x for x in v) / len(v)) ** 0.5 if v else None
-        out.append((mode, len(d64), rms(d64), len(dsm), rms(dsm)))
-    return out
-
-
-
-
 def walk_rows(allc):
     """Page-walk occupancy against queue count, at a matched 64-packet burst.
 
@@ -566,6 +495,134 @@ def walk_rows(allc):
         if t:
             out[lab] = t
     return out
+
+
+
+# --------------------------------------------------------------- source quotes
+SRC = pathlib.Path(__file__).resolve().parent
+
+
+def snip(relpath, start, end=None, nlines=None, note="", before=0):
+    """Quote real lines out of the working tree, with their real line numbers.
+
+    Anchors are exact substrings, not line numbers, and a miss is fatal rather
+    than silent. The alternative -- pasting code into the generator -- lets the
+    page keep asserting something about a function that has since been edited,
+    which is the one failure mode a quotation is supposed to prevent. If this
+    raises, the code moved and the argument around it needs re-reading, not the
+    anchor needs nudging.
+    """
+    path = SRC / relpath
+    src = path.read_text().splitlines()
+    hits = [i for i, ln in enumerate(src) if start in ln]
+    if len(hits) != 1:
+        raise SystemExit(f"snip: {relpath}: {len(hits)} matches for {start!r}, "
+                         f"expected exactly 1")
+    a = max(0, hits[0] - before)
+    if end is not None:
+        b = next((j for j in range(hits[0], len(src)) if end in src[j]), None)
+        if b is None:
+            raise SystemExit(f"snip: {relpath}: no end anchor {end!r} after line {a+1}")
+    else:
+        b = hits[0] + (nlines or 1) - 1
+    width = len(str(b + 1))
+    body = "\n".join(f"{i+1:>{width}}  {esc(src[i])}" for i in range(a, b + 1))
+    where = f"l2fwd/{relpath}:{a+1}" + (f"&ndash;{b+1}" if b > a else "")
+    cap = f"<figcaption><span class=\"mono\">{where}</span>"
+    cap += (" &mdash; " + note if note else "") + "</figcaption>"
+    return f'<figure class="code"><pre><code>{body}</code></pre>{cap}</figure>'
+
+
+# ------------------------------------------------------- the three-engine floor
+def trio_rows(allc):
+    """{mode: {q: (mpps, cycles/pkt, burst, insns/pkt)}} for the trio arm.
+
+    All three modes were swept under one tag, back to back, so this comparison
+    does not span the hours that separate the historical arms. `none` is the
+    forwarding loop's third branch: same MAC write, no lookup.
+    """
+    PW = 8.0
+    out = {}
+    for mode in ("none", "dramblast", "maglev"):
+        t = {}
+        for q, r in allc.get("engine_trio", {}).get(mode, {}).items():
+            if "cycles_per_pkt" not in r or not r.get("steady_mpps"):
+                continue
+            pkts = r["steady_mpps"] * 1e6 * PW
+            t[int(q)] = (r["steady_mpps"], r["cycles_per_pkt"], r.get("rx_batch"),
+                         (r.get("insns") or 0) / pkts if pkts else None)
+        if t:
+            out[mode] = t
+    return out
+
+
+TRIO_COL = {"dramblast": "var(--a)", "maglev": "var(--b)", "none": "var(--ink-2)"}
+TRIO_LAB = {"dramblast": "dramblast", "maglev": "maglev", "none": "no hash table"}
+LINE_RATE = 93.28
+
+
+def chart_trio(rows):
+    """Two stacked panels: delivered throughput, then per-packet cost."""
+    W = 720
+    PH = 258                      # panel height
+    L, R = 58, 118                # right margin holds the inline series labels
+    gapY = 58
+    H = PH * 2 + gapY + 26
+    qs = sorted({q for t in rows.values() for q in t})
+    x = lambda q: L + (q - min(qs)) * (W - L - R) / max(1, (max(qs) - min(qs)))
+    p = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Throughput and '
+         f'per-packet cost of dramblast, maglev and no hash table against '
+         f'queue-pair count">']
+
+    def panel(top, ymax, ticks, pick, title, unit):
+        Y = lambda v: top + (1 - min(v, ymax) / ymax) * PH
+        for v in ticks:
+            p.append(f'<line x1="{L}" y1="{Y(v):.1f}" x2="{W-R}" y2="{Y(v):.1f}" '
+                     f'stroke="var(--rule)" stroke-width="1"/>')
+            p.append(f'<text x="{L-9}" y="{Y(v)+4:.1f}" text-anchor="end" '
+                     f'class="tick">{v:g}</text>')
+        p.append(f'<text x="{L}" y="{top-10:.0f}" class="axis">{title}</text>')
+        for mode in ("maglev", "dramblast", "none"):
+            t = rows.get(mode)
+            if not t:
+                continue
+            pts = [(q, pick(t[q])) for q in sorted(t) if pick(t[q]) is not None]
+            d = " ".join(f"{'M' if i==0 else 'L'}{x(q):.1f},{Y(v):.1f}"
+                         for i, (q, v) in enumerate(pts))
+            p.append(f'<path d="{d}" fill="none" stroke="{TRIO_COL[mode]}" '
+                     f'stroke-width="2.2"/>')
+            for q, v in pts:
+                p.append(f'<circle cx="{x(q):.1f}" cy="{Y(v):.1f}" r="3.6" '
+                         f'fill="{TRIO_COL[mode]}" stroke="var(--ground)" '
+                         f'stroke-width="1.6"/>')
+            lq, lv = pts[-1]
+            p.append(f'<text x="{x(lq)+10:.1f}" y="{Y(lv)+4:.1f}" class="tick" '
+                     f'fill="{TRIO_COL[mode]}" style="font-weight:600">'
+                     f'{TRIO_LAB[mode]}</text>')
+        for q in qs:
+            p.append(f'<text x="{x(q):.1f}" y="{top+PH+18:.0f}" '
+                     f'text-anchor="middle" class="tick">{q}</text>')
+        return Y
+
+    # panel 1: delivered throughput, with the generator's line rate drawn in
+    Y1 = panel(30, 100, (0, 25, 50, 75, 100), lambda r: r[0],
+               "delivered throughput, Mpps", "Mpps")
+    yr = 30 + (1 - LINE_RATE / 100) * PH
+    p.append(f'<line x1="{L}" y1="{yr:.1f}" x2="{W-R}" y2="{yr:.1f}" '
+             f'stroke="var(--ink)" stroke-width="1" stroke-dasharray="3 4" '
+             f'opacity="0.55"/>')
+    p.append(f'<text x="{W-R-4}" y="{yr-6:.1f}" text-anchor="end" class="tick">'
+             f'offered load {LINE_RATE} Mpps</text>')
+
+    # panel 2: cost per packet inside the timed region
+    top2 = 30 + PH + gapY
+    cmax = max(r[1] for t in rows.values() for r in t.values()) * 1.12
+    step = 50 if cmax > 160 else 20
+    ticks = [v for v in range(0, int(cmax) + step, step)]
+    panel(top2, cmax, ticks, lambda r: r[1], "cycles per forwarded packet", "cycles")
+    p.append(f'<text x="{L}" y="{H-4}" class="axis">RX/TX queue pairs</text>')
+    p.append("</svg>")
+    return "".join(p)
 
 
 CSS = """
@@ -621,6 +678,22 @@ code{background:var(--panel);border:1px solid var(--rule);border-radius:3px;
 .finding p{margin:0;font-size:16px;line-height:1.5}
 .finding b{font-weight:600}
 figure{margin:30px 0 26px}
+figure.code{margin:22px 0 24px}
+figure.code pre{
+  margin:0;background:var(--panel);border:1px solid var(--rule);
+  border-left:3px solid var(--a);border-radius:3px;
+  padding:14px 16px;overflow-x:auto;
+}
+figure.code code{
+  background:none;border:0;padding:0;display:block;white-space:pre;
+  font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.55;color:var(--ink);
+}
+figure.code figcaption{margin-top:9px;font-size:13px}
+figure.code figcaption code{
+  background:var(--panel);border:1px solid var(--rule);border-radius:3px;
+  padding:1px 5px;display:inline;white-space:normal;font-size:12px;
+}
 figure svg{width:100%;height:auto;display:block}
 figcaption{font-size:14px;line-height:1.5;color:var(--ink-2);margin-top:12px;
   font-family:Archivo,sans-serif}
@@ -682,6 +755,13 @@ def main():
                                fits[("dramblast", "turbo")][1], fp, ft)
         split.append(("dramblast / burst", w, t_ns * fp / 1000.0))
 
+    # Standard errors on the two fits of the same coefficient, for the
+    # bookkeeping note in section 4. Quoted from the shared estimator so the
+    # page and the analysis cannot disagree about them.
+    f_old = fit_of(allc, "pinned_2100mhz", "dramblast") or {}
+    f_new = fit_of(allc, "pinned2_asshipped", "dramblast") or {}
+    se_old, se_new = f_old.get("se") or 0.0, f_new.get("se") or 0.0
+
     dP, dC, dR = fits[("dramblast", "pinned")]
     mP, mC, mR = fits[("maglev", "pinned")]
     crossover = dC / (mP - dP)
@@ -717,8 +797,7 @@ def main():
             f"<td class='num'>{cs:.1f}%</td><td class='num'>{ps:.1f}%</td></tr>"
             for m, tk, ipc, cs, ps in check)
         check_html = f"""
-<section class="wrap">
-<h2>The same number, arrived at twice</h2>
+<h3>The same split, arrived at twice</h3>
 <p>The split above is inferred from how the cost responds to the clock. The
 processor will also tell you directly: it counts the cycles in which nothing
 executes because an L3 miss is outstanding. Two methods, no shared
@@ -742,13 +821,12 @@ throughput limit in the memory hierarchy. So the prefetch pipeline does not
 remove dramblast's memory traffic. It converts that traffic from latency into
 throughput — and the two measurements diverging is how you tell those two
 regimes apart.</p>
-</section>
 """
 
     # The allocator section replaces the "not yet established" note once its
     # conditions exist.
     arows = alloc_rows(allc)
-    alloc_html = ""
+    alloc_html = retraction_alloc = ""
     if len(arows) >= 3:
         asvg, (a0, per_pair) = chart_alloc(arows)
         byn = {r[0]: r[1] for r in arows}
@@ -789,9 +867,31 @@ regimes apart.</p>
             f"{multi[i][0]}&nbsp;&rarr;&nbsp;{multi[i+1][0]} gives {sl:.0f}"
             for i, sl in enumerate(slopes))
         onetick = 64.0 * 2095.0 / 2100.0
+        retraction_alloc = f"""<h3>The allocator round trip, quoted to the cycle</h3>
+<p>One printed tick is {onetick:.0f} cycles per burst, as
+<a href="#rig">section 1</a> sets out. That is not a pedantic caveat; it is the
+correction to a result this page carried for six hours. Read at a single queue count, the shipped pair came out
+at 447 cycles and an incremental one at 511, the two consecutive slopes agreed
+to 0.00 cycles and the line's intercept was 0.0. That was written up as a
+structural check — <i>k</i> pairs costing exactly <i>k</i> times one — and then,
+because the shipped pair sat 64 cycles below the line, as an allocator load
+effect: a lone round trip being cheaper than one of several in flight. A
+reviewer improved the framing and it still stood on nothing. The gap was 64
+cycles, which is one tick; the perfect slope agreement followed arithmetically
+from three integers where one difference was exactly twice another; and 447 came
+from the one queue count where the difference happens to be smallest.</p>
+<p>Measured at every matched queue count instead, the incremental pair is
+{m_slope:.0f} cycles (consecutive slopes: {slope_txt}) and extrapolating that
+line to a single pair predicts {pred1:.0f} against {shipped_pair:.0f} measured —
+{z1:.1f}σ apart, <b>not resolved</b>. There is no first-pair effect and no load
+effect. The failure worth naming is precision claimed past the instrument's
+resolution, where the excess precision then generates a mechanism and everything
+downstream stays internally consistent while describing rounding.</p>
+
+"""
         alloc_html = f"""
 <section class="wrap">
-<h2>What the per-burst cost is made of</h2>
+<h3>Most of it is one call to <span class="mono">aligned_alloc</span></h3>
 <p>Two candidates survived: the <span class="mono">aligned_alloc</span> /
 <span class="mono">free</span> round trip the batched path performs once per
 burst, and the batching machinery itself. They can be separated because only one
@@ -800,6 +900,11 @@ round trips per burst — minus one meaning none at all, with the buffer allocat
 once per core at start-up — so the per-burst cost becomes a straight line whose
 slope is what a round trip costs <em>on this machine</em>, rather than what the
 literature says one costs somewhere else.</p>
+{snip("libsashstore/dramblast.c", "if (dramblast_alloc_pairs < 0) {",
+      "results = aligned_alloc(64, sizeof(dramblast_result_t) * args_len);",
+      note="the whole of the shipped allocation: one call per burst, for a "
+           "buffer whose maximum size is known at compile time and whose "
+           "elements are 16 bytes wide.")}
 </section>
 
 <div class="wide">
@@ -822,33 +927,12 @@ cycles, that single allocation is <b>{100*lo_est/shipped_C:.0f}&ndash;{100*hi_es
 of it. What remains when it is removed, the batching machinery itself, is
 {remainder:.0f} cycles, measured directly by the leftmost point rather than
 extrapolated from the line through the others.</p>
-<p>An earlier draft of this investigation put the allocator at <em>at most
-11%</em>. That was wrong, and how it was wrong is the more useful finding.</p>
-
-<h3>Why this is quoted as a range and not a number</h3>
-<p><span class="mono">l2fwd</span> reports cycles per packet as an
-<b>integer</b>. At a 64-packet burst one printed tick is therefore
-{onetick:.0f} cycles per burst, and every number above is a mean of small
-integers. Nothing here is meaningful to better than a few tens of cycles,
-however many digits a fit prints.</p>
-<p>That is not a pedantic caveat; it is the correction to a result this page
-carried for six hours. Read at a single queue count, the shipped pair came out
-at 447 cycles and an incremental one at 511, the two consecutive slopes agreed
-to 0.00 cycles and the line's intercept was 0.0. That was written up as a
-structural check — <i>k</i> pairs costing exactly <i>k</i> times one — and then,
-because the shipped pair sat 64 cycles below the line, as an allocator load
-effect: a lone round trip being cheaper than one of several in flight. A
-reviewer improved the framing and it still stood on nothing. The gap was 64
-cycles, which is one tick; the perfect slope agreement followed arithmetically
-from three integers where one difference was exactly twice another; and 447 came
-from the one queue count where the difference happens to be smallest.</p>
-<p>Measured at every matched queue count instead, the incremental pair is
-{m_slope:.0f} cycles (consecutive slopes: {slope_txt}) and extrapolating that
-line to a single pair predicts {pred1:.0f} against {shipped_pair:.0f} measured —
-{z1:.1f}σ apart, <b>not resolved</b>. There is no first-pair effect and no load
-effect. The failure worth naming is precision claimed past the instrument's
-resolution, where the excess precision then generates a mechanism and everything
-downstream stays internally consistent while describing rounding.</p>
+<p>It is quoted as a range, and not more tightly, because the counter is an
+integer: one printed tick is {onetick:.0f} cycles per burst. An earlier draft of
+this page put the allocator at <em>at most 11%</em>, and a later one quoted the
+round trip to the cycle. Both were wrong, in opposite directions, and both
+failures are set out in <a href="#corrections">what these numbers are
+worth</a>.</p>
 
 <p>This reverses an earlier conclusion in the investigation log, and the way it
 was wrong is worth more than the correction. The allocator had been dismissed by
@@ -946,11 +1030,17 @@ arm measured that drift, the same data said nothing at all.</p>
         c_hi, i_hi = at64[d_hi][0], at64[d_hi][1]
         depth_html = f"""
 <section class="wrap">
-<h2>What the prefetch pipeline actually buys</h2>
+<h3>The rest of it is the prefetch pipeline's ramp</h3>
 <p>The remaining candidate for the per-burst cost was the prefetch pipeline's
-own fill and drain. It can be shortened — <span class="mono">-Q</span> sets the
-find queue's depth — and at a matched 64-packet burst the four depths separate
-cleanly.</p>
+own fill and drain. Each iteration issues a prefetch and queues an item, then
+pops one and processes it, so the queue keeps many cache lines in flight — but a
+burst of B packets can only ever fill <span class="mono">min(B, depth)</span>
+slots, and a short burst runs a pipeline that never reaches steady state.</p>
+{snip("libsashstore/dramblast.c", "// push as many as possible without stalling on LFB.",
+      "dramblast_push_queue(ht, idx, arg->k, 0, arg->id, id);",
+      note="the fill. <code>find_queue_size</code> is what <code>-Q</code> "
+           "sets, so shortening it shortens the ramp and nothing else.")}
+<p>At a matched 64-packet burst the four depths separate cleanly.</p>
 </section>
 
 <div class="wide">
@@ -1003,8 +1093,7 @@ does, which is why every earlier result on this page is unaffected.</p>
         pooled = (sum(r * r for r in all64) / len(all64)) ** 0.5 if all64 else None
         dram64 = next((r for m, _, r, _, _ in rrows if m == "dramblast"), None)
         repeat_html = f"""
-<section class="wrap">
-<h2>The error bar everything else is measured against</h2>
+<h3>The error bar everything else is measured against</h3>
 <p>The shipped condition was run again at the end of the matrix — same binary,
 same core assignment, same invocation, hours later with every other experiment
 in between. Until that ran, every error bar on this page came from <em>inside</em>
@@ -1031,7 +1120,6 @@ thing that could have settled it. The larger results were never close to this
 line — the allocator pair is six times the floor and the eightfold pipeline
 shortening sixteen times — but every σ quoted before this arm existed was
 optimistic by a factor nobody could have known.</p>
-</section>
 """
 
     # The open-question note stands only until the allocator sweep answers it.
@@ -1060,8 +1148,8 @@ prefetch pipeline depth moves a pipeline cost and cannot move an allocator one.
         moved = (m2 - m1) if (m2 and m1) else None
         share = f"{moved/gap*100:.0f}%" if (moved and gap) else "?"
         crossover_html = f"""
-<section class="wrap">
-<h2>Was it ever about page size?</h2>
+<section class="wrap" id="pages">
+<h2>3 &middot; Was it ever about page size?</h2>
 <p>The two engines do not only differ in how they look a key up. They differ in
 how their table is mapped: dramblast takes 8 GiB of 1 GiB hugepages, eight TLB
 entries; maglev's ordinary allocation is promoted by transparent hugepages to
@@ -1070,6 +1158,18 @@ that holds about two thousand. Every comparison between the two was therefore a
 comparison of algorithm <em>and</em> address translation at once. So each engine
 was run on the other's page size, and on 4 KiB pages, which neither ships
 with.</p>
+{snip("libsashstore/dramblast.c", "/* As shipped this was an unconditional MAP_HUGETLB",
+      "return backing_alloc(bytes,",
+      note="dramblast asks for 1 GiB pages by policy: 8 GiB of table is "
+           "8 TLB entries.")}
+{snip("libsashstore/maglev.c", "/* aligned_alloc(4096, 8 GiB) as shipped",
+      "maglev_conntrack.pairs = backing_alloc(size, BACKING_THP2M);",
+      note="maglev asks for nothing in particular, and transparent hugepages "
+           "give it 2 MiB pages: 4096 entries against a translation buffer "
+           "that holds about 2048.")}
+<p>The <span class="mono">-B</span> flag exists to break that tie: it overrides
+each mode's default so the two can be compared at equal address translation, and
+on 4 KiB pages, which neither ships with.</p>
 </section>
 
 <div class="wide">
@@ -1131,6 +1231,84 @@ more waiting while one retiring at three instructions per cycle does not.</p>
 </section>
 """
 
+    # ---------------------------------------------------------------- the floor
+    trio = trio_rows(allc)
+    trio_html = ""
+    if len(trio) == 3:
+        nfit = lsq(series(allc.get("engine_trio", {}), "none"))
+        n_P, n_C = (nfit[0], nfit[1]) if nfit else (None, None)
+        n1 = trio["none"][1]
+        d1 = trio["dramblast"][1]
+        m1 = trio["maglev"][1]
+        # first queue count at which each arm reaches the offered load
+        sat = {}
+        for mode, t in trio.items():
+            hit = [q for q in sorted(t) if t[q][0] >= LINE_RATE - 0.1]
+            sat[mode] = hit[0] if hit else None
+        satline = ", ".join(
+            f"{TRIO_LAB[m]} at {sat[m]}" if sat[m] else f"{TRIO_LAB[m]} never"
+            for m in ("none", "dramblast", "maglev"))
+        trio_html = f"""
+<section class="wrap" id="floor">
+<h2>2 &middot; What forwarding costs with no lookup at all</h2>
+<p>Every per-packet number below is read out of one timed region, and that
+region contains more than the lookup. Before any of it can be attributed to an
+engine, the harness underneath has to be priced. The forwarding loop already has
+a third branch for exactly this: <span class="mono">-m none</span> writes the
+destination MAC exactly as the other two do, and skips only the lookup that
+produced the address.</p>
+{snip("main.c", "uint64_t mac = 0xff;",
+      "port_statistics[portid][lcore_id].fwded += nb_rx;", before=2,
+      note="the forwarding loop's third branch. Same header write as the "
+           "other two engines; no table, no key.")}
+<p>The timed region is the same in all three cases &mdash; one
+<span class="mono">rte_rdtsc</span> before the branch, one after &mdash; so
+subtracting this arm is a subtraction of identical code, not of an estimate.</p>
+{snip("main.c", "uint64_t start = rte_rdtsc();",
+      note="the region every 'cycles per packet' on this page is measured over.")}
+</section>
+
+<div class="wide">
+<figure>
+  {chart_trio(trio)}
+  <figcaption>All three engines swept back to back under one tag, so the
+  comparison does not span the hours that separate the other arms. Top: what the
+  forwarder actually delivers against a generator offering
+  {LINE_RATE}&nbsp;Mpps. Bottom: cycles inside the timed region. Both engines
+  buy their way to line rate with cores; the no-table arm is there at two.
+  </figcaption>
+</figure>
+</div>
+
+<section class="wrap">
+<p>With no hash table the forwarder reaches the offered load with
+<b>two queue pairs</b> and stays there ({satline}). One worker already carries
+{trio["none"][1][0]:.1f}&nbsp;Mpps of the {LINE_RATE} offered. Whatever else is
+true of this system, it is not the packet path that limits it &mdash; it is the
+lookup, and the whole of the rest of this page is about that lookup.</p>
+<p>At a full 64-packet burst the floor is <b>{n1[1]:.0f} cycles per packet</b>,
+against {d1[1]:.0f} for dramblast and {m1[1]:.0f} for maglev at the same burst
+and the same queue count. So {100*(1-n1[1]/d1[1]):.0f}% of dramblast's
+per-packet cost and {100*(1-n1[1]/m1[1]):.0f}% of maglev's is the lookup itself.
+The harness is not a meaningful part of either number, which is the licence the
+rest of this page needs.</p>
+<p>The floor is not flat, though, and that part <em>is</em> a correction. Fitted
+the same way as everything else, the no-table arm has a per-burst term of its
+own: <span class="mono">P&nbsp;=&nbsp;{n_P:.1f}</span> cycles per packet and
+<span class="mono">C&nbsp;=&nbsp;{n_C:.0f}</span> cycles per burst. That is the
+two timestamp reads and the loop entry, and it is charged to every burst in
+every arm. The per-burst cost attributed to dramblast below is therefore about
+{100*n_C/dC:.0f}% instrument; the figure quoted for the allocator, which is a
+difference between two dramblast arms, is unaffected because the instrument
+cancels.</p>
+</section>
+"""
+
+    snip_ticks = snip(
+        "main.c", 'printf("\\nCycle per fwd packet: %lu"', nlines=2,
+        note="an integer quotient of two running totals. At a 64-packet burst "
+             "one printed tick is 64 cycles per burst.")
+
     html = f"""<title>The Burst-Size Crossover</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1139,62 +1317,70 @@ more waiting while one retiring at three instructions per cycle does not.</p>
 
 <header class="wrap">
   <p class="eyebrow">NetBlast &middot; l2fwd on Intel E810-C, 100 GbE</p>
-  <h1>Why the forwarder looked like it fell off a cliff</h1>
-  <p class="lede">The reported collapse at specific queue-pair counts was a
-  harness bug. Underneath it there is a real, much smaller queue-count effect,
-  and taking it apart says something precise about what the two lookup engines
-  trade against each other — and reverses one of this investigation's own
-  earlier conclusions.</p>
+  <h1>Where a forwarded packet's cycles go</h1>
+  <p class="lede">A reported throughput collapse turned out to be a harness bug.
+  Underneath it is a real and much smaller queue-count effect, and taking that
+  effect apart prices every layer between the wire and the answer &mdash; the
+  forwarding loop, the page tables, the lookup algorithm, and one line of
+  allocation nobody meant to pay for.</p>
 </header>
 
 <main>
 <section class="wrap">
+<p>The argument runs in six steps, each one the precondition for the next.</p>
 <div class="findings">
-  <div class="finding"><span class="n">01</span><p><b>The dips are not a
-  performance phenomenon.</b> <code>run.sh</code> gave N lcores for N queues,
-  but serving N queues needs N+1 — one worker each plus the main lcore. Above a
-  threshold the run died in <code>rte_exit("Not enough cores")</code> and the
-  reported figure was a floor, not a measurement. With the corrected invocation
-  both engines scale cleanly to line rate.</p></div>
+  <div class="finding"><span class="n">01</span><p><b>Fix the instrument.</b>
+  <code>run.sh</code> gave N lcores for N queues, but serving N queues needs
+  N+1. Above a threshold the run died in
+  <code>rte_exit("Not enough cores")</code> and the reported figure was a floor,
+  not a measurement. <a href="#rig">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">02</span><p><b>The real effect is a cost
-  paid once per RX burst, not per packet.</b> Fitting
-  <span class="mono">cycles/packet = P + C/B</span> across the sweep gives
-  dramblast <span class="mono">C = {dC:.0f}</span> cycles per burst
-  (R&sup2; {dR:.3f}); maglev's slope is indistinguishable from zero. As the
-  queue count rises the same packet stream is split over more queues, bursts
-  shrink, and dramblast's fixed cost is amortised over fewer packets.</p></div>
+  <div class="finding"><span class="n">02</span><p><b>Price the floor.</b> With
+  the lookup removed and nothing else changed, the forwarder holds line rate on
+  two cores at {trio["none"][1][1] if len(trio)==3 else 5:.0f} cycles per
+  packet. The lookup is essentially the entire per-packet cost &mdash; but the
+  floor has a per-burst term of its own, which every other arm inherits.
+  <a href="#floor">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">03</span><p><b>Both engines spend nearly
-  the same number of cycles computing. The whole difference is time spent
-  waiting.</b> {dwork:.0f} cycles of computation for dramblast against
-  {mwork:.0f} for maglev — within {abs(mwork-dwork)/dwork*100:.0f}% — while
-  maglev waits {mns:.1f} ns per packet and dramblast only {dns:.1f} ns. The
-  software prefetch pipeline hides about {(1-dns/mns)*100:.0f}% of the same
-  memory access. Note that equal <em>cycles</em> is not equal work: dramblast
-  retires about 40% more instructions per packet, at more than twice the
-  instructions-per-cycle. Doing more, faster, to wait less is the
-  trade.</p></div>
+  <div class="finding"><span class="n">03</span><p><b>Make the two engines
+  comparable.</b> As shipped they differ in address translation as well as
+  algorithm: 8 TLB entries against 4096. Swapping each onto the other's page
+  size shows translation is about a fifth of the gap, not the explanation.
+  <a href="#pages">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">04</span><p><b>Most of that per-burst
-  cost is one call to <code>aligned_alloc</code>.</b> Sweeping the number of
-  round trips the burst performs prices one at
-  <b>{lo_est:.0f}&ndash;{hi_est:.0f} cycles</b> —
-  {100*lo_est/shipped_C:.0f}&ndash;{100*hi_est/shipped_C:.0f}% of the whole
-  per-burst figure, against an earlier estimate of <em>at most 11%</em> taken
-  from a published number rather than measured. The 64-byte alignment request,
-  which buys nothing, is what routes the call off glibc's fast path. It is a
-  range because the counter is an integer and one tick is 64 cycles per
-  burst — quoting it tighter than that produced a retracted result.</p></div>
+  <div class="finding"><span class="n">04</span><p><b>Find what depends on
+  queue count.</b> A cost paid once per RX <em>burst</em>, not per packet.
+  Fitting <span class="mono">cycles/packet = P + C/B</span> gives dramblast
+  <span class="mono">C = {dC:.0f}</span> cycles per burst (R&sup2; {dR:.3f});
+  maglev's slope is indistinguishable from zero. So dramblast is the cheaper
+  engine only while the burst holds more than {crossover:.1f} packets.
+  <a href="#burst">&rarr;</a></p></div>
 
-  <div class="finding"><span class="n">05</span><p><b>The prefetch pipeline is
-  worth about 165 cycles each time it fills, and it hides latency rather than
-  removing work.</b> Shortening it eightfold costs 4.1% more instructions per
-  packet but 18.5% more cycles. That per-fill price was calibrated on two depths
-  and then predicted a third before it was run: predicted +2.58 cycles per
-  packet, measured {pair_mean:+.2f} over three paired repeats, with no-effect
-  excluded and the point prediction at the edge of the tighter interval.</p></div>
+  <div class="finding"><span class="n">05</span><p><b>Take that cost apart.</b>
+  It is executed work, not waiting. Most of it is one call to
+  <code>aligned_alloc</code> &mdash;
+  <b>{lo_est:.0f}&ndash;{hi_est:.0f} cycles</b>, against an earlier estimate of
+  <em>at most 11%</em> taken from a published figure rather than measured. The
+  remainder is the prefetch pipeline's ramp, worth about 165 cycles each time it
+  fills. <a href="#composition">&rarr;</a></p></div>
+
+  <div class="finding"><span class="n">06</span><p><b>Say what it is worth.</b>
+  The counter is an integer, the identical condition run twice differs by
+  {abs(next((r for m, _, r, _, _ in repeat_rows(allc) if m == "dramblast"), 0.45)):.2f}
+  cycles per packet, and three claims on this page have been retracted by later
+  measurement. All three are kept, with the reasoning that produced them.
+  <a href="#corrections">&rarr;</a></p></div>
 </div>
+</section>
+
+<section class="wrap" id="rig">
+<h2>1 &middot; The collapse was the instrument</h2>
+<p>The committed sweep showed both engines falling roughly seventyfold at
+specific queue-pair counts and never recovering. The shape is wrong for a
+performance phenomenon &mdash; it is quantised, and it never comes back &mdash;
+and the cause is in the core assignment. One lcore is claimed per queue, and the
+main lcore is skipped, so serving N queues needs N+1 lcores. Given N, the loop
+runs off the end of the enabled set.</p>
 </section>
 
 <div class="wide">
@@ -1205,21 +1391,46 @@ more waiting while one retiring at three instructions per cycle does not.</p>
     <span class="key"><span class="sw" style="background:var(--b)"></span>maglev</span>
     <span class="key">dashed: as reported &middot; solid: corrected invocation</span>
   </div>
-  <figcaption>The committed data falls roughly seventyfold to a quantised floor
-  and never recovers. That floor is <span class="mono">rte_exit</span>, not
-  throughput. Re-run with one lcore per queue plus the main lcore, both engines
-  scale linearly until they meet the 93.28&nbsp;Mpps line rate of the
+  <figcaption>That floor is <span class="mono">rte_exit</span>, not throughput.
+  Re-run with one lcore per queue plus the main lcore, both engines scale
+  linearly until they meet the 93.28&nbsp;Mpps line rate of the
   generator.</figcaption>
 </figure>
 </div>
 
 <section class="wrap">
-<h2>What is actually queue-count dependent</h2>
+<p>The sweep driver in this repository carries the correction, and says so where
+it makes it, because the difference between the two invocations is one arithmetic
+expression and it silently converts a benchmark into a crash report.</p>
+{snip("sweep.sh", "#   run.sh:   MAX_CORE", "#   here:     MAX_CORE",
+      note="the whole of the fix, and the reason the original numbers looked "
+           "the way they did.")}
+<h3>What the instrument can resolve</h3>
+<p>The second property of the rig matters just as much and is easier to miss:
+cycles per packet are reported as an <b>integer</b>, the quotient of two running
+totals.</p>
+{snip_ticks}
+<p>Every number on this page is a mean of small integers, and nothing is
+meaningful below one tick. Counted that way the claims here are many ticks
+wide &mdash; the engine gap 64, the page-size effects 19 to 44, the allocator
+round trip 8 &mdash; with three exceptions that are marked as approximate where
+they appear. Re-running the identical condition lands <em>below</em> one tick,
+which is both the right answer and the scale for reading everything else. Two
+results on this page were retracted for being quoted past this line;
+<a href="#corrections">they are set out at the end</a>.</p>
+</section>
+
+{trio_html}
+
+{crossover_html}
+
+<section class="wrap" id="burst">
+<h2>4 &middot; What is actually queue-count dependent</h2>
 <p>Offered load is held at line rate while the queue count rises, so the same
-packet stream is divided over more queues and the average RX burst shrinks —
-from 64 packets down to 4 — with nothing else about the workload changing. That
-makes the sweep an instrument for separating a per-packet cost from a per-burst
-one, because only the second depends on burst size.</p>
+packet stream is divided over more queues and the average RX burst shrinks &mdash;
+from 64 packets down to 4 &mdash; with nothing else about the workload changing.
+That makes the sweep an instrument for separating a per-packet cost from a
+per-burst one, because only the second depends on burst size.</p>
 </section>
 
 <div class="wide">
@@ -1242,17 +1453,29 @@ one, because only the second depends on burst size.</p>
 dramblast is cheaper than maglev exactly while</p>
 <blockquote>the RX burst holds more than {crossover:.1f} packets.</blockquote>
 <p>Above that, dramblast wins by up to 40%. Below it, it loses. That single
-inequality is the whole shape of the queue-count dependence — and it is why the
-engine that looks faster in a microbenchmark can be the slower one in a
+inequality is the whole shape of the queue-count dependence &mdash; and it is why
+the engine that looks faster in a microbenchmark can be the slower one in a
 deployment that spreads traffic across many queues.</p>
+<p>One bookkeeping note, because two numbers for the same quantity appear on this
+page. The fit above is taken on the original binary, because the clock-arm
+decomposition in the next section needs a matched turbo run and only that binary
+has one: <span class="mono">C = {dC:.0f} &plusmn; {se_old:.0f}</span> cycles per
+burst. Everything that compares one arm against another is read instead against
+the control arm of the refactored build, where the same fit gives
+<span class="mono">{shipped_C:.0f} &plusmn; {se_new:.0f}</span>. The two differ
+by {abs(shipped_C-dC)/((se_old**2+se_new**2)**0.5):.1f}&sigma; of their combined
+error, which is to say they are the same measurement; but a difference taken
+across the two would not be.</p>
+</section>
 
-<h2>Splitting the cost into work and waiting</h2>
+<section class="wrap" id="composition">
+<h2>5 &middot; What the per-burst cost is made of</h2>
 <p>A cost measured in core cycles at two different clock speeds separates
 computation from memory access, because the two scale differently: instructions
 retire in a fixed number of <em>cycles</em>, while a DRAM access takes a fixed
 number of <em>nanoseconds</em> and therefore costs more cycles on a faster core.
-Running the identical binary at {fp/1000:.3f} GHz and {ft/1000:.3f} GHz gives
-two equations and two unknowns.</p>
+Running the identical binary at {fp/1000:.3f} GHz and {ft/1000:.3f} GHz gives two
+equations and two unknowns.</p>
 </section>
 
 <div class="wide">
@@ -1271,55 +1494,57 @@ two equations and two unknowns.</p>
 </div>
 
 <section class="wrap">
-<p>That last row matters because it kills the obvious explanation. If the
-per-burst cost were the prefetch pipeline failing to fill on a short burst, it
-would show up as <em>stall</em>. It does not: it is
+<p>That last row is what narrows the search. If the per-burst cost were the
+prefetch pipeline failing to fill on a short burst, it would show up as
+<em>stall</em>. It does not: it is
 {100*(1-decompose(dC, fits[("dramblast","turbo")][1], fp, ft)[1]*fp/1000.0/dC):.0f}%
 executed work. Whatever dramblast is doing once per burst, it is doing it, not
-waiting for it.</p>
-
+waiting for it &mdash; so the thing to look for is several hundred instructions,
+somewhere on the per-burst path.</p>
+{check_html}
 {note_html}
 </section>
 
 {alloc_html}
 {depth_html}
-{check_html}
-{crossover_html}
+
+<section class="wrap" id="corrections">
+<h2>6 &middot; What these numbers are worth</h2>
+<p>Three results on this page were retracted by later measurement, and a fourth
+was withdrawn and then re-established. Two of the four are recorded where the
+number they changed appears &mdash; the allocator's <em>at most 11%</em> in
+section 5, and the depth-32 point's 3.1&sigma; just above. The other two are
+here, because they are properties of the rig rather than of either engine. In
+every case the mistake had the same shape: precision claimed past what the
+instrument can resolve, which then grew a mechanism to explain itself and stayed
+internally consistent while describing rounding.</p>
 {repeat_html}
+{retraction_alloc}
+</section>
+
 <section class="wrap">
-<h2>How much of this is the measurement rig</h2>
-<p>Two properties of the machine turned out to matter more than expected, and
-both are recorded as conditions of the experiment rather than corrected away.</p>
-<p>A third property is the instrument itself. Cycles per packet are reported as
-an <b>integer</b>, so at a 64-packet burst the smallest distinguishable step is
-one tick. Counted that way, every claim on this page is many ticks wide — the
-engine gap 64, the page-size effects 19 to 44, the allocator round trip 8 — with
-three exceptions that are stated as approximate where they appear: the
-<span class="mono">-B/-A/-Q</span> refactor at 3 ticks, dramblast's 1 GiB to
-2 MiB step at 3, and the depth-32 point at 1.8, which is why that one needed six
-runs. Re-running the identical condition lands below one tick, which is both the
-right answer and the scale for reading the rest.</p>
+<h2>The machine this was measured on</h2>
+<p>Two properties of the host turned out to matter more than expected, and both
+are recorded as conditions of the experiment rather than corrected away.</p>
 <p>Idle states are disabled on all 56 cores, so every core spins unhalted and the
 package never goes quiet. The all-core turbo ceiling is therefore pinned near
-2.99&nbsp;GHz regardless of load — measured at {ft:.0f} MHz on every one of ten
-runs spanning one to ten busy cores, with 1 MHz of spread. Nothing here should
-be described as running at the 3.7&nbsp;GHz nominal.</p>
-<p>The two engines also ship on different page sizes: dramblast maps its 8 GiB
-table on 1 GiB pages, while maglev's plain
-<span class="mono">aligned_alloc</span> is silently promoted by transparent
-hugepages to 2 MiB pages. That is 8 TLB entries against 4096. Every comparison
-between them was therefore a comparison of algorithm <em>and</em> address
-translation at once — a confound found by looking for one, not by it causing
-trouble.</p>
+2.99&nbsp;GHz regardless of load &mdash; measured at {ft:.0f} MHz on every one of
+ten runs spanning one to ten busy cores, with 1 MHz of spread. Nothing here
+should be described as running at the 3.7&nbsp;GHz nominal.</p>
+<p>And the two engines ship on different page sizes, which is the confound
+<a href="#pages">section 3</a> exists to remove. It was found by looking for it,
+not by it causing trouble &mdash; which is the only reason it did not quietly
+become the result.</p>
 </section>
 
 <section class="wrap">
 <footer>
 Measured on a single-socket Intel Xeon Gold 5512U with an E810-C 100 GbE NIC,
 DPDK 21.11, against a hardware generator holding 93.28 Mpps of 110-byte frames
-across 16.8M flows. Every figure on this page is generated from the measured
-data by <span class="mono">l2fwd/make_report.py</span>; the full reasoning,
-including the mistakes, is in <span class="mono">docs/INVESTIGATION.md</span>.
+across 16.8M flows. Every figure and every quoted source line on this page is
+generated from the working tree by
+<span class="mono">l2fwd/make_report.py</span>; the full reasoning, including
+the mistakes, is in <span class="mono">docs/INVESTIGATION.md</span>.
 </footer>
 </section>
 </main>

@@ -207,6 +207,70 @@ def main():
 
     print()
     print("=" * 84)
+    print("0. THE FLOOR   the same forwarding loop with the lookup removed")
+    print("=" * 84)
+    # `-m none` (main.c, the forwarding loop's third branch) writes the
+    # destination MAC exactly as the other two engines do and skips only the
+    # lookup. Everything else on this page is a per-packet cost measured over a
+    # timed region that contains this arm as well, so without it no number here
+    # can be stated as a fraction of anything.
+    trio = allc.get("engine_trio", {})
+    if len(trio) < 3:
+        print("  not measured yet: ./run_matrix.sh trio")
+    else:
+        print(f"  {'mode':10} {'q':>2} {'burst':>5} {'Mpps':>7} {'cyc/pkt':>8} "
+              f"{'insns/pkt':>10}")
+        for mode in ("none", "dramblast", "maglev"):
+            for q in sorted(trio[mode], key=int):
+                r = trio[mode][q]
+                ipp = ((r.get("insns") or 0)
+                       / (r["steady_mpps"] * 1e6 * 8.0) if r.get("steady_mpps") else 0)
+                print(f"  {mode:10} {int(q):>2} {r.get('rx_batch', 0):>5} "
+                      f"{r.get('steady_mpps', 0):>7.2f} {r['cycles_per_pkt']:>8} "
+                      f"{ipp:>10.1f}")
+        # Where each arm first reaches the offered load. The generator holds
+        # 93.28 Mpps, so "reached it" is the only saturation test that does not
+        # depend on a fit.
+        print()
+        for mode in ("none", "dramblast", "maglev"):
+            hit = [int(q) for q in sorted(trio[mode], key=int)
+                   if trio[mode][q].get("steady_mpps", 0) >= 93.2]
+            print(f"  {mode:10} reaches the offered load at "
+                  + (f"q={hit[0]}" if hit else "no queue count in the sweep"))
+
+        # The lookup's share, taken only where all three sit at a full burst so
+        # that no per-burst term is in the comparison.
+        print()
+        qs = [q for q in trio["none"]
+              if all(trio[m].get(q, {}).get("rx_batch") == 64 for m in trio)]
+        for q in sorted(qs, key=int):
+            n = trio["none"][q]["cycles_per_pkt"]
+            d = trio["dramblast"][q]["cycles_per_pkt"]
+            m = trio["maglev"][q]["cycles_per_pkt"]
+            print(f"  q={q}, burst 64:  floor {n}   dramblast {d} "
+                  f"({100*(1-n/d):.0f}% lookup)   maglev {m} ({100*(1-n/m):.0f}% lookup)")
+        if not qs:
+            print("  no queue count holds a 64-packet burst in all three arms")
+
+        # FALSIFICATION. The floor is not flat: the timed region has its own
+        # fixed cost per burst (two rdtsc reads and the loop entry), and that
+        # cost is charged to every arm. If it were a large fraction of
+        # dramblast's per-burst coefficient, the per-burst result would be
+        # substantially instrument rather than engine.
+        nf = fit_of(allc, "engine_trio", "none")
+        if nf and base_d:
+            print()
+            print(f"  floor fit:  P = {nf['P']:.1f} +/- {nf.get('se_at', {}).get(64, 0):.1f}"
+                  f"   C = {nf['C']:.0f} +/- {nf['se']:.0f} cycles/burst"
+                  f"   R2 {nf['r2']:.3f}  n={nf['n']}")
+            print(f"  dramblast's C is {base_d['C']:.0f}; the instrument accounts for "
+                  f"{100*nf['C']/base_d['C']:.0f}% of it.")
+            print("  Differences between two dramblast arms (the allocator and depth")
+            print("  results below) are unaffected: the instrument cancels in a paired")
+            print("  difference. The absolute per-burst figure is not.")
+
+    print()
+    print("=" * 84)
     print("1. CROSSOVER   each mode on the other's page backing")
     print("=" * 84)
     base_cond = "pinned2_asshipped" if "pinned2_asshipped" in allc else "pinned_2100mhz"
@@ -1113,9 +1177,38 @@ def main():
                          "xtick.color": INK_2, "ytick.color": INK_2,
                          "axes.edgecolor": GRID, "xtick.major.size": 0,
                          "ytick.major.size": 0})
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    # Panel 0 is the floor arm, and only exists once the trio block has run.
+    # Without it the figure keeps its original three panels rather than
+    # reserving an empty frame for an experiment that has not happened.
+    trio = allc.get("engine_trio", {})
+    has_trio = len(trio) == 3
+    npan = 4 if has_trio else 3
+    fig, axes = plt.subplots(1, npan, figsize=(5.4 * npan, 5))
+    k = 0
 
-    ax = axes[0]
+    if has_trio:
+        ax = axes[0]
+        k = 1
+        for mode, col, lab in (("maglev", ORANGE, "maglev"),
+                               ("dramblast", BLUE, "dramblast"),
+                               ("none", INK_2, "no hash table")):
+            pts = sorted((int(q), r["steady_mpps"])
+                         for q, r in trio.get(mode, {}).items()
+                         if r.get("steady_mpps"))
+            if pts:
+                ax.plot([q for q, _ in pts], [v for _, v in pts], marker="o",
+                        color=col, linewidth=2, markersize=6, label=lab)
+        ax.axhline(93.28, color=INK, linewidth=1, linestyle="--", alpha=0.5)
+        ax.text(0.99, 0.905, "offered load 93.28 Mpps", transform=ax.transAxes,
+                ha="right", fontsize=8.5, color=INK_2)
+        ax.set_ylim(0, 100)
+        ax.set_xlabel("RX/TX queue pairs")
+        ax.set_ylabel("delivered Mpps")
+        ax.legend(frameon=False, fontsize=9, loc="lower right")
+        ax.set_title("0. The lookup is what costs, not the forwarder",
+                     fontsize=11, loc="left", pad=10)
+
+    ax = axes[k]
     # q=1 rather than the fitted intercept: on 4 KiB pages the fit absorbs a
     # core-count term it cannot represent, and for maglev on 4 KiB there is no
     # fit at all because that arm never saturates the link and so never leaves a
@@ -1141,7 +1234,7 @@ def main():
     ax.set_title("1. Page backing moves the per-packet cost", fontsize=11,
                  loc="left", pad=10)
 
-    ax = axes[1]
+    ax = axes[k + 1]
     # Matched-burst excess, NOT the fitted C. The +8 arm is so slow it never
     # leaves a 64-packet burst, so its own slope is unmeasurable (R^2 0.62) --
     # it is excluded from the line for that reason, and plotting its fitted C
@@ -1174,7 +1267,7 @@ def main():
     ax.set_title("2. What one allocator round trip costs", fontsize=11,
                  loc="left", pad=10)
 
-    ax = axes[2]
+    ax = axes[k + 2]
     # Deliberately NOT P and C against depth. That figure would draw the
     # mis-specification as though it were the finding: below Q = B the number
     # of pipeline fills is ceil(B/Q), so a line in 1/B is the wrong shape and
