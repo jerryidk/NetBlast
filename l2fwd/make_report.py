@@ -430,6 +430,21 @@ def repeat_rows(allc):
     return out
 
 
+
+def depth_pairs(allc):
+    """Paired depth-32 vs depth-64 differences from the interleaved repeats."""
+    out = []
+    for i in (1, 2, 3):
+        def mean(cond):
+            runs = [r for r in allc.get(cond, {}).get("dramblast", {}).values()
+                    if r.get("rx_batch") == 64]
+            return sum(r["cycles_per_pkt"] for r in runs) / len(runs) if runs else None
+        a, b = mean(f"depth_32_r{i}"), mean(f"depth_64_r{i}")
+        if a and b:
+            out.append((i, a, b, a - b))
+    return out
+
+
 CSS = """
 :root{
   --ground:#f5f7f7; --panel:#ffffff; --ink:#10181a; --ink-2:#55635f;
@@ -739,6 +754,49 @@ taken from a paper had quietly replaced a measurement.</p>
 </section>
 """
 
+    # The depth-32 point is the one that tests the ramp model, and one sweep
+    # each could not resolve it against the run-to-run floor. These are the
+    # repeats that did.
+    dprs = depth_pairs(allc)
+    pairs_html = ""
+    if len(dprs) >= 3:
+        ds = [d for _, _, _, d in dprs]
+        n = len(ds)
+        m = sum(ds) / n
+        sd = (sum((v - m) ** 2 for v in ds) / (n - 1)) ** 0.5
+        sem = sd / n ** 0.5
+        tcrit = {2: 4.303, 3: 3.182, 4: 2.776}.get(n - 1, 2.0)
+        lo_i, hi_i = m - tcrit * sem, m + tcrit * sem
+        rowsh = "".join(f"<tr><td>{i}</td><td class=\"num\">{a:.2f}</td>"
+                        f"<td class=\"num\">{b:.2f}</td>"
+                        f"<td class=\"num\">{d:+.2f}</td></tr>"
+                        for i, a, b, d in dprs)
+        pairs_html = f"""
+<h3>Resolving the depth-32 point</h3>
+<p>That 1.8-cycle step is the one measurement that <em>tests</em> the model of
+the pipeline ramp, and against the run-to-run floor a single sweep of each arm
+could not separate the model's prediction from no effect at all. So both arms
+were run three more times, alternating rather than one block after the other, so
+that any drift over the half hour would land on both instead of entirely on the
+second. The statistic is the paired difference within each repeat.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>repeat</th><th class="num">depth 32</th><th class="num">depth 64</th>
+<th class="num">excess</th></tr></thead>
+<tbody>{rowsh}</tbody>
+</table></div>
+<p>The paired mean is <b>{m:+.2f} cycles per packet</b>, standard error
+{sem:.2f}, 95% interval [{lo_i:+.2f}, {hi_i:+.2f}]. The model — calibrated on
+the depth-8 and depth-16 arms alone, so it shares nothing with these numbers —
+predicts +2.58; no effect predicts 0.00. <b>The interval contains the prediction
+and excludes the null.</b></p>
+<p>An earlier version of this page reported this same comparison as a 3.1σ
+confirmation on the strength of one sweep each. That figure used the scatter
+within a sweep, which cannot see drift between sweeps; once the repeat arm
+measured that drift, the same data said nothing at all. Running it three more
+times is what settled it, and the answer happens to be the one the first,
+unjustified version guessed.</p>
+"""
+
     # The depth section exists only once the depth arms have run.
     at64 = depth_at64(allc)
     depth_html = ""
@@ -774,10 +832,12 @@ counters rather than a model — a cycle count on its own cannot tell those two
 apart, which is why the instruction counter has been read alongside it
 throughout.</p>
 <p>It also prices the design decision. Halving the shipped depth {d_hi} to 32
-costs {at64[32][0]-c_hi:.1f} cycles per packet — only about twice the
-run-to-run floor measured below, so read it as "very little" rather than as a
-number — while going all the way down to {d_lo} costs {c_lo-c_hi:.1f}. The
-returns are nearly exhausted before the shipped depth is reached.</p>
+costs about two cycles per packet — small enough that a single sweep of each
+could not resolve it, which is why it was run six times; see below. Going all
+the way down to {d_lo} costs {c_lo-c_hi:.1f}. The returns are nearly exhausted
+before the shipped depth is reached, so the last doubling buys very
+little.</p>
+{pairs_html}
 <p>Fitting the per-burst model separately to each depth produces something
 impossible — at depth&nbsp;8 the per-burst term comes out
 <em>below</em> the cost of the single <span class="mono">aligned_alloc</span>
@@ -822,15 +882,15 @@ bursts a saturated link produces, the burst size is an <em>outcome</em> rather
 than a setting and it wanders between runs, costing several times that. Every
 matched-burst comparison on this page is made at burst 64, which is the stable
 end.</p>
-<p>Folding this into the depth arms changed a verdict. The depth-32 point — the
-one that tests the pipeline-ramp model — is an effect of 1.8 cycles per packet,
-about twice this floor. Quoted against within-sweep scatter alone it looked like
-a 3.1σ confirmation; against the measured run-to-run spread it is 1.6σ from no
-effect and 0.7σ from the prediction: consistent with the model, and not
-excluding the alternative. The larger results are not close to this line — the
-allocator pair is six times the floor and the eightfold pipeline shortening is
-sixteen times — but the sigma attached to anything smaller than that was
-optimistic until this arm existed.</p>
+<p>Folding this in withdrew a verdict. The depth-32 point — the one that tests
+the pipeline-ramp model — is an effect of about two cycles per packet, roughly
+twice this floor. Quoted against within-sweep scatter alone it had looked like a
+3.1σ confirmation; against the measured run-to-run spread the same data said
+nothing. It was settled by running both arms three more times, which is the only
+thing that could have settled it. The larger results were never close to this
+line — the allocator pair is six times the floor and the eightfold pipeline
+shortening sixteen times — but every σ quoted before this arm existed was
+optimistic by a factor nobody could have known.</p>
 </section>
 """
 

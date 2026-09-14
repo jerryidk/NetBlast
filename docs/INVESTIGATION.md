@@ -1775,22 +1775,52 @@ actually predicts and what the errors have to be propagated against:
     measured                1.80 ± 1.14
     null (no effect)        0.00
 
-0.7σ from the prediction, 1.6σ from the null: **consistent with the model and
-not excluding the null.** Inconclusive, leaning toward the model.
+0.7σ from the prediction, 1.6σ from the null: consistent with the model and not
+excluding the null. **Inconclusive.**
 
 The first version of this paragraph said 3.1σ from the null and declared the
-model had survived. That used only the within-sweep scatter — the spread of ten
+model confirmed. That used only the within-sweep scatter — the spread of ten
 samples inside one twelve-second window — which cannot see anything that drifts
 between sweeps taken hours apart. The repeat arm (§5.15) measured that drift
 afterwards at 0.45 cycles/packet for dramblast at burst 64, and it is the larger
-term in this comparison. Including it doubled the error bar and changed the
-verdict. The effect being tested is about twice the run-to-run floor, which is
-all the resolution one sweep per depth buys; separating the two hypotheses needs
-repeats at depth 32, not a better fit.
+term in this comparison. Including it doubled the error bar and removed the
+verdict.
 
-The shallower arms are not close to the floor: depth 8's excess is 18.6 ± 1.0
+The shallower arms were never close to the floor: depth 8's excess is 18.6 ± 1.0
 (18σ) and depth 16's is 6.4 ± 1.1 (6σ). Only the depth-32 point, which is the
-one that tests the model, sits near the noise.
+one that tests the model, sat near the noise — so the remedy was repeats, not a
+better fit.
+
+#### Deciding it: three interleaved repeats
+
+Both arms were re-run three times, alternating rather than in two blocks so that
+any drift over the half hour would land on both equally instead of entirely on
+the second; `q=1..5` only, since the comparison is made at a 64-packet burst and
+those are the counts that stay there. The statistic is the **paired** difference
+within each repeat, so drift common to a pair cancels, and the spread of the
+three pairs is a measured error bar rather than an assumed one.
+
+| repeat | depth 32 | depth 64 | excess |
+|---|---|---|---|
+| 1 | 102.00 | 99.80 | +2.20 |
+| 2 | 102.00 | 99.50 | +2.50 |
+| 3 | 101.50 | 99.50 | +2.00 |
+
+    paired mean excess   +2.23 cycles/packet
+    sd of the three       0.25      standard error 0.15
+    95% interval (t, 2 dof)   [+1.61, +2.86]
+
+    ramp model predicts  +2.58        null predicts  0.00
+
+**The interval contains the prediction and excludes the null.** The per-fill
+ramp model is confirmed at depth 32, on a test that could have gone the other
+way — and the prediction it was tested against came from the depth-8 and
+depth-16 arms alone, so it shares nothing with the numbers that decided it.
+
+The four possible verdicts were written into `analyse_matrix.py` before the data
+existed, including the two that would have gone against the model and the
+instruction, for the case where the interval excluded both hypotheses, not to
+pick the nearer one.
 
 #### One model across all four arms, and where it stops being a measurement
 

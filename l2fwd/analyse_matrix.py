@@ -651,7 +651,7 @@ def main():
     if len(pairs) >= 2:
         print()
         print("=" * 84)
-        print("3d. DEPTH 32 vs 64, DECIDED   three interleaved repeats at burst 64")
+        print("3c. DEPTH 32 vs 64, DECIDED   three interleaved repeats at burst 64")
         print("=" * 84)
         print(f"  {'repeat':>7} {'depth 32':>10} {'depth 64':>10} {'excess':>9}")
         for i, a, b, d, na, nb in pairs:
@@ -711,7 +711,7 @@ def main():
     # independently.
     print()
     print("=" * 84)
-    print("3c. ONE MODEL ACROSS ALL DEPTHS   W + ramp*ceil(B/Q)/B + K/B")
+    print("3d. ONE MODEL ACROSS ALL DEPTHS   W + ramp*ceil(B/Q)/B + K/B")
     print("=" * 84)
 
     def depth_rows(depths):

@@ -129,3 +129,26 @@ be too small by whatever the between-sweep drift is. That number did not exist
 until the repeat arm was run, so every sigma quoted before it was optimistic by
 an unknown factor. The one-model fit in the main log (ramp = 166 +/- 25 from all
 forty points) is unaffected, because it pools arms rather than differencing two.
+
+## Decided (2026-09-14, three interleaved repeats)
+
+The inconclusive result above was a resolution problem, not a modelling one, so
+both arms were re-run three times, alternating, at burst 64. Paired differences:
+
+    repeat 1   +2.20
+    repeat 2   +2.50
+    repeat 3   +2.00
+
+    paired mean  +2.23   sd 0.25   se 0.15
+    95% interval (t, 2 dof)  [+1.61, +2.86]
+
+    ramp model predicts +2.58      null predicts 0.00
+
+The interval contains the prediction and excludes the null. **The per-fill ramp
+model is confirmed at depth 32.** The prediction came from the depth-8 and
+depth-16 arms alone and shares nothing with these measurements.
+
+Both the earlier verdicts on this page were wrong in opposite directions, and
+for the same reason: neither had an error bar that included between-sweep drift.
+The first was too confident (3.1 sigma, confirmed); the second, once drift was
+included, was too weak to say anything. Only running the thing twice settled it.
