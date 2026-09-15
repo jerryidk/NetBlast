@@ -201,6 +201,23 @@ def chart_split(rows):
 PERF_WINDOW = 8.0  # seconds, matches sweep.sh
 
 
+def per_pkt(rec, key, pkts):
+    """A counter per packet, or None if that counter is not in the record.
+
+    NOT `(rec.get(key) or 0) / pkts`, which is what this used to be everywhere.
+    An absent counter is not a measured zero, and the difference matters on
+    this page: the no-table arm legitimately reads 0.000 L3 misses per packet,
+    so a rendered 0 cannot be distinguished from a counter that was never
+    recorded. The multiplexing guard makes that more likely rather than less --
+    a reading it refuses leaves the key absent, so a rejected counter would come
+    back as a confident zero, which is the exact failure the guard exists to
+    prevent, one layer further out. A peer session hit the same shape from the
+    other side: a correct rejection reported with a false diagnosis.
+    """
+    v = rec.get(key)
+    return None if v is None or not pkts else v / pkts
+
+
 def tlb_cycles_per_pkt(rec):
     """Cycles this run spent walking page tables, per forwarded packet.
 
@@ -504,10 +521,14 @@ def walk_rows(allc):
             if r.get("rx_batch") != 64 or not r.get("steady_mpps"):
                 continue
             pkts = r["steady_mpps"] * 1e6 * PW
-            t[int(q)] = (r["cycles_per_pkt"],
-                         (r.get("pmu_dtlb_walk_active") or 0) / pkts,
-                         (r.get("pmu_dtlb_walk_completed") or 0) / pkts,
-                         (r.get("insns") or 0) / pkts)
+            # A run missing any of these is dropped from the section rather
+            # than contributing a zero to it; walk_rows feeds the core-count
+            # argument, where a spurious zero would read as "no page walks".
+            vals = [per_pkt(r, k, pkts) for k in
+                    ("pmu_dtlb_walk_active", "pmu_dtlb_walk_completed", "insns")]
+            if any(v is None for v in vals):
+                continue
+            t[int(q)] = (r["cycles_per_pkt"], *vals)
         if t:
             out[lab] = t
     return out
@@ -1311,12 +1332,15 @@ more waiting while one retiring at three instructions per cycle does not.</p>
             if not r.get("steady_mpps"):
                 continue
             pk = r["steady_mpps"] * 1e6 * PERF_WINDOW
-            ll = (r.get("pmu_LLC-load-misses") or 0) / pk
-            st = (r.get("pmu_stalls_l3_miss") or 0) / pk
+            ll = per_pkt(r, "pmu_LLC-load-misses", pk)
+            st = per_pkt(r, "pmu_stalls_l3_miss", pk)
             miss[mode] = (ll, st, r["cycles_per_pkt"])
+            # An em dash where a counter is absent, never a zero: this table is
+            # the one place on the page where 0.000 is also a real measurement.
+            fmt = lambda v, d: "&mdash;" if v is None else f"{v:.{d}f}"
             mrows.append(f"<tr><td>{TRIO_LAB[mode]}</td>"
-                         f"<td class='num'>{ll:.3f}</td>"
-                         f"<td class='num'>{st:.1f}</td>"
+                         f"<td class='num'>{fmt(ll, 3)}</td>"
+                         f"<td class='num'>{fmt(st, 1)}</td>"
                          f"<td class='num'>{r['cycles_per_pkt']}</td></tr>")
         miss_rows = "".join(mrows)
 

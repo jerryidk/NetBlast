@@ -2797,6 +2797,32 @@ licenses cross-binary comparison (§ CONTROL, `pinned2` against `pinned`) would
 have to be re-run to license another one, and there is a presentation pending. It
 is a decision for the user rather than a gap to be quietly filled.
 
+**One layer further out, and it is a regression the hardening itself created.**
+The guard refuses a bad reading by leaving the key absent from the record. Every
+consumer of those counters then did `(rec.get(key) or 0) / packets`, so a
+*refused* counter came back as a confident **zero** — which is the exact failure
+the guard exists to prevent, displaced one layer outward, and made more likely
+by the guard rather than less. It matters most in the two places a zero is also
+a real answer: the no-table arm legitimately reads 0.000 L3 misses per packet in
+§5.22's table, and the 1 GiB control legitimately takes zero page walks in
+§5.18, which is the control the whole core-count argument rests on. A rendered
+zero was indistinguishable from a counter that was never recorded.
+
+`per_pkt()` now returns `None` for an absent counter. The report prints an em
+dash where one is missing rather than a number, and `walk_rows` drops such a run
+from the section instead of letting it contribute a zero to it. Nothing on the
+published page moves — the dataset is complete, and the output is byte-identical
+— so the only thing that changed is what happens when it is not.
+
+The peer session found the same shape from the other side, which is what
+prompted looking: a short row in their parser was correctly rejected, but the
+rejection read "perf did not report ['cycles']", when perf had reported it
+perfectly well and the output *format* had changed underneath. Correct outcome,
+false diagnosis, and safe by accident of a whitelist rather than by design. The
+general form is worth stating because it is not the same as being wrong: **a
+correct verdict reached for a false reason sends the next reader after the wrong
+thing**, and it is invisible precisely because the verdict is right.
+
 **A closing note on what this exchange is evidence of.** Two sessions agreed,
 repeatedly, and the agreement was the weakest evidence in it — twice it was the
 thing that locked an error in rather than the thing that caught one. Both
