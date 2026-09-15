@@ -2861,3 +2861,49 @@ counter asked to do something its author had not predicted, and a test that
 oversubscribes real hardware rather than replaying what its author believed.
 Those are what moved the conclusions. Every conclusion moved by agreement
 subsequently had to be retracted.
+
+### 5.25 The literals in the report, and a checker that nearly broke one
+
+Almost everything in `docs/report.html` is generated from
+`results_reproduced.json`, so it cannot drift. But a dozen *measured* values are
+written into the prose as literals, because an IPC or a walk occupancy reads
+better mid-sentence than a format specifier. Those can go stale silently, and
+nothing else would notice: the figure beside them regenerates, the sentence does
+not, and no layer produces an error.
+
+The prompt to check was a peer session's observation about their own report,
+whose figures are generated and whose prose is hand-written. Their point was
+sharper than the general hazard: **their newest material was their least
+guarded** — their claim-checker covered sections 1–5 while the section written
+that night, and all its figures, went in with nothing checking them. The same
+was true here. Section 2 (the floor arm) and its numbers went in on the same
+night, and every guard written in this investigation had been pointed at the
+PMU pipeline rather than at the page.
+
+`check_report_numbers.py` re-derives each literal and fails on drift. All ten
+currently match. Two things it caught are worth recording, because neither is
+the thing it was written to find.
+
+**It nearly made a correct number wrong.** The page says dramblast on 2 MiB
+pages "spends 27% of every core cycle with a walk outstanding". The first
+version of the checker derived that as walk occupancy over the *timed region's*
+cycles, got 35.7%, and reported drift. The literal was right and the checker was
+wrong: "every core cycle" includes the RX/TX path outside the `rdtsc` pair, so
+the denominator is `pmu_cycles`, and against that the page's 27% is 26.9%. Had
+this been run and believed at face value, it would have sent someone to "correct"
+an accurate number — which is worse than having no checker, because a checker
+carries authority. Every claim in the file now names its denominator, and where
+two are plausible both are printed side by side.
+
+**Its own matcher went stale before its first run.** Each check first asserts
+the literal still appears on the page, so that a check cannot pass vacuously
+against prose that has been rewritten. One of those matchers failed — not
+because the prose had changed, but because the generated HTML wraps at about 78
+columns and the phrase straddled a line break. A stale checker reporting stale
+prose. It now matches against whitespace-normalised text.
+
+Both are the same shape as everything else in §5.24: the verification layer
+failing in a way that looks like a finding. The general form worth carrying
+forward is that **a checker is itself an unverified claim about what the
+document says**, and it should be injected against before it is trusted — which
+is how §5.24's absent-counter fix was found to be half done, one section up.
