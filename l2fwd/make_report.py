@@ -1349,10 +1349,21 @@ DRAM round trip per packet, and half the cost is waiting for it. dramblast
 reports {miss["dramblast"][0]:.3f} and {miss["dramblast"][1]:.1f}, which cannot
 be a real hit rate &mdash; the same table and the same flows would need to hit
 99.3% of the time in a cache a fifth the size of the live set. What differs is
-attribution, not traffic: dramblast's lines are fetched by
-<span class="mono">_mm_prefetch</span> ahead of the load that consumes them, and
-a software prefetch is not a demand load. The memory traffic is the same. Its
-visibility to the counter &mdash; and to the core &mdash; is not.</p>
+attribution, not traffic, and the code says exactly how.</p>
+{snip("libsashstore/dramblast.c", "inline void dramblast_prefetch",
+      "LX_PREFETCH(&ht->table[idx], PREFETCH_T1);",
+      note="the prefetch is <code>prefetcht1</code>, which fills L2 and not "
+           "L1. Note that the comment above it describes "
+           "<code>PREFETCH_T0</code>, which is not what the line does.")}
+<p>So the line arrives in two steps and <em>neither</em> is a demand load that
+misses the last-level cache. The DRAM fill is performed by the prefetch, which
+is not a load at all; the L2&nbsp;&rarr;&nbsp;L1 move is performed by the
+gather that consumes it, which is a load but hits in L2. The traffic is
+identical to maglev's. Only its visibility &mdash; to this counter, and to the
+core &mdash; is different. <span class="mono">LLC-load-misses</span> and
+<span class="mono">stalls_l3_miss</span> both measure <em>exposure</em> on a
+prefetched path, never volume, and nothing on this page should be read as
+claiming otherwise.</p>
 <p>So the hash table is not incidental to this experiment; it <em>is</em> the
 experiment. Everything below is a consequence of servicing one random DRAM
 access per packet at 93 million packets per second: the gap between the engines

@@ -2435,6 +2435,15 @@ demand loads, and dramblast's lines are brought in by `_mm_prefetch`
 (`dramblast.c:67`, issued in the find loop at `dramblast.c:140-150`) ahead of the
 load that consumes them.
 
+**The code says precisely how**, and it is sharper than "a prefetch is not a
+load". `dramblast_prefetch` issues `PREFETCH_T1` (`dramblast.c:71`), i.e.
+`prefetcht1`, which fills **L2 and not L1** — the comment directly above it
+describes `PREFETCH_T0`, which is not what the line does. So the cache line
+arrives in two steps and *neither* is a demand load that misses the last-level
+cache: the DRAM fill is done by the prefetch, which is not a load at all, and
+the L2 → L1 move is done by the `_mm512_load_si512` gather, which is a load but
+hits in L2. That accounts for 0.007 exactly, with nothing left over.
+
 This is the same fact §5.11 recorded from the other side. There the clock-arm
 method put dramblast's memory share at 17.5% while `stalls_l3_miss` said 0.9%,
 and the conclusion was that the prefetch pipeline converts latency into
@@ -2523,3 +2532,64 @@ On a batched, software-prefetched loop those differ substantially, and §5.22's
 result — that a prefetched path shows almost no demand misses while moving the
 same traffic — is precisely the regime where quoting the wrong one inverts the
 conclusion.
+
+### 5.24 The PMU counters were never multiplexed, now checked rather than assumed
+
+`sweep.sh` carries the claim that its six events "fit the PMU without
+multiplexing on this part: all six report 100.00% enabled". That was true when
+it was written and was never checked again, and nothing downstream could have
+noticed if it stopped being true: a multiplexed counter is scaled up to a
+full-window estimate before `perf` prints it, so it is numerically
+indistinguishable from a measured one. Every PMU-derived result in this
+document — the page-walk decomposition of §5.12 and §5.18, the stall-counter
+corroboration of §5.11, the miss counts of §5.22 — would have quietly become
+extrapolation.
+
+**Audited.** Across all 310 `.perf` sidecars, 1,860 counter readings, six events
+each: **every reading is 100.00% enabled.** The dataset is clean; nothing needs
+revisiting.
+
+**Why it fits, and how little headroom there is.** With SMT enabled a logical
+CPU gets **four** general-purpose counters, not eight. This event set uses six
+events, but `cycles` and `instructions` land on fixed-function counters, leaving
+`dtlb_walk_completed`, `dtlb_walk_active`, `stalls_l3_miss` and
+`LLC-load-misses` to occupy exactly the four GP counters available. The set sits
+precisely at the ceiling. **Adding a single raw event would silently multiplex
+all of them** — which is worth knowing before the next campaign adds one, since
+§5.19 already lists instrument improvements as the first thing to do.
+
+**The guard**, in `extract_results.py`, drops any reading below 99.99% enabled
+rather than storing it, and says so loudly. It was verified by seeding a sidecar
+with a 41.63% reading and confirming the reading was refused and named; the real
+data is unaffected.
+
+**One trap in `perf`'s own output**, passed on by the peer session running the
+`find_batch` campaign, who hit it and rejected two good runs before catching it.
+The `-x,` fields are:
+
+```
+0 value   1 unit   2 event   3 run_time_ns   4 enabled_pct   5 metric   6 metric_unit
+```
+
+Field **5 is the derived metric, not the enabled percentage**. On the
+`instructions` row it holds the IPC, so a guard reading `f[5]` reads a perfectly
+healthy 1.47 IPC as "1.47% enabled" and throws away a good run. Enabled is
+field 4. The extractor here had no guard at all rather than a wrong one, so it
+was not affected, but the index is now written down next to the code that uses
+it.
+
+**Independent corroboration of §5.22, from a different program.** The same peer
+pointed L1 fill-buffer occupancy (`L1D_PEND_MISS.PENDING` / `.PENDING_CYCLES`,
+the encoding validated in §5.23) at their own prefetch-heavy loop and measured
+occupancy flat at ~1.13 across a 64× range of pipeline depth, never approaching
+the ~16 fill-buffer ceiling their hypothesis predicted. Their explanation is
+structurally identical to §5.22's: their enqueue prefetch is `prefetcht2`, which
+parks the line in L2 and allocates no L1 fill buffer, so the L1 level sees
+almost nothing. Two different programs, two different counters, two different
+sessions, same mechanism — **a software prefetch moves the traffic out of view
+of the counters that watch demand paths.** Their loop and dramblast's differ in
+one respect worth recording: theirs issues a second, `prefetcht0` stage eight
+keys ahead to pull the line L2 → L1, and dramblast has no such stage. Whether
+dramblast's demand gather is therefore paying an L2 hit it need not pay, and
+whether `PREFETCH_T0` (which its own comment describes) would be cheaper, is an
+untested one-line question and a good candidate for the next campaign.

@@ -127,6 +127,7 @@ def sidecar(paths):
 
 SIDE = sidecar(sys.argv[3:])
 incomplete = []
+multiplexed = []
 
 # Merge, do not clobber. Each invocation sees only the logs of the sweep that
 # just ran, so rebuilding the file from scratch would silently delete every
@@ -187,6 +188,31 @@ for cond, prefix in CONDS.items():
                 for line in perf.read_text(errors="replace").splitlines():
                     f = line.split(",")
                     if len(f) >= 3 and f[0].strip().isdigit() and f[2].strip():
+                        # Refuse a multiplexed counter instead of storing it.
+                        # A time-shared counter is scaled up to a full-window
+                        # estimate and looks exactly like a measured one, so
+                        # nothing downstream can tell the difference -- and this
+                        # event set sits exactly at the limit (see below), so
+                        # adding one raw event would silently turn every PMU
+                        # number in docs/ into an extrapolation.
+                        #
+                        # `perf stat -x,` fields are:
+                        #   0 value  1 unit  2 event  3 run_time_ns
+                        #   4 enabled_pct  5 metric  6 metric_unit
+                        # Field 5 is the DERIVED METRIC, not the enabled
+                        # percentage: on the `instructions` row it holds the
+                        # IPC, so a guard reading f[5] reads a healthy 1.47 IPC
+                        # as "1.47% enabled" and rejects good runs. A peer
+                        # session hit exactly that and passed it on.
+                        if len(f) >= 5:
+                            try:
+                                pct = float(f[4])
+                            except ValueError:
+                                pct = None
+                            if pct is not None and pct < 99.99:
+                                multiplexed.append(
+                                    f"{log.name}:{f[2].strip()} at {pct:.2f}%")
+                                continue
                         rec["pmu_" + f[2].strip()] = int(f[0])
             if rec:
                 fresh[mode][str(q)] = rec
@@ -197,6 +223,18 @@ for cond, prefix in CONDS.items():
 
 OUT.write_text(json.dumps(out, indent=4) + "\n")
 print(f"wrote {OUT}")
+if multiplexed:
+    print(f"  *** DROPPED {len(multiplexed)} MULTIPLEXED counter reading(s) -- "
+          f"these were time-shared and scaled, not measured:")
+    for m in sorted(multiplexed)[:8]:
+        print(f"      {m}")
+    if len(multiplexed) > 8:
+        print(f"      ... and {len(multiplexed) - 8} more")
+    print("      Six events fit only because `cycles` and `instructions` land "
+          "on fixed-function")
+    print("      counters; with SMT enabled a logical CPU gets FOUR "
+          "general-purpose counters,")
+    print("      so four RAW events is the ceiling for a single pass.")
 if incomplete:
     print(f"  SKIPPED {len(incomplete)} unfinished run(s): "
           + ", ".join(sorted(incomplete)[:6])
