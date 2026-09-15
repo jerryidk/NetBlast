@@ -2907,3 +2907,40 @@ failing in a way that looks like a finding. The general form worth carrying
 forward is that **a checker is itself an unverified claim about what the
 document says**, and it should be injected against before it is trusted — which
 is how §5.24's absent-counter fix was found to be half done, one section up.
+
+**So this one was injected, having initially been verified the wrong way.** It
+was written, run against the real data, and reported ten matches — which proves
+the happy path and nothing else, the exact mistake it exists to catch in the
+page. `--self-test` now fires all four branches against a scratch copy:
+
+1. an unchanged copy passes;
+2. drifting the *data* under unchanged prose fires the affected claims and only
+   those;
+3. changing the *prose* reports the phrase absent rather than skipping the check
+   silently;
+4. a missing page is a hard exit, not ten failed checks.
+
+The fourth exists because of a trap a peer session fell into and recognised:
+they ran their equivalent against a scratch *data* directory while the page path
+still resolved relative to the script, so the page was never opened, every
+literal reported missing, and twelve failures looked exactly like a guard doing
+its job. **An injection that fails for the wrong reason is indistinguishable
+from one that works.** Both paths here now come from one argument, and an
+absent file exits with a message naming it.
+
+Writing the self-test then produced one more instance of the same family: `load()`
+rebinds the module-level `DOCS`, so the restore step in branch 3 copied the
+scratch directory onto itself. A helper quietly mutating shared state so that a
+later step operates on something other than what it names — which is, in
+miniature, every bug in §5.24 and §5.25.
+
+**What the peer's tree produced from the same warning**, recorded because it is
+the outcome that justifies the exercise: four literals on their *published* page
+were wrong at the moment the warning was sent. They had re-taken a dataset,
+updated the table, and left the prose around it untouched — including one claim
+("FB_FULL never exceeds 1.5%", against a measured 1.62%) that was simply false,
+sitting under a caption naming the file that contradicted it. Ten literals here
+were checked and all ten held; the difference is not care, it is that this
+page's numbers are mostly generated while theirs were mostly typed. The
+generated architecture makes this failure *rarer*, which is worse for noticing
+and is the reason the dozen exceptions needed a guard of their own.
