@@ -40,6 +40,9 @@ are merged in by (mode, q); omit it and freq_mhz/hp1g are simply absent.
 """
 import json, re, sys, pathlib, statistics
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from perf_csv import parse_perf   # the multiplexing guard
+
 SP = pathlib.Path(sys.argv[1]); OUT = pathlib.Path(sys.argv[2])
 pats = {
     "min": r"Minimum: ([0-9.]+)", "max": r"Maximum: ([0-9.]+)", "avg": r"Average: ([0-9.]+)",
@@ -185,35 +188,10 @@ for cond, prefix in CONDS.items():
             # later can be answered from data already on disk.
             perf = log.with_suffix(".perf")
             if perf.exists():
-                for line in perf.read_text(errors="replace").splitlines():
-                    f = line.split(",")
-                    if len(f) >= 3 and f[0].strip().isdigit() and f[2].strip():
-                        # Refuse a multiplexed counter instead of storing it.
-                        # A time-shared counter is scaled up to a full-window
-                        # estimate and looks exactly like a measured one, so
-                        # nothing downstream can tell the difference -- and this
-                        # event set sits exactly at the limit (see below), so
-                        # adding one raw event would silently turn every PMU
-                        # number in docs/ into an extrapolation.
-                        #
-                        # `perf stat -x,` fields are:
-                        #   0 value  1 unit  2 event  3 run_time_ns
-                        #   4 enabled_pct  5 metric  6 metric_unit
-                        # Field 5 is the DERIVED METRIC, not the enabled
-                        # percentage: on the `instructions` row it holds the
-                        # IPC, so a guard reading f[5] reads a healthy 1.47 IPC
-                        # as "1.47% enabled" and rejects good runs. A peer
-                        # session hit exactly that and passed it on.
-                        if len(f) >= 5:
-                            try:
-                                pct = float(f[4])
-                            except ValueError:
-                                pct = None
-                            if pct is not None and pct < 99.99:
-                                multiplexed.append(
-                                    f"{log.name}:{f[2].strip()} at {pct:.2f}%")
-                                continue
-                        rec["pmu_" + f[2].strip()] = int(f[0])
+                got, dropped = parse_perf(perf.read_text(errors="replace"))
+                rec.update({"pmu_" + k: v for k, v in got.items()})
+                multiplexed += [f"{log.name}:{e} at {pct:.2f}%"
+                                for e, pct in dropped]
             if rec:
                 fresh[mode][str(q)] = rec
     if not fresh.get("none"):

@@ -2549,28 +2549,80 @@ extrapolation.
 each: **every reading is 100.00% enabled.** The dataset is clean; nothing needs
 revisiting.
 
-**Why it fits, and how little headroom there is.** With SMT enabled a logical
-CPU gets **four** general-purpose counters, not eight. This event set uses six
-events, but `cycles` and `instructions` land on fixed-function counters, leaving
-`dtlb_walk_completed`, `dtlb_walk_active`, `stalls_l3_miss` and
-`LLC-load-misses` to occupy exactly the four GP counters available. The set sits
-precisely at the ceiling. **Adding a single raw event would silently multiplex
-all of them** — which is worth knowing before the next campaign adds one, since
-§5.19 already lists instrument improvements as the first thing to do.
+**Why it fits — and a retraction, because the first answer given here was
+wrong.** The original version of this section reasoned that with SMT a logical
+CPU gets four general-purpose counters, that `cycles` and `instructions` take
+fixed-function ones, and that the four raw events therefore fill the budget
+exactly, so *one more raw event would silently multiplex all of them*. That
+argument was tidy, it was consistent with every reading being at 100%, a peer
+session reported a measurement that appeared to confirm it — and it is not what
+this machine does.
 
-**The boundary confirmed directly, by someone else.** The paragraph above is an
-inference — fixed counters plus four GP counters, and my own readings all at
-100%, which is consistent with fitting but does not demonstrate where the edge
-is. The peer session tested it: six events with **four** raw all report 100.00%
-enabled, and six events with **five** raw report 71.41 / 85.71 / 85.70 / 85.71 /
-85.71 / 85.71 / 57.18. So the ceiling is four raw events and the two
-fixed-function ones are free, measured rather than reasoned. Their numbers, not
-mine, and recorded as theirs.
+Measured directly, on CPU 26, with the shipped set plus extra raw events:
 
-**The guard**, in `extract_results.py`, drops any reading below 99.99% enabled
-rather than storing it, and says so loudly. It was verified by seeding a sidecar
-with a 41.63% reading and confirming the reading was refused and named; the real
-data is unaffected.
+| raw events | enabled |
+|---|---|
+| 4 (the shipped set) | 100.00% on all six |
+| 5 | 100.00% on all seven |
+| 6 | 74.43 – 87.61%, and 61.95% on the last |
+| 7 | 55.43 – 78.14% |
+
+So the ceiling here is **five** raw events, not four, and the shipped set has one
+event of headroom rather than none. Two further checks: making the SMT sibling
+busy (a spinner pinned to CPU 54, the sibling of 26) does not change it, and
+neither does asking perf to count on both siblings — five raw events still read
+100.00% in all three conditions, so the static-partitioning story is not what is
+going on either.
+
+**What the peer's number then means.** They measured five raw events multiplexing
+at 57–86% with *their* event set, and I read that as confirming a general
+ceiling of four. It confirms no such thing: it is a fact about their event set,
+not about the part. Individual events carry counter restrictions, so how many fit
+depends on *which* ones, and neither of us can quote a number that travels. I
+had told them the ceiling was four and that they could drop an event to reach
+it; they were right to keep the counter instead, and I have sent the correction.
+
+**The transferable rule is the one that survives both results.** The number of
+events that fit is not knowable by counting them, so it must be read off each
+run. That is precisely what the guard does, and this correction is an argument
+for it rather than against it: had this document kept relying on "four raw
+events fit", the next campaign would have added a fifth, been correct by
+accident, added a sixth, and had no idea.
+
+**The guard**, now in `perf_csv.py` so that it can be imported and tested, drops
+any reading below 99.99% enabled rather than storing it, and says so loudly.
+`test_perf_guard.py` fires it two ways, and the second is the one that matters
+(the idea is a peer session's, arrived at while closing the same gap on their
+own harness):
+
+- **Synthetic**, seven checks against hand-built perf output: a clean sidecar is
+  accepted whole, a 41.63% reading is refused *and named*, the 99.99% boundary
+  holds on both sides, `<not counted>` is neither stored nor read as zero, a row
+  with no enabled column still parses, and one bad reading does not take the
+  good ones with it. One check exists purely as a regression pin: an
+  `instructions` row carrying an IPC in field 5 must not be read as an enabled
+  percentage.
+- **Real** (`--real`), which oversubscribes the PMU on purpose and asserts the
+  guard rejects what comes back: the shipped set reads 100.00% and is accepted,
+  six raw events read 62.36–87.61% and every one of the eight readings is
+  refused. The multiplexing is produced by the hardware, so this exercises the
+  actual failure mode rather than a reconstruction of it — and unlike a
+  hand-edited percentage it cannot rot, because a part with a different counter
+  budget changes the test's answer instead of letting it pass forever.
+
+Two traps found while writing it, both of which made the test pass while
+measuring nothing, and both of which are why it is worth writing the test
+rather than reasoning about the guard:
+
+- **Count per-CPU, not per-task.** `perf stat -e ... -- sleep 2` reports 100.00%
+  enabled however many events are requested, because the task is off-CPU almost
+  the whole time and enabled and running time are both ~zero. The first version
+  of the real test passed on six oversubscribed events for exactly this reason.
+  A CPU accumulates time whatever is scheduled on it, so `-C` is required — which
+  is also how `sweep.sh` measures.
+- **`name=r5` is a parser error, not a name.** perf reads a bare `rNNN` as its
+  own raw-event syntax, so naming a probe event `r5` fails to parse. It failed
+  loudly, which is the desired behaviour, but it cost a round of debugging.
 
 **One trap in `perf`'s own output**, passed on by the peer session running the
 `find_batch` campaign, who hit it and rejected two good runs before catching it.
