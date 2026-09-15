@@ -2558,6 +2558,15 @@ precisely at the ceiling. **Adding a single raw event would silently multiplex
 all of them** — which is worth knowing before the next campaign adds one, since
 §5.19 already lists instrument improvements as the first thing to do.
 
+**The boundary confirmed directly, by someone else.** The paragraph above is an
+inference — fixed counters plus four GP counters, and my own readings all at
+100%, which is consistent with fitting but does not demonstrate where the edge
+is. The peer session tested it: six events with **four** raw all report 100.00%
+enabled, and six events with **five** raw report 71.41 / 85.71 / 85.70 / 85.71 /
+85.71 / 85.71 / 57.18. So the ceiling is four raw events and the two
+fixed-function ones are free, measured rather than reasoned. Their numbers, not
+mine, and recorded as theirs.
+
 **The guard**, in `extract_results.py`, drops any reading below 99.99% enabled
 rather than storing it, and says so loudly. It was verified by seeding a sidecar
 with a 41.63% reading and confirming the reading was refused and named; the real
@@ -2593,3 +2602,24 @@ keys ahead to pull the line L2 → L1, and dramblast has no such stage. Whether
 dramblast's demand gather is therefore paying an L2 hit it need not pay, and
 whether `PREFETCH_T0` (which its own comment describes) would be cheaper, is an
 untested one-line question and a good candidate for the next campaign.
+
+**A datum on that question, from the peer's own loop, offered with its own
+caveat.** They compared the two-stage arrangement (`prefetcht2` far plus
+`prefetcht0` near) against a single `prefetcht0` at the far distance, and the
+single long-range T0 **won by 8.4%** — 19.55 → 17.91 cycles per operation at
+depth 63. On their workload, paying to land in L1 at long range beats landing in
+L2 and topping up. They were explicit that this is not transferable: dramblast's
+gather consumes the line differently and its lead distance is set by a different
+mechanism, so it is a reason to run the experiment rather than a prediction of
+its result.
+
+**What running it here would take, and why it has not been run.** The project's
+own pattern says the change should be a *runtime* flag, not an edited constant —
+`-B`, `-A` and `-Q` all exist precisely so one binary measures both arms of a
+comparison and no result rests on "we rebuilt it in between". A `-P t0|t1` in
+the same style plus one sweep arm is perhaps twenty minutes of work and nine
+minutes of machine time. It has deliberately not been done in this session:
+every number in `docs/` was taken with the current binary, the control arm that
+licenses cross-binary comparison (§ CONTROL, `pinned2` against `pinned`) would
+have to be re-run to license another one, and there is a presentation pending. It
+is a decision for the user rather than a gap to be quietly filled.
