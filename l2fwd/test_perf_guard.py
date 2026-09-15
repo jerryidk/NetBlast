@@ -102,11 +102,13 @@ SHIPPED = ("cycles,instructions,"
            "cpu/event=0xa3,umask=0x06,cmask=0x06,name=stalls_l3_miss/,"
            "LLC-load-misses")
 
-# Enough extra raw events to go over the edge. How many that takes is NOT a
-# fixed number -- it depends on the event set, because individual events carry
-# counter restrictions -- so it was measured here rather than reasoned about:
-# with this set, five raw events report 100.00% and six multiplex. See
-# docs/INVESTIGATION.md 5.24, which previously said four and was wrong.
+# A set that multiplexes. NOT "one more event than fits" -- there is no such
+# number. Measured on this part: seven raw events schedule at 100.00% when the
+# families do not collide (shipped + 0xc4 + 0xc5 + 0xd1/01), while SIX
+# multiplex when two of them are umasks of the same restricted family. What
+# fails is the collision, not the count. Two 0xd1 umasks is the smallest
+# reliable way to force it here. docs/INVESTIGATION.md 5.24 has the table, and
+# the two wrong ceilings it went through before getting here.
 #
 # The names are x5/x6 and not r5/r6: perf reads a bare `rNNN` as its raw-event
 # syntax, so `name=r5` is a parser error rather than a name. That cost a
@@ -152,7 +154,11 @@ def real():
     got, dropped = parse_perf(over)
     pcts = [float(l.split(",")[4]) for l in over.splitlines()
             if len(l.split(",")) > 4 and l.split(",")[0].strip().isdigit()]
-    check("an oversubscribed PMU multiplexes, and every reading is refused",
+    # The assertion is named for what actually fails. An earlier name said
+    # "an oversubscribed PMU", which baked a false generalisation into a test
+    # written to prevent exactly that -- the peer session hit the identical
+    # thing in their own test's label.
+    check("two 0xd1 umasks collide with the shipped set, and all are refused",
           len(dropped) >= 6 and not got,
           f"{len(dropped)} dropped, enabled {min(pcts):.2f}%-{max(pcts):.2f}%"
           if pcts else "no readings")

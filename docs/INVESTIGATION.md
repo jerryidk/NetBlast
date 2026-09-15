@@ -2567,20 +2567,57 @@ Measured directly, on CPU 26, with the shipped set plus extra raw events:
 | 6 | 74.43 – 87.61%, and 61.95% on the last |
 | 7 | 55.43 – 78.14% |
 
-So the ceiling here is **five** raw events, not four, and the shipped set has one
-event of headroom rather than none. Two further checks: making the SMT sibling
-busy (a spinner pinned to CPU 54, the sibling of 26) does not change it, and
-neither does asking perf to count on both siblings — five raw events still read
-100.00% in all three conditions, so the static-partitioning story is not what is
-going on either.
+Two further checks: making the SMT sibling busy (a spinner pinned to CPU 54, the
+sibling of 26) does not change it, and neither does asking perf to count on both
+siblings — five raw events still read 100.00% in all three conditions, so the
+static-partitioning story is not the mechanism either.
+
+**And "the ceiling is five" is wrong too, in exactly the same way.** The table
+above varies one thing — the count — and reads a rule off it, which is the
+identical mistake one step over. The extra events in it happened to be two
+umasks of `MEM_LOAD_RETIRED` (0xd1). Holding the count fixed and varying *which*
+events instead:
+
+| set | raw | enabled |
+|---|---|---|
+| shipped + `0xd1/01` + `0xd1/02` | 6 | 61.97 – 87.61% |
+| shipped + `0xd1/01` + `0xc4/00` | 6 | **100.00%** |
+| shipped + `0xc4/00` + `0xc5/00` | 6 | **100.00%** |
+| shipped + `0xd1/01` + `0xd1/02` + `0xd1/04` | 7 | 55.61 – 77.95% |
+| shipped + `0xc4/00` + `0xc5/00` + `0xd1/01` | **7** | **100.00%** |
+
+**Seven raw events schedule at 100%; six multiplex.** The count does not predict
+the outcome anywhere in the range that matters here. What predicts it is whether
+two events share a restricted family: two `0xd1` umasks together collide, one
+does not, and mixing families is fine at seven. This is the same shape the peer
+session isolated independently on their own set — three `L1D_PEND_MISS` (0x48)
+umasks together with two `OFFCORE_REQUESTS_OUTSTANDING` (0x20) umasks fail,
+while four 0x48 umasks alone are fine and three 0x48 plus two generic events are
+fine. Two different colliding families, found by two sessions, same mechanism:
+per-event counter restrictions over-constraining each other, not a budget.
+
+So the shipped set's headroom cannot be stated as a number at all. It has room
+for some events and not others, and which is which is not predictable from
+anything this document knows.
 
 **What the peer's number then means.** They measured five raw events multiplexing
 at 57–86% with *their* event set, and I read that as confirming a general
 ceiling of four. It confirms no such thing: it is a fact about their event set,
-not about the part. Individual events carry counter restrictions, so how many fit
-depends on *which* ones, and neither of us can quote a number that travels. I
-had told them the ceiling was four and that they could drop an event to reach
-it; they were right to keep the counter instead, and I have sent the correction.
+not about the part — and, as the table above shows, not even a fact about the
+count within their set. I had told them the ceiling was four and that they could
+drop an event to reach it; they were right to keep the counter instead, and the
+correction has been sent.
+
+**The pattern is worth naming because it caught both sessions twice.** The
+dangerous shape here is not a wrong measurement. Every measurement involved was
+correct: their five raw events really did multiplex, my five raw events really
+did fit, my six really did multiplex. The failure each time was a true
+measurement plus a generalisation that *predicts the measurement already in
+hand* — which is why it survives inspection, and why neither of us could have
+caught it alone with one event set each. The thing that broke it open was
+building the hardware half of the test rather than the synthetic half: a
+synthetic test can only check what its author already believed, so it would have
+passed forever, while the hardware disagreed with both of us.
 
 **The transferable rule is the one that survives both results.** The number of
 events that fit is not knowable by counting them, so it must be read off each
