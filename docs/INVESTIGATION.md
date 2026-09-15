@@ -2814,6 +2814,34 @@ from the section instead of letting it contribute a zero to it. Nothing on the
 published page moves — the dataset is complete, and the output is byte-identical
 — so the only thing that changed is what happens when it is not.
 
+**And the fix was verified by inspection, which is what had missed the bug in
+the first place.** Injecting an absent counter instead — blanking the L3-miss
+reading on the trio `dramblast` q=1 run, and the page-walk counters on a 1 GiB
+control run, in a scratch copy — found the repair was half done in one shot. The
+table declined correctly and printed its em dash; the paragraph *underneath* it,
+which argues from those three numbers, still died with `unsupported format
+string passed to NoneType`. That is not a crash in the useful sense: it names a
+formatting fault, not a missing measurement, and it is the same false-diagnosis
+shape recorded below. The paragraph now withholds itself and names the counter
+that is absent, so the page degrades into saying less rather than into saying
+something untrue or into a stack trace. On the real data the output is
+byte-identical, so nothing on the published page depends on any of this — only
+what happens when a counter is one day missing does.
+
+**The rule, sharpened by the peer's version of the same bug.** They found it in
+their own occupancy calculation, where an unmeasurable denominator became
+`0.00`, was written to a CSV, averaged into a median and plotted. Their
+observation is the part worth keeping: the finding that file exists to support
+is that occupancy is *low*, so a fabricated `0.00` does not contradict the
+conclusion — **it strengthens it**. A spurious 16 would have had them tearing
+the harness apart; a spurious 0 would have had them writing a bolder sentence.
+So: a guard that refuses a value has not finished until every consumer
+distinguishes "refused" from a legal reading, and **the danger is proportional
+to how well the fabricated value agrees with what you expect**. Both of the rows
+this section protects — 0.000 L3 misses on the no-table arm, zero page walks on
+the 1 GiB control — are exactly that case: a fabricated zero indistinguishable
+from a real one, in the rows a reader leans on hardest.
+
 The peer session found the same shape from the other side, which is what
 prompted looking: a short row in their parser was correctly rejected, but the
 rejection read "perf did not report ['cycles']", when perf had reported it

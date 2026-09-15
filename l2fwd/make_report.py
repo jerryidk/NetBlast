@@ -1344,6 +1344,46 @@ more waiting while one retiring at three instructions per cycle does not.</p>
                          f"<td class='num'>{r['cycles_per_pkt']}</td></tr>")
         miss_rows = "".join(mrows)
 
+        # The paragraph under the miss table argues FROM those three numbers,
+        # so if any is absent the argument cannot be made. The page then says
+        # which counter is missing rather than crashing on a None or quietly
+        # asserting a zero. Injecting an absent counter is how this was found:
+        # the table itself already declined correctly, and the prose beneath it
+        # still died with "unsupported format string passed to NoneType" --
+        # a message naming a formatting fault rather than a missing
+        # measurement, which is the false-diagnosis shape a peer session named.
+        gaps = [f"{TRIO_LAB[m]} ({'L3 misses' if i == 0 else 'stall cycles'})"
+                for m, v in miss.items() for i in (0, 1) if v[i] is None]
+        if gaps:
+            miss_prose = (
+                '<div class="note"><b>This paragraph is withheld.</b> It argues '
+                'from all three arms&rsquo; miss counters, and these were not '
+                'recorded: ' + ", ".join(gaps) + '. An absent counter is not a '
+                'measured zero, so the table above shows an em dash and the '
+                'argument is not made.</div>')
+        else:
+            miss_prose = f"""<p>maglev takes {miss["maglev"][0]:.2f} last-level misses per packet and spends
+{miss["maglev"][1]:.0f} of its {miss["maglev"][2]} cycles stalled on them: one
+DRAM round trip per packet, and half the cost is waiting for it. dramblast
+reports {miss["dramblast"][0]:.3f} and {miss["dramblast"][1]:.1f}, which cannot
+be a real hit rate &mdash; the same table and the same flows would need to hit
+99.3% of the time in a cache a fifth the size of the live set. What differs is
+attribution, not traffic, and the code says exactly how.</p>
+{snip("libsashstore/dramblast.c", "inline void dramblast_prefetch",
+      "LX_PREFETCH(&ht->table[idx], PREFETCH_T1);",
+      note="the prefetch is <code>prefetcht1</code>, which fills L2 and not "
+           "L1. Note that the comment above it describes "
+           "<code>PREFETCH_T0</code>, which is not what the line does.")}
+<p>So the line arrives in two steps and <em>neither</em> is a demand load that
+misses the last-level cache. The DRAM fill is performed by the prefetch, which
+is not a load at all; the L2&nbsp;&rarr;&nbsp;L1 move is performed by the
+gather that consumes it, which is a load but hits in L2. The traffic is
+identical to maglev's. Only its visibility &mdash; to this counter, and to the
+core &mdash; is different. <span class="mono">LLC-load-misses</span> and
+<span class="mono">stalls_l3_miss</span> both measure <em>exposure</em> on a
+prefetched path, never volume, and nothing on this page should be read as
+claiming otherwise.</p>"""
+
         nf = fit_of(allc, "engine_trio", "none") or {}
         n_Cse, n_r2 = nf.get("se") or 0.0, nf.get("r2") or 0.0
         shipC = f_new.get("C") or dC
@@ -1367,27 +1407,7 @@ The counters agree, at one queue and a full burst:</p>
 <th class="num">cycles / packet</th></tr></thead>
 <tbody>{miss_rows}</tbody>
 </table></div>
-<p>maglev takes {miss["maglev"][0]:.2f} last-level misses per packet and spends
-{miss["maglev"][1]:.0f} of its {miss["maglev"][2]} cycles stalled on them: one
-DRAM round trip per packet, and half the cost is waiting for it. dramblast
-reports {miss["dramblast"][0]:.3f} and {miss["dramblast"][1]:.1f}, which cannot
-be a real hit rate &mdash; the same table and the same flows would need to hit
-99.3% of the time in a cache a fifth the size of the live set. What differs is
-attribution, not traffic, and the code says exactly how.</p>
-{snip("libsashstore/dramblast.c", "inline void dramblast_prefetch",
-      "LX_PREFETCH(&ht->table[idx], PREFETCH_T1);",
-      note="the prefetch is <code>prefetcht1</code>, which fills L2 and not "
-           "L1. Note that the comment above it describes "
-           "<code>PREFETCH_T0</code>, which is not what the line does.")}
-<p>So the line arrives in two steps and <em>neither</em> is a demand load that
-misses the last-level cache. The DRAM fill is performed by the prefetch, which
-is not a load at all; the L2&nbsp;&rarr;&nbsp;L1 move is performed by the
-gather that consumes it, which is a load but hits in L2. The traffic is
-identical to maglev's. Only its visibility &mdash; to this counter, and to the
-core &mdash; is different. <span class="mono">LLC-load-misses</span> and
-<span class="mono">stalls_l3_miss</span> both measure <em>exposure</em> on a
-prefetched path, never volume, and nothing on this page should be read as
-claiming otherwise.</p>
+{miss_prose}
 <p>So the hash table is not incidental to this experiment; it <em>is</em> the
 experiment. Everything below is a consequence of servicing one random DRAM
 access per packet at 93 million packets per second: the gap between the engines
