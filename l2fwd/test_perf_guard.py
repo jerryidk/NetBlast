@@ -53,45 +53,66 @@ def synthetic():
     clean = ("16764707551,,cycles,8001021078,100.00,,\n"
              "24627492628,,instructions,8001019154,100.00,1.47,insn per cycle\n"
              "69177353,,dtlb_walk_completed,8001018545,100.00,,\n")
-    got, dropped = parse_perf(clean)
+    got, dropped, bad = parse_perf(clean)
     check("a clean sidecar is accepted whole", len(got) == 3 and not dropped,
           f"{len(got)} readings, {len(dropped)} dropped")
 
     # THE REGRESSION THAT BROKE A PEER'S GUARD. Field 5 on the `instructions`
     # row is the IPC. A guard reading it as the enabled percentage sees 1.47
     # and throws away a perfectly healthy run.
-    got, dropped = parse_perf(
+    got, dropped, bad = parse_perf(
         "24627492628,,instructions,8001019154,100.00,1.47,insn per cycle\n")
     check("an IPC in field 5 is not read as an enabled percentage",
           got.get("instructions") == 24627492628 and not dropped,
           "field 4 is enabled, field 5 is the derived metric")
 
-    got, dropped = parse_perf(
+    got, dropped, bad = parse_perf(
         "16764707551,,cycles,8001021078,41.63,,\n")
     check("a 41.63% reading is refused", not got and dropped == [("cycles", 41.63)],
           "and the rejection names the event and the percentage")
 
     # Both sides of the threshold, so the boundary is a decision and not a
     # coincidence of the numbers that happen to be in the data.
-    hi, _ = parse_perf("1,,e,1,100.00,,\n")
-    on, _ = parse_perf(f"1,,e,1,{PERF_MIN_ENABLED:.2f},,\n")
-    _, lo = parse_perf("1,,e,1,99.98,,\n")
+    hi, *_ = parse_perf("1,,e,1,100.00,,\n")
+    on, *_ = parse_perf(f"1,,e,1,{PERF_MIN_ENABLED:.2f},,\n")
+    _, lo, _m = parse_perf("1,,e,1,99.98,,\n")
     check("the 99.99% boundary holds on both sides",
           hi and on and lo, f"100.00 and {PERF_MIN_ENABLED} accepted, 99.98 refused")
 
-    got, dropped = parse_perf("<not counted>,,dtlb_walk_active,8001017468,0.00,,\n")
+    got, dropped, bad = parse_perf("<not counted>,,dtlb_walk_active,8001017468,0.00,,\n")
     check("'<not counted>' is neither stored nor mistaken for zero",
           not got and not dropped)
 
     # A reading with no enabled column at all must still parse: the historical
     # sidecars predate nothing here, but a perf version that omits it would
     # otherwise silently drop every counter.
-    got, dropped = parse_perf("123,,cycles\n")
+    got, dropped, bad = parse_perf("123,,cycles\n")
     check("a row with no enabled column still parses", got == {"cycles": 123})
 
-    got, dropped = parse_perf("500,,a,1,100.00,,\n600,,b,1,60.00,,\n700,,c,1,100.00,,\n")
+    got, dropped, bad = parse_perf("500,,a,1,100.00,,\n600,,b,1,60.00,,\n700,,c,1,100.00,,\n")
     check("one bad reading does not take the good ones with it",
           got == {"a": 500, "c": 700} and dropped == [("b", 60.0)])
+
+    # THE THIRD APPEARANCE OF THE FIELD-INDEX BUG, and the one that DEFEATS the
+    # guard rather than tripping it. A raw spec passed without `name=` contains
+    # commas, so with -x, the row splits across extra columns: the event column
+    # holds a fragment and the enabled column holds a run time in nanoseconds,
+    # which is above any threshold and was therefore ACCEPTED. The parser used
+    # to store it under the truncated name `cpu/event=0x12` with the
+    # multiplexing guard never actually applied to it.
+    got, dropped, bad = parse_perf(
+        "59304,,cpu/event=0x12,umask=0x0e/,1000954706,100.00,,\n")
+    check("an unnamed raw spec is caught as malformed, not silently accepted",
+          not got and not dropped and len(bad) == 1,
+          "the commas inside the spec shift every later column")
+
+    # Backstop for a shift shaped differently, where the event column looks
+    # innocent. A peer session's mis-parse printed 1958811208.00% and was only
+    # caught because it was absurd; a shift landing on a 0-100 value would not
+    # have been.
+    got, dropped, bad = parse_perf("1,,e,1,1958811208.00,,\n")
+    check("an enabled value outside 0-100 is malformed, not a reading",
+          not got and not dropped and len(bad) == 1)
 
 
 # -------------------------------------------------------------------- real
@@ -142,7 +163,7 @@ def run_perf(events, seconds=2):
 def real():
     print("real (hardware-produced multiplexing):")
     at_limit = run_perf(SHIPPED)
-    got, dropped = parse_perf(at_limit)
+    got, dropped, bad = parse_perf(at_limit)
     pcts = [float(l.split(",")[4]) for l in at_limit.splitlines()
             if len(l.split(",")) > 4 and l.split(",")[0].strip().isdigit()]
     check("the shipped event set is counted and accepted",
@@ -151,7 +172,7 @@ def real():
           if pcts else "no readings")
 
     over = run_perf(OVER)
-    got, dropped = parse_perf(over)
+    got, dropped, bad = parse_perf(over)
     pcts = [float(l.split(",")[4]) for l in over.splitlines()
             if len(l.split(",")) > 4 and l.split(",")[0].strip().isdigit()]
     # The assertion is named for what actually fails. An earlier name said

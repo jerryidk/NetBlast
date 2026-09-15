@@ -131,6 +131,7 @@ def sidecar(paths):
 SIDE = sidecar(sys.argv[3:])
 incomplete = []
 multiplexed = []
+malformed = []
 
 # Merge, do not clobber. Each invocation sees only the logs of the sweep that
 # just ran, so rebuilding the file from scratch would silently delete every
@@ -188,10 +189,13 @@ for cond, prefix in CONDS.items():
             # later can be answered from data already on disk.
             perf = log.with_suffix(".perf")
             if perf.exists():
-                got, dropped = parse_perf(perf.read_text(errors="replace"))
+                got, dropped, bad_rows = parse_perf(
+                    perf.read_text(errors="replace"))
                 rec.update({"pmu_" + k: v for k, v in got.items()})
                 multiplexed += [f"{log.name}:{e} at {pct:.2f}%"
                                 for e, pct in dropped]
+                malformed += [f"{log.name}: {why}\n        {ln}"
+                              for ln, why in bad_rows]
             if rec:
                 fresh[mode][str(q)] = rec
     if not fresh.get("none"):
@@ -201,6 +205,18 @@ for cond, prefix in CONDS.items():
 
 OUT.write_text(json.dumps(out, indent=4) + "\n")
 print(f"wrote {OUT}")
+if malformed:
+    # Louder than the multiplexing report, and deliberately: a multiplexed
+    # reading means the machine was busy, a malformed one means this parser
+    # was reading the wrong columns and nothing it produced can be trusted.
+    print(f"  *** {len(malformed)} MALFORMED perf row(s) -- the CSV columns are "
+          f"shifted, so the guard was not actually applied to them:")
+    for m in malformed[:6]:
+        print(f"      {m}")
+    print("      Cause is almost always a raw event spec passed without "
+          "`name=`: the spec")
+    print("      contains commas, so it splits across several -x, columns. "
+          "See perf_csv.py.")
 if multiplexed:
     print(f"  *** DROPPED {len(multiplexed)} MULTIPLEXED counter reading(s) -- "
           f"these were time-shared and scaled, not measured:")

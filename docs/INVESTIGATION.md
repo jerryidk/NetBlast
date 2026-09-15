@@ -2600,6 +2600,31 @@ So the shipped set's headroom cannot be stated as a number at all. It has room
 for some events and not others, and which is which is not predictable from
 anything this document knows.
 
+**And the premise underneath all of it was never true here.** The peer session
+then tested *upward*, which neither of us had done — every table above starts
+from a set that fails and works down. They measured **eight** generic raw events
+at 100.00% enabled, alongside their five-event set that collides. Eight schedule
+while five collide. So "with SMT a logical CPU gets four general-purpose
+counters" — the sentence this entire section was built on, in its original form
+and in both of its corrections — **is simply not true of this host.**
+
+That premise was never written down as a finding by either session. It was
+inherited as background knowledge, and inherited knowledge does not get phrased
+as a claim, so it never entered the set of things under test. Both wrong
+ceilings were downstream of it: four was the premise with nothing added, five
+was the premise plus a correction. Each of us revised the *conclusion* twice
+while the thing generating the conclusion sat underneath, unexamined. The
+spinner-on-the-sibling check recorded above was the closest either of us came,
+and it is worth being exact about how it failed: it tested whether the
+partitioning was *dynamic*, which presupposes that partitioning exists. It could
+not have discovered that there was none.
+
+So the pattern recorded below extends. The dangerous shape is a true measurement
+plus a generalisation that predicts it — and the generalisation is most
+dangerous when it is **inherited rather than derived**, because then it is never
+written as a claim, never cited, and never tested. The operational form: when a
+conclusion keeps needing revision, suspect the premise that has not changed.
+
 **What the peer's number then means.** They measured five raw events multiplexing
 at 57–86% with *their* event set, and I read that as confirming a general
 ceiling of four. It confirms no such thing: it is a fact about their event set,
@@ -2660,6 +2685,40 @@ rather than reasoning about the guard:
 - **`name=r5` is a parser error, not a name.** perf reads a bare `rNNN` as its
   own raw-event syntax, so naming a probe event `r5` fails to parse. It failed
   loudly, which is the desired behaviour, but it cost a round of debugging.
+
+**A third appearance of the field-index bug, and the first one that defeats the
+guard rather than tripping it.** A raw event spec contains commas, so with
+`-x,` an *unnamed* spec splits across extra columns:
+
+```
+59304,,cpu/event=0x12,umask=0x0e/,1000954706,100.00,,
+```
+
+The event column now holds `cpu/event=0x12` and the enabled column holds a run
+time in nanoseconds — comfortably above any threshold — so the reading sailed
+through the multiplexing check and was stored under a truncated name with the
+guard never actually applied to it. Verified directly here, and the parser did
+exactly that before this was fixed.
+
+Passing `name=` in every raw spec prevents it, which `sweep.sh` does, and which
+is why the 310-sidecar audit was valid. But the parser must not depend on the
+producer having remembered. `parse_perf` now returns malformed rows as a third
+category, separate from multiplexed ones and reported more loudly, because the
+two mean different things: a multiplexed reading means the machine was busy, a
+malformed one means the parser was reading the wrong columns and nothing it
+produced can be trusted. Two checks catch it — a raw-spec fragment in the event
+column, and an enabled value outside 0–100 — with test cases for both.
+
+The peer session hit this while building the table above, and caught it only
+because the mis-read column printed as `1958811208.00%`, which is absurd on its
+face. Had the shift landed on a column holding a value between 0 and 100 it
+would have read as a plausible percentage and been published. That is the third
+time one field index has produced a wrong result in this investigation, in three
+different disguises: reading the derived metric as the enabled percentage,
+naming an event in a way perf parses as something else, and now a producer-side
+omission that silently moves every column. The rule that covers all three:
+**a CSV column index is only correct relative to a producer that has not changed
+its mind, so a parser must check what it is looking at rather than count.**
 
 **One trap in `perf`'s own output**, passed on by the peer session running the
 `find_batch` campaign, who hit it and rejected two good runs before catching it.
