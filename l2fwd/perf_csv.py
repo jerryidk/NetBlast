@@ -62,20 +62,34 @@ def parse_perf(text):
         if "event=" in event or "/" in event or "umask=" in event:
             malformed.append((line, "unnamed raw event spec shifted the columns"))
             continue
-        if len(f) > PERF_ENABLED:
-            raw = f[PERF_ENABLED].strip()
-            try:
-                pct = float(raw)
-            except ValueError:
-                pct = None
-            if pct is not None:
-                # An enabled percentage outside 0-100 is not a percentage, so
-                # this is a shifted column that the check above did not catch.
-                if not 0.0 <= pct <= 100.0:
-                    malformed.append((line, f"enabled reads {raw}, not a percentage"))
-                    continue
-                if pct < PERF_MIN_ENABLED:
-                    dropped.append((event, pct))
-                    continue
+        # THE GUARD MUST NOT BE ABLE TO PASS A ROW IT COULD NOT READ. A check
+        # of the form `enabled < threshold` can only ever see a LOW number,
+        # while every way of getting the columns wrong produces a high one, a
+        # non-number, or no column at all -- so a guard that only tests the
+        # threshold is structurally blind to its own most likely failure. A
+        # peer session put it that way after finding the same hole in their
+        # parser; theirs additionally substituted a PASSING value on a parse
+        # error, turning "I cannot read this" into "it is fine" inside the
+        # function whose job is to refuse what it cannot vouch for.
+        #
+        # So every path out of here is explicit: a reading is stored only when
+        # the enabled column exists, parses, and lies in range.
+        if len(f) <= PERF_ENABLED:
+            malformed.append((line, "no enabled column: cannot vouch for this reading"))
+            continue
+        raw = f[PERF_ENABLED].strip()
+        try:
+            pct = float(raw)
+        except ValueError:
+            malformed.append((line, f"enabled reads {raw!r}, which is not a number"))
+            continue
+        # Outside 0-100 it is not a percentage, so this is a shifted column
+        # that the event-name check above did not catch.
+        if not 0.0 <= pct <= 100.0:
+            malformed.append((line, f"enabled reads {raw}, not a percentage"))
+            continue
+        if pct < PERF_MIN_ENABLED:
+            dropped.append((event, pct))
+            continue
         got[event] = int(f[PERF_VALUE])
     return got, dropped, malformed

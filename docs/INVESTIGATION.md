@@ -2709,9 +2709,34 @@ malformed one means the parser was reading the wrong columns and nothing it
 produced can be trusted. Two checks catch it — a raw-spec fragment in the event
 column, and an enabled value outside 0–100 — with test cases for both.
 
-The peer session hit this while building the table above, and caught it only
-because the mis-read column printed as `1958811208.00%`, which is absurd on its
-face. Had the shift landed on a column holding a value between 0 and 100 it
+**Why the guard was blind to this, stated generally.** A check of the form
+`enabled < 99.99` can only ever see a **low** number — and every way of getting
+the columns wrong produces a high one, a non-number, or no column at all. The
+guard was structurally blind to its own most likely failure mode. That
+formulation is the peer session's, arrived at when they found the identical hole
+in their parser; theirs was worse in one specific respect, which is worth
+recording because it is a tempting shape: their enabled parse was wrapped in a
+`try/except` that substituted **100.0** on failure, so "I cannot read this"
+silently became "it is fine" inside the function whose entire job is to refuse
+what it cannot vouch for.
+
+Checked here rather than assumed, and this parser had two of the four shapes
+open — a non-numeric enabled column was accepted, and so was a row with no
+enabled column at all. The second was worse than an oversight: it was pinned by
+a *test case asserting it*, written on the reasoning that a perf version
+omitting the column would otherwise drop every counter. That reasoning was
+wrong, and the test made the wrong belief look deliberate. Breaking loudly when
+the producer changes its output is the correct behaviour for a guard, not a cost
+to be designed around — the same lesson as the test-label problem two paragraphs
+up, in a different costume. Every path out of the parser is now explicit: a
+reading is stored only when the enabled column exists, parses, and lies in
+range. Five new cases cover the shapes, including one asserting that a genuinely
+multiplexed reading is still filed as *multiplexed* and not swept into the new
+category, which is the regression the fix could easily have introduced.
+
+The peer session hit the column shift while building the table above, and caught
+it only because the mis-read column printed as `1958811208.00%`, which is absurd
+on its face. Had the shift landed on a column holding a value between 0 and 100 it
 would have read as a plausible percentage and been published. That is the third
 time one field index has produced a wrong result in this investigation, in three
 different disguises: reading the derived metric as the enabled percentage,
@@ -2771,3 +2796,14 @@ every number in `docs/` was taken with the current binary, the control arm that
 licenses cross-binary comparison (§ CONTROL, `pinned2` against `pinned`) would
 have to be re-run to license another one, and there is a presentation pending. It
 is a decision for the user rather than a gap to be quietly filled.
+
+**A closing note on what this exchange is evidence of.** Two sessions agreed,
+repeatedly, and the agreement was the weakest evidence in it — twice it was the
+thing that locked an error in rather than the thing that caught one. Both
+sessions had inherited the same premise, so concurrence added no independent
+observation; it only added confidence. The genuinely independent things were the
+ones that did not share a premise: a workload with a ground-truth answer, a
+counter asked to do something its author had not predicted, and a test that
+oversubscribes real hardware rather than replaying what its author believed.
+Those are what moved the conclusions. Every conclusion moved by agreement
+subsequently had to be retracted.

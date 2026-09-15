@@ -83,11 +83,36 @@ def synthetic():
     check("'<not counted>' is neither stored nor mistaken for zero",
           not got and not dropped)
 
-    # A reading with no enabled column at all must still parse: the historical
-    # sidecars predate nothing here, but a perf version that omits it would
-    # otherwise silently drop every counter.
+    # This case previously asserted the OPPOSITE -- that a row with no enabled
+    # column is still accepted -- on the reasoning that a perf version omitting
+    # the column would otherwise drop every counter. That reasoning was wrong
+    # and the test pinned it: a guard whose job is to refuse readings it cannot
+    # vouch for must not accept one it could not check. Breaking loudly on a
+    # perf that changes its output is the correct behaviour, not a cost.
     got, dropped, bad = parse_perf("123,,cycles\n")
-    check("a row with no enabled column still parses", got == {"cycles": 123})
+    check("a row with no enabled column is refused, not accepted unchecked",
+          not got and len(bad) == 1)
+
+    # The structurally important one. A threshold test can only see a LOW
+    # number, while every way of shifting the columns yields a high one, a
+    # non-number, or no column -- so these are the shapes a naive guard is
+    # blind to, and each must land in `malformed` rather than in `got`.
+    for label, row in (
+            ("non-numeric", "59304,,w1,1000954706,insn per cycle,,"),
+            ("run-time ns in the enabled column", "59304,,w1,1000954706,1000954706,,"),
+            ("negative", "59304,,w1,1000954706,-3.0,,")):
+        got, dropped, bad = parse_perf(row)
+        check(f"enabled {label} is malformed, never accepted",
+              not got and not dropped and len(bad) == 1)
+
+    # Regression the previous fix could easily have introduced: a genuinely
+    # multiplexed reading must stay filed as multiplexed and not be swept into
+    # the new malformed category, which would report a busy machine as broken
+    # tooling. The peer session flagged this as the risk when adopting the
+    # same split.
+    got, dropped, bad = parse_perf("500,,w1,8001021078,57.18,,\n")
+    check("a real multiplexed reading is still multiplexed, not malformed",
+          not got and dropped == [("w1", 57.18)] and not bad)
 
     got, dropped, bad = parse_perf("500,,a,1,100.00,,\n600,,b,1,60.00,,\n700,,c,1,100.00,,\n")
     check("one bad reading does not take the good ones with it",
