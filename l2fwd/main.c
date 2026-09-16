@@ -114,7 +114,7 @@ struct l2fwd_port_statistics {
   uint64_t rx;
   uint64_t rx_cnt;
   uint64_t fwded;
-  uint64_t dropped;
+  uint64_t unmapped; /* no backend mapping; still transmitted, not dropped */
   uint64_t rx_dropped;
   uint64_t tx_dropped;
   uint64_t hash_tsc;
@@ -133,7 +133,7 @@ static void get_aggregated_stats(unsigned portid,
   for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
     agg->tx += port_statistics[portid][lcore_id].tx;
     agg->rx += port_statistics[portid][lcore_id].rx;
-    agg->dropped += port_statistics[portid][lcore_id].dropped;
+    agg->unmapped += port_statistics[portid][lcore_id].unmapped;
     agg->hash_tsc += port_statistics[portid][lcore_id].hash_tsc;
     agg->fwded += port_statistics[portid][lcore_id].fwded;
     agg->tx_dropped += port_statistics[portid][lcore_id].tx_dropped;
@@ -188,9 +188,9 @@ static void print_stats(void) {
 
     printf("\nStatistics for port %u ------------------------------"
            "\nPackets sent: %24" PRIu64 "\nPackets received: %20" PRIu64
-           "\nPackets forwarded: %20" PRIu64 "\nPackets dropped: %21" PRIu64
+           "\nPackets forwarded: %20" PRIu64 "\nPackets unmapped: %20" PRIu64
            "\nPackets tx dropped: %21" PRIu64,
-           portid, agg.tx, agg.rx, agg.fwded, agg.dropped, agg.tx_dropped);
+           portid, agg.tx, agg.rx, agg.fwded, agg.unmapped, agg.tx_dropped);
 
     if((agg.rx_cnt - prev_agg.rx_cnt) > 0){
         printf("\nAverage rx batch sz: %lu", (agg.rx - prev_agg.rx) / (agg.rx_cnt - prev_agg.rx_cnt));
@@ -308,7 +308,7 @@ static void l2fwd_main_loop(void) {
             m = pkts_burst[j];
             uint64_t mac = maglev_process_frame(rte_pktmbuf_mtod(m, void *));
             if (mac == 0) {
-              port_statistics[portid][lcore_id].dropped += 1;
+              port_statistics[portid][lcore_id].unmapped += 1;
             } else {
               l2fwd_mac_updating(m, l2fwd_dst_ports[portid], mac);
               port_statistics[portid][lcore_id].fwded += 1;
@@ -342,7 +342,7 @@ static void l2fwd_main_loop(void) {
           }
 
           port_statistics[portid][lcore_id].fwded += found;
-          port_statistics[portid][lcore_id].dropped += (nb_rx - found);
+          port_statistics[portid][lcore_id].unmapped += (nb_rx - found);
         } else {
           for (uint16_t j = 0; j < nb_rx; j++) {
             unsigned dst_port = l2fwd_dst_ports[portid];
@@ -414,13 +414,15 @@ static int l2fwd_parse_args(int argc, char **argv) {
     case 0:
       break;
     case 'm':
-      if (!strncmp(optarg, "maglev", 6))
+      /* exact match: strncmp() here was a prefix match, so a longer mode name
+       * beginning with an existing one would have selected the wrong backend */
+      if (!strcmp(optarg, "maglev"))
         l2fwd_maglev_enabled = 1;
-      else if (!strncmp(optarg, "sashstore", 9))
+      else if (!strcmp(optarg, "sashstore"))
         l2fwd_sashstore_enabled = 1;
-      else if (!strncmp(optarg, "dramblast", 9))
+      else if (!strcmp(optarg, "dramblast"))
         l2fwd_dramblast_enabled = 1;
-      else if (!strncmp(optarg, "none", 4)) {
+      else if (!strcmp(optarg, "none")) {
         l2fwd_dramblast_enabled = 0;
         l2fwd_maglev_enabled = 0;
         l2fwd_sashstore_enabled = 0;
@@ -431,8 +433,19 @@ static int l2fwd_parse_args(int argc, char **argv) {
       CAPACITY = strtoull(optarg, NULL, 10);
       if (CAPACITY == 0 || (CAPACITY & (CAPACITY - 1)) != 0) {
         fprintf(stderr,
-                "Error: Capacity (-c %llu) must be a power of 2 "
+                "Error: Capacity (-c %" PRIu64 ") must be a power of 2 "
                 "(e.g., 1048576, 16777216).\n",
+                CAPACITY);
+        return -1;
+      }
+
+      /* dramblast_hash()/maglev_hash() derive the index from _mm_crc32_u64(),
+       * which produces 32 bits. Beyond 2^32 slots the upper part of the table
+       * would never be addressed and the extra memory silently wasted. */
+      if (CAPACITY > (1ULL << 32)) {
+        fprintf(stderr,
+                "Error: Capacity (-c %" PRIu64 ") exceeds 2^32; the 32-bit "
+                "CRC hash cannot address it.\n",
                 CAPACITY);
         return -1;
       }
@@ -640,7 +653,10 @@ int main(int argc, char **argv) {
   if (l2fwd_maglev_enabled)
     maglev_init();
   else if (l2fwd_sashstore_enabled)
-    sashstore_init();
+    rte_exit(EXIT_FAILURE,
+             "-m sashstore is not wired into l2fwd_main_loop; it would "
+             "silently forward with a constant MAC and report the numbers as "
+             "sashstore's. Use maglev, dramblast or none.\n");
   else if (l2fwd_dramblast_enabled)
     dramblast_init();
 

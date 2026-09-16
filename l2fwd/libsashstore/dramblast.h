@@ -15,9 +15,17 @@ typedef union {
     __int128 i128;
 } dramblast_swap_kv_t;
 
+/* Outcome of a lookup. Kept distinct from the value so that a legitimately
+ * stored value of 0 is not read as a miss, and so that giving up on a full
+ * table is not read as "definitively absent". */
+#define DRAMBLAST_FOUND      0u /* key present; v holds the stored value     */
+#define DRAMBLAST_ABSENT     1u /* key definitively not present; v undefined */
+#define DRAMBLAST_TABLE_FULL 2u /* probe bound reached; presence unknown     */
+
 typedef struct {
   uint64_t v;
-  uint64_t id;
+  uint32_t id;
+  uint32_t status;
 } dramblast_result_t;
 
 typedef struct {
@@ -48,7 +56,7 @@ typedef struct {
 #define DRAMBLAST_FIND_QUEUE_SIZE 64
 // make multiple of 4.
 #define DRAMBLAST_BUCKET_IDX_MASK ~0x3
-#define DRAMBLAST_SIMD_KEY_MASK 0b10101010
+#define DRAMBLAST_SIMD_KEY_MASK 0b01010101
 void dramblast_init(void);
 void dramblast_process_frames(dramblast_arg_t* args, unsigned int args_len, uint64_t* ret, unsigned int id);
 void dramblast_destroy(void);

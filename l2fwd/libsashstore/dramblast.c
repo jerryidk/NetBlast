@@ -24,13 +24,13 @@ static LookUpTable dramblast_backends;
 
 dramblast_ht_t *dramblast_ht;
 
-inline uint32_t dramblast_get_queue_sz(dramblast_ht_t *ht, unsigned int id) {
+static inline uint32_t dramblast_get_queue_sz(dramblast_ht_t *ht, unsigned int id) {
 
   dramblast_queue_t *q = &ht->queues[id];
   return (q->find_queue_head - q->find_queue_tail) & (q->find_queue_size - 1);
 }
 
-inline void dramblast_push_queue(dramblast_ht_t *ht, uint64_t idx, uint64_t k,
+static inline void dramblast_push_queue(dramblast_ht_t *ht, uint64_t idx, uint64_t k,
                                 uint64_t visit_count,
                                  uint32_t item_id, unsigned int tid) {
 
@@ -44,7 +44,7 @@ inline void dramblast_push_queue(dramblast_ht_t *ht, uint64_t idx, uint64_t k,
   q->find_queue_head = q->find_queue_head & (q->find_queue_size - 1);
 }
 
-inline dramblast_queue_item_t *dramblast_pop_queue(dramblast_ht_t *ht,
+static inline dramblast_queue_item_t *dramblast_pop_queue(dramblast_ht_t *ht,
                                                    unsigned int id) {
 
   dramblast_queue_t *q = &ht->queues[id];
@@ -53,6 +53,12 @@ inline dramblast_queue_item_t *dramblast_pop_queue(dramblast_ht_t *ht,
   q->find_queue_tail = q->find_queue_tail & (q->find_queue_size - 1);
 
   return queue_tail_slot;
+}
+
+/* C11 requires aligned_alloc()'s size to be an integral multiple of the
+ * alignment, so round up rather than passing a bare sizeof(). */
+static inline void *dramblast_alloc64(size_t bytes) {
+  return aligned_alloc(64, (bytes + 63) & ~(size_t)63);
 }
 
 // Define hint levels based on Intel/GCC standards
@@ -66,12 +72,12 @@ inline dramblast_queue_item_t *dramblast_pop_queue(dramblast_ht_t *ht,
 #define LX_PREFETCH(addr, level) _mm_prefetch((const char *)(addr), (level))
 
 // Updated dramblast_prefetch function
-inline void dramblast_prefetch(dramblast_ht_t *ht, uint64_t idx) {
+static inline void dramblast_prefetch(dramblast_ht_t *ht, uint64_t idx) {
   // Using PREFETCH_T0 is standard for items you are about to access immediately
   LX_PREFETCH(&ht->table[idx], PREFETCH_T1);
 }
 
-inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
+static inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
   uint64_t hash;
 #ifdef SSE42
   hash = _mm_crc32_u64(0, k);
@@ -150,26 +156,29 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
     dramblast_queue_item_t *queue_tail_slot = dramblast_pop_queue(ht, id);
     idx = queue_tail_slot->idx;
     count = queue_tail_slot->visit_count;
-    dramblast_kv_t *bucket = (dramblast_kv_t *)&ht->table[idx];
+    uint64_t *bucket = (uint64_t *)&ht->table[idx];
     __m512i cacheline = _mm512_load_si512(bucket);
     __m512i key_vector = _mm512_set1_epi64(queue_tail_slot->k);
     __m512i zero_vector = _mm512_setzero_si512();
     __mmask8 key_cmp = _mm512_mask_cmpeq_epu64_mask(DRAMBLAST_SIMD_KEY_MASK,
                                                     cacheline, key_vector);
     if (key_cmp > 0) {
+      /* key lanes are even, so the value is the next lane (cas_kht.hpp:611) */
       int offset = __builtin_ctz(key_cmp);
       dramblast_result_t *result = &results[result_head];
-      result->v = cacheline[(offset + 1)];
+      result->v = bucket[offset + 1];
       result->id = queue_tail_slot->id;
+      result->status = DRAMBLAST_FOUND;
       result_head++;
     } else {
 
       count += 4;
       if (unlikely(count >= ht->len)) {
-        // table full
+        // probe bound reached; we cannot say whether the key is present
         dramblast_result_t *result = &results[result_head];
         result->v = 0;
         result->id = queue_tail_slot->id;
+        result->status = DRAMBLAST_TABLE_FULL;
         result_head++;
         continue;
       }
@@ -184,10 +193,11 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
         dramblast_push_queue(ht, idx, queue_tail_slot->k, count, queue_tail_slot->id,
                              id);
       } else {
-        // didn't found
+        // an empty slot in this bucket proves the key is absent
         dramblast_result_t *result = &results[result_head];
         result->v = 0;
         result->id = queue_tail_slot->id;
+        result->status = DRAMBLAST_ABSENT;
         result_head++;
       }
     }
@@ -200,7 +210,7 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
 void dramblast_process_frames(dramblast_arg_t *args, unsigned int args_len,
                               uint64_t *ret, unsigned int id) {
   dramblast_result_t *results =
-      aligned_alloc(64, sizeof(dramblast_result_t) * args_len);
+      dramblast_alloc64(sizeof(dramblast_result_t) * args_len);
 
   unsigned int len =
       dramblast_find_batch_sync(dramblast_ht, args, args_len, results, id);
@@ -214,13 +224,15 @@ void dramblast_process_frames(dramblast_arg_t *args, unsigned int args_len,
     int64_t backend_mac_addr;
     dramblast_result_t *result = &results[i];
 
-    if (result->v == 0) {
+    if (result->status == DRAMBLAST_ABSENT) {
       uint64_t client_hash = args[result->id].k;
       backend_mac_addr = dramblast_backends[client_hash % TABLE_SIZE];
-      // printf("mapping 0x%016lx to 0x%016lx\n", client_hash,
-      // backend_mac_addr);
       if (dramblast_insert_one(dramblast_ht, client_hash, backend_mac_addr) < 0)
         backend_mac_addr = 0; // insertion failed
+    } else if (result->status == DRAMBLAST_TABLE_FULL) {
+      /* Presence is unknown, so re-probing the whole table on the insert path
+       * would only repeat the scan that just gave up. Report no mapping. */
+      backend_mac_addr = 0;
     } else {
       backend_mac_addr = result->v;
     }
@@ -271,22 +283,22 @@ void *allocate_dramblast_table(size_t bytes) {
 }
 
 void dramblast_init(void) {
-  dramblast_ht = aligned_alloc(64, sizeof(dramblast_ht_t));
+  dramblast_ht = dramblast_alloc64(sizeof(dramblast_ht_t));
 
   if (!dramblast_ht) {
     printf("Aligned alloc failed!\n");
     exit(1);
   }
 
-  dramblast_ht->queues = (dramblast_queue_t *)aligned_alloc(
-      64, sizeof(dramblast_queue_t) * MAX_CPU); // 128 max cpu
+  dramblast_ht->queues = (dramblast_queue_t *)dramblast_alloc64(
+      sizeof(dramblast_queue_t) * MAX_CPU); // 128 max cpu
   for (uint8_t i = 0; i < MAX_CPU; i++) {
     dramblast_queue_t *q = &dramblast_ht->queues[i];
     q->find_queue_head = 0;
     q->find_queue_tail = 0;
     q->find_queue_size = DRAMBLAST_FIND_QUEUE_SIZE;
     q->find_queue =
-        aligned_alloc(64, sizeof(dramblast_queue_item_t) * q->find_queue_size);
+        dramblast_alloc64(sizeof(dramblast_queue_item_t) * q->find_queue_size);
   }
 
   dramblast_ht->len = CAPACITY;
