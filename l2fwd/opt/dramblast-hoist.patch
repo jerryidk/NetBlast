@@ -1,0 +1,103 @@
+--- a/l2fwd/libsashstore/dramblast.c
++++ b/l2fwd/libsashstore/dramblast.c
+@@ -134,24 +134,50 @@
+   unsigned int args_head = 0;
+   unsigned int result_head = 0;
+ 
++  /* Everything the loop needs, read once.
++   *
++   * As shipped the loop reaches all of this through `ht` and `ht->queues[id]`
++   * on every iteration, via three helpers that each re-derive the queue
++   * pointer. That is not the compiler being timid: a store through
++   * `dramblast_queue_item_t *` may alias `ht->len` and `ht->table` as far as
++   * the type rules are concerned, so GCC must reload them after every push.
++   * The shipped object code does exactly that -- `mov 0x8(%rbx),%rdx` reloads
++   * `ht->len` inside the push loop and `sub $0x1,%rdx` recomputes the mask
++   * each time round. Reading them into locals here tells the compiler what it
++   * cannot prove. */
++  dramblast_queue_t *const q = &ht->queues[id];
++  dramblast_queue_item_t *const fq = q->find_queue;
++  dramblast_kv_t *const table = ht->table;
++  const uint64_t tbl_mask = ht->len - 1;
++  const uint64_t tbl_len = ht->len;
++  const uint32_t q_mask = q->find_queue_size - 1;
++  uint32_t head = q->find_queue_head;
++  uint32_t tail = q->find_queue_tail;
++
+   uint64_t idx, count;
+   while (result_head < args_len) {
+ 
+     // push as many as possible without stalling on LFB.
+-    while (args_head < args_len &&
+-           dramblast_get_queue_sz(ht, id) < ht->queues[id].find_queue_size - 1) {
++    while (args_head < args_len && ((head - tail) & q_mask) < q_mask) {
+       dramblast_arg_t *arg = &args[args_head];
+       args_head++;
+-      idx = dramblast_hash(ht, arg->k);
+-      dramblast_prefetch(ht, idx);
+-      dramblast_push_queue(ht, idx, arg->k, 0, arg->id, id);
++      idx = (uint64_t)_mm_crc32_u64(0, arg->k) & tbl_mask &
++            DRAMBLAST_BUCKET_IDX_MASK;
++      LX_PREFETCH(&table[idx], PREFETCH_T1);
++      dramblast_queue_item_t *slot = &fq[head];
++      slot->idx = idx;
++      slot->k = arg->k;
++      slot->id = arg->id;
++      slot->visit_count = 0;
++      head = (head + 1) & q_mask;
+     }
+ 
+     // pop_find_queue
+-    dramblast_queue_item_t *queue_tail_slot = dramblast_pop_queue(ht, id);
++    dramblast_queue_item_t *queue_tail_slot = &fq[tail];
++    tail = (tail + 1) & q_mask;
+     idx = queue_tail_slot->idx;
+     count = queue_tail_slot->visit_count;
+-    dramblast_kv_t *bucket = (dramblast_kv_t *)&ht->table[idx];
++    dramblast_kv_t *bucket = (dramblast_kv_t *)&table[idx];
+     __m512i cacheline = _mm512_load_si512(bucket);
+     __m512i key_vector = _mm512_set1_epi64(queue_tail_slot->k);
+     __m512i zero_vector = _mm512_setzero_si512();
+@@ -166,7 +192,7 @@
+     } else {
+ 
+       count += 4;
+-      if (unlikely(count >= ht->len)) {
++      if (unlikely(count >= tbl_len)) {
+         // table full
+         dramblast_result_t *result = &results[result_head];
+         result->v = 0;
+@@ -179,11 +205,15 @@
+                                                       cacheline, zero_vector);
+       if (ept_cmp == 0) {
+         idx += 4;
+-        idx = idx & (ht->len - 1);
++        idx = idx & tbl_mask;
+         idx = idx & DRAMBLAST_BUCKET_IDX_MASK;
+-        dramblast_prefetch(ht, idx);
+-        dramblast_push_queue(ht, idx, queue_tail_slot->k, count, queue_tail_slot->id,
+-                             id);
++        LX_PREFETCH(&table[idx], PREFETCH_T1);
++        dramblast_queue_item_t *slot = &fq[head];
++        slot->idx = idx;
++        slot->k = queue_tail_slot->k;
++        slot->id = queue_tail_slot->id;
++        slot->visit_count = count;
++        head = (head + 1) & q_mask;
+       } else {
+         // didn't found
+         dramblast_result_t *result = &results[result_head];
+@@ -194,6 +224,13 @@
+     }
+   }
+ 
++  /* The queue is drained on exit -- head and tail are equal here -- but they
++     are written back anyway so this stays a drop-in for the shipped function
++     rather than a version that only works because the queue happens to be
++     empty. */
++  q->find_queue_head = head;
++  q->find_queue_tail = tail;
++
+   return result_head;
+ }
+ 

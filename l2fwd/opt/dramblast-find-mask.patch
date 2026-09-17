@@ -1,0 +1,26 @@
+The find path's lane mask selects the value lanes, not the key lanes.
+
+A bucket is four 16-byte {k, v} pairs, so as eight qwords the line is
+k0 v0 k1 v1 k2 v2 k3 v3 -- keys on the even lanes. 0b10101010 selects
+lanes 1,3,5,7, i.e. the values, so the search key is compared against
+stored MAC addresses and every lookup misses. The `offset + 1` two lines
+later in dramblast.c is only coherent for an even offset, so the two
+disagree on their face; upstream DRAMHiT uses 0b01010101 over the
+identical layout (kvtypes.hpp:643).
+
+Verified by l2fwd/test_dramblast_find.c: 0 of 64 hits before, 64 of 64
+correct after. Worth 17.3 TSC ticks/packet of the 52.9 measured, because
+a path that misses on every packet also inserts on every packet.
+See docs/INVESTIGATION.md section 5.26.
+
+--- a/l2fwd/libsashstore/dramblast.h
++++ b/l2fwd/libsashstore/dramblast.h
+@@ -52,7 +52,7 @@
+ #define DRAMBLAST_MAX_BURST 64
+ // make multiple of 4.
+ #define DRAMBLAST_BUCKET_IDX_MASK ~0x3
+-#define DRAMBLAST_SIMD_KEY_MASK 0b10101010
++#define DRAMBLAST_SIMD_KEY_MASK 0b01010101
+ extern int dramblast_queue_depth;  /* prefetch pipeline depth, power of two */
+ extern int dramblast_alloc_pairs; /* -1 hoisted, 0 as shipped, n extra pairs */
+ void dramblast_init(void);

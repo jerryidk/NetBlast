@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 752 546" width="752" height="546" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+<rect width="752" height="546" fill="#fbfaf7"/>
+<text x="72" y="26" font-size="15" font-weight="600" fill="#1a1a1a">Which resource saturates first?</text>
+<text x="72" y="44" font-size="12" fill="#5a5a5a">utilisation against each resource&#8217;s own ceiling, as worker cores are added</text>
+<line x1="72" y1="362.0" x2="542" y2="362.0" stroke="#e0ddd6"/>
+<text x="65" y="365.0" font-size="10" fill="#5a5a5a" text-anchor="end">0%</text>
+<line x1="72" y1="287.0" x2="542" y2="287.0" stroke="#e0ddd6"/>
+<text x="65" y="290.0" font-size="10" fill="#5a5a5a" text-anchor="end">25%</text>
+<line x1="72" y1="212.0" x2="542" y2="212.0" stroke="#e0ddd6"/>
+<text x="65" y="215.0" font-size="10" fill="#5a5a5a" text-anchor="end">50%</text>
+<line x1="72" y1="137.0" x2="542" y2="137.0" stroke="#e0ddd6"/>
+<text x="65" y="140.0" font-size="10" fill="#5a5a5a" text-anchor="end">75%</text>
+<line x1="72" y1="62.0" x2="542" y2="62.0" stroke="#e0ddd6"/>
+<text x="65" y="65.0" font-size="10" fill="#5a5a5a" text-anchor="end">100%</text>
+<line x1="72" y1="62.0" x2="542" y2="62.0" stroke="#a8324a" stroke-width="1.5" stroke-dasharray="5,3"/>
+<text x="547" y="65.0" font-size="10" fill="#a8324a">ceiling</text>
+<text x="119.0" y="378" font-size="10" fill="#5a5a5a" text-anchor="middle">1</text>
+<text x="213.0" y="378" font-size="10" fill="#5a5a5a" text-anchor="middle">4</text>
+<text x="307.0" y="378" font-size="10" fill="#5a5a5a" text-anchor="middle">8</text>
+<text x="401.0" y="378" font-size="10" fill="#5a5a5a" text-anchor="middle">16</text>
+<text x="495.0" y="378" font-size="10" fill="#5a5a5a" text-anchor="middle">23</text>
+<text x="307.0" y="396" font-size="11" fill="#5a5a5a" text-anchor="middle">worker cores</text>
+<polyline fill="none" stroke="#12707f" stroke-width="2" points="119.0,359.9 213.0,356.4 307.0,354.9 401.0,353.4 495.0,352.8"/>
+<circle cx="119.0" cy="359.9" r="3" fill="#12707f"/>
+<circle cx="213.0" cy="356.4" r="3" fill="#12707f"/>
+<circle cx="307.0" cy="354.9" r="3" fill="#12707f"/>
+<circle cx="401.0" cy="353.4" r="3" fill="#12707f"/>
+<circle cx="495.0" cy="352.8" r="3" fill="#12707f"/>
+<polyline fill="none" stroke="#bb551c" stroke-width="2" points="119.0,345.3 213.0,351.2 307.0,354.9 401.0,361.5 495.0,361.9"/>
+<circle cx="119.0" cy="345.3" r="3" fill="#bb551c"/>
+<circle cx="213.0" cy="351.2" r="3" fill="#bb551c"/>
+<circle cx="307.0" cy="354.9" r="3" fill="#bb551c"/>
+<circle cx="401.0" cy="361.5" r="3" fill="#bb551c"/>
+<circle cx="495.0" cy="361.9" r="3" fill="#bb551c"/>
+<polyline fill="none" stroke="#4a7a3a" stroke-width="2" points="119.0,342.9 213.0,296.5 307.0,264.3 401.0,280.7 495.0,350.2"/>
+<circle cx="119.0" cy="342.9" r="3" fill="#4a7a3a"/>
+<circle cx="213.0" cy="296.5" r="3" fill="#4a7a3a"/>
+<circle cx="307.0" cy="264.3" r="3" fill="#4a7a3a"/>
+<circle cx="401.0" cy="280.7" r="3" fill="#4a7a3a"/>
+<circle cx="495.0" cy="350.2" r="3" fill="#4a7a3a"/>
+<polyline fill="none" stroke="#7a4a8a" stroke-width="2" points="119.0,309.1 213.0,286.6 307.0,291.9 401.0,229.4 495.0,145.7"/>
+<circle cx="119.0" cy="309.1" r="3" fill="#7a4a8a"/>
+<circle cx="213.0" cy="286.6" r="3" fill="#7a4a8a"/>
+<circle cx="307.0" cy="291.9" r="3" fill="#7a4a8a"/>
+<circle cx="401.0" cy="229.4" r="3" fill="#7a4a8a"/>
+<circle cx="495.0" cy="145.7" r="3" fill="#7a4a8a"/>
+<polyline fill="none" stroke="#a8324a" stroke-width="2" points="119.0,345.5 213.0,314.3 307.0,325.5 401.0,233.2 495.0,189.8"/>
+<circle cx="119.0" cy="345.5" r="3" fill="#a8324a"/>
+<circle cx="213.0" cy="314.3" r="3" fill="#a8324a"/>
+<circle cx="307.0" cy="325.5" r="3" fill="#a8324a"/>
+<circle cx="401.0" cy="233.2" r="3" fill="#a8324a"/>
+<circle cx="495.0" cy="189.8" r="3" fill="#a8324a"/>
+<polyline fill="none" stroke="#3a5a8a" stroke-width="2" points="119.0,184.4 213.0,201.0 307.0,222.6 401.0,270.5 495.0,319.0"/>
+<circle cx="119.0" cy="184.4" r="3" fill="#3a5a8a"/>
+<circle cx="213.0" cy="201.0" r="3" fill="#3a5a8a"/>
+<circle cx="307.0" cy="222.6" r="3" fill="#3a5a8a"/>
+<circle cx="401.0" cy="270.5" r="3" fill="#3a5a8a"/>
+<circle cx="495.0" cy="319.0" r="3" fill="#3a5a8a"/>
+<polyline fill="none" stroke="#12707f" stroke-width="2" points="119.0,305.2 213.0,166.8 307.0,71.0 401.0,120.0 495.0,326.7"/>
+<circle cx="119.0" cy="305.2" r="3" fill="#12707f"/>
+<circle cx="213.0" cy="166.8" r="3" fill="#12707f"/>
+<circle cx="307.0" cy="71.0" r="3" fill="#12707f"/>
+<circle cx="401.0" cy="120.0" r="3" fill="#12707f"/>
+<circle cx="495.0" cy="326.7" r="3" fill="#12707f"/>
+<polyline fill="none" stroke="#bb551c" stroke-width="2" points="119.0,362.0 213.0,362.0 307.0,361.9 401.0,361.6 495.0,361.9"/>
+<circle cx="119.0" cy="362.0" r="3" fill="#bb551c"/>
+<circle cx="213.0" cy="362.0" r="3" fill="#bb551c"/>
+<circle cx="307.0" cy="361.9" r="3" fill="#bb551c"/>
+<circle cx="401.0" cy="361.6" r="3" fill="#bb551c"/>
+<circle cx="495.0" cy="361.9" r="3" fill="#bb551c"/>
+<polyline fill="none" stroke="#4a7a3a" stroke-width="2" points="119.0,360.1 213.0,360.3 307.0,360.9 401.0,361.2 495.0,361.3"/>
+<circle cx="119.0" cy="360.1" r="3" fill="#4a7a3a"/>
+<circle cx="213.0" cy="360.3" r="3" fill="#4a7a3a"/>
+<circle cx="307.0" cy="360.9" r="3" fill="#4a7a3a"/>
+<circle cx="401.0" cy="361.2" r="3" fill="#4a7a3a"/>
+<circle cx="495.0" cy="361.3" r="3" fill="#4a7a3a"/>
+<rect x="72" y="410" width="10" height="10" fill="#12707f"/>
+<text x="87" y="419" font-size="11" fill="#5a5a5a">DRAM bandwidth (of peer 24-thread READ ceiling)</text>
+<rect x="402" y="410" width="10" height="10" fill="#bb551c"/>
+<text x="417" y="419" font-size="11" fill="#5a5a5a">L1D fill buffers full</text>
+<rect x="72" y="432" width="10" height="10" fill="#4a7a3a"/>
+<text x="87" y="441" font-size="11" fill="#5a5a5a">PCIe (of Gen4 x16)</text>
+<rect x="402" y="432" width="10" height="10" fill="#7a4a8a"/>
+<text x="417" y="441" font-size="11" fill="#5a5a5a">core: backend-bound</text>
+<rect x="72" y="454" width="10" height="10" fill="#a8324a"/>
+<text x="87" y="463" font-size="11" fill="#5a5a5a">core: memory-bound</text>
+<rect x="402" y="454" width="10" height="10" fill="#3a5a8a"/>
+<text x="417" y="463" font-size="11" fill="#5a5a5a">core: retiring / slots</text>
+<rect x="72" y="476" width="10" height="10" fill="#12707f"/>
+<text x="87" y="485" font-size="11" fill="#5a5a5a">link rate (of line rate)</text>
+<rect x="402" y="476" width="10" height="10" fill="#bb551c"/>
+<text x="417" y="485" font-size="11" fill="#5a5a5a">page walker active</text>
+<rect x="72" y="498" width="10" height="10" fill="#4a7a3a"/>
+<text x="87" y="507" font-size="11" fill="#5a5a5a">stalled on L3 miss</text>
+</svg>

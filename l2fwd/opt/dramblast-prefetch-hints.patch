@@ -1,0 +1,48 @@
+The prefetch hint table is the reverse of the ISA encoding.
+
+xmmintrin.h defines _MM_HINT_T0 = 3, _MM_HINT_T1 = 2, _MM_HINT_T2 = 1,
+_MM_HINT_NTA = 0. The shipped table counts up from T0 = 0, so every name
+selects the opposite instruction: PREFETCH_T1 emits `prefetcht2`,
+confirmed in the object code. Correcting the constants alone measures
+flat, since T1 and T2 both land in L2 on this part; the call site is
+therefore moved to PREFETCH_T0, which also fills L1, and is worth
+-0.95 +/- 0.24 TSC ticks/packet over seven interleaved repeats.
+
+Note this also corrects docs/INVESTIGATION.md section 5.22, which states
+the emitted instruction is prefetcht1. See section 5.26.
+
+--- a/l2fwd/libsashstore/dramblast.c
++++ b/l2fwd/libsashstore/dramblast.c
+@@ -56,20 +56,24 @@
+   return queue_tail_slot;
+ }
+ 
+-// Define hint levels based on Intel/GCC standards
+-#define PREFETCH_T0 0 // Temporal: Load into all levels of cache (L1/L2/L3)
+-#define PREFETCH_T1 1 // Temporal: Load into L2/L3
+-#define PREFETCH_T2 2 // Temporal: Load into L3
+-#define PREFETCH_NTA                                                           \
+-  3 // Non-Temporal: Minimize cache pollution (e.g., streaming)
++/* These must match xmmintrin.h's _MM_HINT_* values, which count DOWN from
++   T0 = 3. The previous table counted up from T0 = 0, i.e. exactly backwards,
++   so every name here selected the opposite instruction to the one it named:
++   PREFETCH_T1 emitted prefetcht2, and PREFETCH_NTA would have emitted
++   prefetcht0. */
++#define PREFETCH_T0 3  // prefetcht0:  into L1, L2 and L3
++#define PREFETCH_T1 2  // prefetcht1:  into L2 and L3, not L1
++#define PREFETCH_T2 1  // prefetcht2:  into L3 (L2 in practice on this part)
++#define PREFETCH_NTA 0 // prefetchnta: minimise cache pollution
+ 
+ // Macro to encode the instruction
+ #define LX_PREFETCH(addr, level) _mm_prefetch((const char *)(addr), (level))
+ 
+ // Updated dramblast_prefetch function
+ inline void dramblast_prefetch(dramblast_ht_t *ht, uint64_t idx) {
+-  // Using PREFETCH_T0 is standard for items you are about to access immediately
+-  LX_PREFETCH(&ht->table[idx], PREFETCH_T1);
++  /* The line is consumed by the _mm512_load_si512 in the find loop, so it
++     wants to be in L1 by then, not merely in L2. */
++  LX_PREFETCH(&ht->table[idx], PREFETCH_T0);
+ }
+ 
+ inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
