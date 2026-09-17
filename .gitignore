@@ -1,2 +1,5 @@
 .vagrant/
 .cache/
+
+# Compiled probe binary; bench_membw.c is the source of record.
+l2fwd/bench_membw

@@ -21,7 +21,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/counter_groups.sh"
 
 CPU="${1:-24}"
-BM="${2:-$HERE/../bench_membw}"
+# $HERE is l2fwd/, and bench_membw is built into l2fwd/, not its parent. The
+# old default resolved to NetBlast/bench_membw and made every invocation die on
+# the FATAL below before a single counter was read.
+BM="${2:-$HERE/bench_membw}"
 [ -x "$BM" ] || { echo "FATAL: bench_membw not found at $BM" >&2; exit 1; }
 
 TMPD=$(mktemp -d)
@@ -102,6 +105,39 @@ if [ -n "${P:-}" ] && [ -n "${PC:-}" ] && [ "$PC" -gt 0 ] 2>/dev/null \
   fi
 else
   verdict no "MLP counters read nothing (chase P=${P:-none} PC=${PC:-none})"
+fi
+
+echo
+echo "=== 2b. latency: Little's law on the same dependent chase ==="
+echo "    OFFCORE_REQUESTS_OUTSTANDING.DATA_RD accumulates, every cycle, the"
+echo "    number of data reads in flight. OFFCORE_REQUESTS.DATA_RD counts the"
+echo "    requests. The quotient is mean latency of one request, in core cycles."
+echo "    predicts: a dependent chase through 4 GiB misses to DRAM on almost"
+echo "    every load and cannot hide the latency, so the quotient must land in"
+echo "    the physically plausible DRAM range for this part. Reading 0 means the"
+echo "    raw encoding did not resolve; reading single digits means it resolved"
+echo "    to the wrong event. Both are the §5.23 failure mode, which is why this"
+echo "    check exists at all."
+OL=$(sudo perf stat -e "$G_LATENCY" -C "$CPU" -x, -- taskset -c "$CPU" "$BM" chase 4096 4 2>&1)
+check_enabled "latency (chase)" "$OL"
+OUT=$(val "$OL" 'offcore_reqs_outstanding_data_rd$')
+REQ=$(val "$OL" 'offcore_reqs_data_rd$')
+if [ -n "${OUT:-}" ] && [ -n "${REQ:-}" ] && [ "$REQ" -gt 0 ] 2>/dev/null; then
+  LAT=$(awk -v a="$OUT" -v b="$REQ" 'BEGIN{printf "%.1f", a/b}')
+  note "chase mean data-read latency = $LAT core cycles ($OUT outstanding / $REQ requests)"
+  # No ordering assertion against the stream arm. A sequential stream has more
+  # parallelism but its per-request latency can be higher from queueing, so
+  # "chase above stream" is not a prediction this can safely make. The chase
+  # alone is the known answer: it is the workload that cannot hide latency.
+  if awk -v l="$LAT" 'BEGIN{exit !(l > 100 && l < 800)}'; then
+    verdict ok "latency $LAT cycles is in the plausible DRAM range for this part"
+  elif awk -v l="$LAT" 'BEGIN{exit !(l < 10)}'; then
+    verdict no "latency $LAT is implausibly small -- encoding resolved to the wrong event"
+  else
+    verdict no "latency $LAT cycles is outside the expected 100-800 range"
+  fi
+else
+  verdict no "latency counters read nothing (outstanding=${OUT:-none} requests=${REQ:-none})"
 fi
 
 echo "=== 3. stream: CAS reads against an ARITHMETIC byte count ==="
@@ -254,7 +290,7 @@ note "peer's independent read-only ceiling at 4 threads: 60.59 GB/s"
 note "wrote l2fwd/.dram_ceiling"
 
 echo "=== 4. the groups used on the forwarder fit the PMU ==="
-for g in G_TOPDOWN1 G_TOPDOWN2 G_MLP G_FB G_TLBMEM; do
+for g in G_TOPDOWN1 G_TOPDOWN2 G_MLP G_FB G_TLBMEM G_LATENCY; do
   # 4 s, not 1 s: a one-second run produced a spurious "instructions @1.33%"
   # for G_TLBMEM that vanished on a longer one. A short window makes the
   # enabled fraction itself unreliable, which is a different failure from the

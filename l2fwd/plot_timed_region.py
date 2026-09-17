@@ -25,11 +25,9 @@ matplotlib lives in the nix dev shell and this has to run from a plain shell.
     python3 l2fwd/plot_timed_region.py <timed_region.csv>  -> docs/timed_region.svg
 """
 import csv
-import pathlib
-import re
 import sys
 
-DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
+from plotlib import DOCS, check_extents, esc, wrap
 
 SURFACE, INK, INK_2, GRID = "#fbfaf7", "#1a1a1a", "#5a5a5a", "#e0ddd6"
 MUTED, RIG = "#9a9a9a", "#b3123c"
@@ -44,23 +42,6 @@ RIG_LABEL = "the rig: -m none, q=1, burst 64"
 
 W, H = 900, 500
 L, R, T, B = 80, 274, 62, 74      # right margin holds the legend
-
-
-def esc(s):
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def wrap(text, n):
-    words, lines, cur = text.split(), [], ""
-    for w in words:
-        if len(cur) + len(w) + 1 > n and cur:
-            lines.append(cur)
-            cur = w
-        else:
-            cur = (cur + " " + w).strip()
-    if cur:
-        lines.append(cur)
-    return lines
 
 
 def footprint_mib(stride, pool):
@@ -218,7 +199,7 @@ def main(path):
     a('</svg>')
     svg = "\n".join(out)
 
-    bad = check_extents(svg)
+    bad = check_extents(svg, W, H)
     if bad:
         sys.exit("labels outside the canvas: %s" % "; ".join(bad))
 
@@ -226,25 +207,6 @@ def main(path):
     (DOCS / "timed_region.svg").write_text(svg)
     print("wrote docs/timed_region.svg  (floor %.2f, bracket %.1f-%.1f at b=64)"
           % (floor, hot, cold))
-
-
-def check_extents(svg):
-    """Approximate each <text>'s box and report any that leaves the canvas."""
-    bad = []
-    for m in re.finditer(r'<text ([^>]*)>([^<]*)</text>', svg):
-        attrs, body = m.group(1), m.group(2)
-        if "rotate(-90)" in attrs:
-            continue                      # centred by construction above
-        fs = float(re.search(r'font-size="([\d.]+)"', attrs).group(1))
-        x = float(re.search(r'x="([-\d.]+)"', attrs).group(1))
-        y = float(re.search(r'y="([-\d.]+)"', attrs).group(1))
-        w = len(body) * fs * 0.55
-        anchor = re.search(r'text-anchor="(\w+)"', attrs)
-        anchor = anchor.group(1) if anchor else "start"
-        x0 = x - w if anchor == "end" else x - w / 2 if anchor == "middle" else x
-        if x0 < 0 or x0 + w > W or y - fs < 0 or y > H:
-            bad.append("%r at (%.0f,%.0f)" % (body[:28], x, y))
-    return bad
 
 
 if __name__ == "__main__":

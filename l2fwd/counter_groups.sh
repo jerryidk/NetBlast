@@ -56,6 +56,25 @@ cpu/event=0x12,umask=0x10,name=dtlb_walk_active/,\
 cpu/event=0xa3,umask=0x06,cmask=0x06,name=stalls_l3_miss/,\
 LLC-load-misses"
 
+# --- DRAM latency, as distinct from DRAM bandwidth ------------------------
+# Little's law: mean outstanding data reads / data-read completion rate = mean
+# latency of one, in core cycles. Bandwidth can sit at 4% while latency is what
+# the core waits on -- the q=23 signature of §5.31, which no other group can
+# tell apart.
+#
+# Own group, not added to G_FB: FB_FULL is 0x48-family and §5.27 records that
+# three simultaneous 0x48 events collide in the event scheduler.
+#
+# KNOWN ANSWER for validate_counters.sh: bench_membw's dependent pointer chase
+# has MLP ~1 by construction, so this ratio must come out at roughly one full
+# memory latency (order 200-400 cycles on this part). Reads 0 -> the encoding
+# did not resolve. Reads ~1 -> it resolved to the wrong event. Per §5.23 this
+# check is mandatory: no perf JSON exists for family 6 model 207, so an
+# unresolved encoding reads zero indistinguishably from a real zero.
+G_LATENCY="cycles,\
+cpu/event=0x20,umask=0x08,name=offcore_reqs_outstanding_data_rd/,\
+cpu/event=0x21,umask=0x08,name=offcore_reqs_data_rd/"
+
 # --- DRAM bandwidth (uncore, per socket; must be collected system-wide) ----
 # A separate PMU from the core counters, so this does not compete with them for
 # general-purpose counters and may be collected alongside.

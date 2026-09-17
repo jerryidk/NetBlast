@@ -19,7 +19,8 @@ import re
 import statistics as st
 import sys
 
-DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
+from plotlib import DOCS, esc, wrap_caption
+
 SURFACE, INK, INK_2, GRID = "#fbfaf7", "#1a1a1a", "#5a5a5a", "#e0ddd6"
 BLUE, ORANGE = "#12707f", "#bb551c"
 
@@ -45,10 +46,6 @@ def parse(path):
                 mpps=float(m.group(2)), cyc=int(m.group(3)),
                 batch=int(m.group(4)), missed=m.group(5))
     return out
-
-
-def esc(s):
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def main(outdir):
@@ -170,14 +167,7 @@ def main(outdir):
 
     cap = ("Paired within each repeat at equal RX burst size: %+.2f ticks/packet "
            "and %+.2f Mpps." % (mc, mm))
-    words, lines, cur = cap.split(), [], ""
-    for w in words:
-        if len(cur) + len(w) + 1 > int((W - 2 * PAD_L) / (11 * 0.6)):
-            lines.append(cur)
-            cur = w
-        else:
-            cur = (cur + " " + w).strip()
-    lines.append(cur)
+    lines = wrap_caption(cap, W - 2 * PAD_L, 11)
     for j, ln in enumerate(lines):
         a_('<text x="%d" y="%.1f" font-size="11" fill="%s">%s</text>'
            % (PAD_L, ly + 26 + j * 13, INK_2, esc(ln)))

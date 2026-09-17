@@ -1,0 +1,695 @@
+EAL: Detected CPU lcores: 56
+EAL: Detected NUMA nodes: 1
+EAL: Detected shared linkage of DPDK
+EAL: Selected IOVA mode 'VA'
+EAL: 16 hugepages of size 1073741824 reserved, but no mounted hugetlbfs found for that size
+EAL: VFIO support initialized
+EAL: Using IOMMU type 1 (Type 1)
+EAL: Probe PCI driver: net_ice (8086:1592) device: 0000:17:00.0 (socket 0)
+ice_load_pkg_type(): Active package is: 1.3.26.0, ICE OS Default Package (single VLAN mode)
+TELEMETRY: No legacy callbacks, legacy socket not created
+ice_set_rx_function(): Using AVX2 OFFLOAD Vector Rx (port 0).
+hashtable size 8.00 gb
+Lcore 1 assigned to Port 0 Queue 0
+Lcore 2 assigned to Port 0 Queue 1
+Lcore 3 assigned to Port 0 Queue 2
+Lcore 4 assigned to Port 0 Queue 3
+Lcore 5 assigned to Port 0 Queue 4
+Lcore 6 assigned to Port 0 Queue 5
+Lcore 7 assigned to Port 0 Queue 6
+Lcore 8 assigned to Port 0 Queue 7
+Lcore 9 assigned to Port 0 Queue 8
+Lcore 10 assigned to Port 0 Queue 9
+Lcore 11 assigned to Port 0 Queue 10
+Lcore 12 assigned to Port 0 Queue 11
+Lcore 13 assigned to Port 0 Queue 12
+Lcore 14 assigned to Port 0 Queue 13
+Lcore 15 assigned to Port 0 Queue 14
+Lcore 16 assigned to Port 0 Queue 15
+Lcore 17 assigned to Port 0 Queue 16
+Lcore 18 assigned to Port 0 Queue 17
+Lcore 19 assigned to Port 0 Queue 18
+Lcore 20 assigned to Port 0 Queue 19
+Lcore 21 assigned to Port 0 Queue 20
+Lcore 22 assigned to Port 0 Queue 21
+Lcore 23 assigned to Port 0 Queue 22
+backing: 1g (call-site default), 8.00 GiB mapped at 0x7f0580000000
+dramblast initialized!
+Port 0 Link UP - 100000 Mbps
+Port 0 Physical MAC Address: 40:A6:B7:C2:DD:50
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 10992250
+Packets received:             13210883
+Packets forwarded:             13210882
+Packets dropped:                     0
+Packets tx dropped:               2218626
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 0
+RX-Missed (Dropped): 0 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 0
+TX-Errors          : 0
+------------------------------
+
+13.21 Mpps
+Cycle per fwd packet: 451
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 19986223
+Packets received:             24473023
+Packets forwarded:             24473023
+Packets dropped:                     0
+Packets tx dropped:               4486800
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 11262195
+RX-Missed (Dropped): 82020694 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 8993936
+TX-Errors          : 0
+------------------------------
+
+11.26 Mpps
+Cycle per fwd packet: 456
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 28631800
+Packets received:             35392062
+Packets forwarded:             35392062
+Packets dropped:                     0
+Packets tx dropped:               6760258
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 22181208
+RX-Missed (Dropped): 164384979 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 17639583
+TX-Errors          : 0
+------------------------------
+
+10.92 Mpps
+Cycle per fwd packet: 458
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 37273375
+Packets received:             46305397
+Packets forwarded:             46305385
+Packets dropped:                     0
+Packets tx dropped:               9032009
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 33094522
+RX-Missed (Dropped): 246754846 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 26281192
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 459
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 45910199
+Packets received:             57213231
+Packets forwarded:             57213227
+Packets dropped:                     0
+Packets tx dropped:              11303028
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 44002395
+RX-Missed (Dropped): 329129978 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 34918038
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 460
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 54550305
+Packets received:             68124702
+Packets forwarded:             68124700
+Packets dropped:                     0
+Packets tx dropped:              13574395
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 54913771
+RX-Missed (Dropped): 411500754 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 43557987
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 460
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 63184076
+Packets received:             79029978
+Packets forwarded:             79029977
+Packets dropped:                     0
+Packets tx dropped:              15845895
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 65819059
+RX-Missed (Dropped): 493878843 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 52191832
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 461
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 71825562
+Packets received:             89943268
+Packets forwarded:             89943261
+Packets dropped:                     0
+Packets tx dropped:              18117699
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 76732400
+RX-Missed (Dropped): 576248326 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 60833269
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 461
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 80462139
+Packets received:            100850725
+Packets forwarded:            100850721
+Packets dropped:                     0
+Packets tx dropped:              20388574
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 87639949
+RX-Missed (Dropped): 658624035 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 69469930
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 461
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 89104786
+Packets received:            111765793
+Packets forwarded:            111765778
+Packets dropped:                     0
+Packets tx dropped:              22660992
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 98555068
+RX-Missed (Dropped): 740991834 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 78112631
+TX-Errors          : 0
+------------------------------
+
+10.92 Mpps
+Cycle per fwd packet: 461
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                 97745618
+Packets received:            122677976
+Packets forwarded:            122677952
+Packets dropped:                     0
+Packets tx dropped:              24932334
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 109467133
+RX-Missed (Dropped): 823362832 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 86753414
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 461
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                106391005
+Packets received:            133596341
+Packets forwarded:            133596339
+Packets dropped:                     0
+Packets tx dropped:              27205333
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 120385852
+RX-Missed (Dropped): 905730618 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 95399085
+TX-Errors          : 0
+------------------------------
+
+10.92 Mpps
+Cycle per fwd packet: 461
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                115022361
+Packets received:            144499162
+Packets forwarded:            144499156
+Packets dropped:                     0
+Packets tx dropped:              29476785
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 131288254
+RX-Missed (Dropped): 988107298 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 104030117
+TX-Errors          : 0
+------------------------------
+
+10.90 Mpps
+Cycle per fwd packet: 461
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                123663646
+Packets received:            155413184
+Packets forwarded:            155413184
+Packets dropped:                     0
+Packets tx dropped:              31749526
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 142202329
+RX-Missed (Dropped): 1070476021 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 112671403
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                132301562
+Packets received:            166322402
+Packets forwarded:            166322398
+Packets dropped:                     0
+Packets tx dropped:              34020836
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 153111594
+RX-Missed (Dropped): 1152850041 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 121309397
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                140941356
+Packets received:            177233620
+Packets forwarded:            177233620
+Packets dropped:                     0
+Packets tx dropped:              36292261
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 164022747
+RX-Missed (Dropped): 1235221688 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 129949173
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                149575703
+Packets received:            188138336
+Packets forwarded:            188138323
+Packets dropped:                     0
+Packets tx dropped:              38562620
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 174927483
+RX-Missed (Dropped): 1317599557 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 138583518
+TX-Errors          : 0
+------------------------------
+
+10.90 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                158214853
+Packets received:            199049416
+Packets forwarded:            199049416
+Packets dropped:                     0
+Packets tx dropped:              40834563
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 185838492
+RX-Missed (Dropped): 1399971070 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 147222632
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                166851310
+Packets received:            209957567
+Packets forwarded:            209957552
+Packets dropped:                     0
+Packets tx dropped:              43106241
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 196746588
+RX-Missed (Dropped): 1482346282 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 155859054
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                175489841
+Packets received:            220868406
+Packets forwarded:            220868402
+Packets dropped:                     0
+Packets tx dropped:              45378557
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 207657451
+RX-Missed (Dropped): 1564718937 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 164497571
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                184121744
+Packets received:            231770786
+Packets forwarded:            231770786
+Packets dropped:                     0
+Packets tx dropped:              47649042
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 218559901
+RX-Missed (Dropped): 1647099630 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 173129576
+TX-Errors          : 0
+------------------------------
+
+10.90 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                192764409
+Packets received:            242685983
+Packets forwarded:            242685983
+Packets dropped:                     0
+Packets tx dropped:              49921560
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 229475150
+RX-Missed (Dropped): 1729466901 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 181772238
+TX-Errors          : 0
+------------------------------
+
+10.92 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                201403221
+Packets received:            253595315
+Packets forwarded:            253595313
+Packets dropped:                     0
+Packets tx dropped:              52192088
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 240384871
+RX-Missed (Dropped): 1811843838 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 190411379
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                210043425
+Packets received:            264507038
+Packets forwarded:            264507038
+Packets dropped:                     0
+Packets tx dropped:              54463611
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 251296249
+RX-Missed (Dropped): 1894211788 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 199051159
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                218678019
+Packets received:            275412109
+Packets forwarded:            275412107
+Packets dropped:                     0
+Packets tx dropped:              56734084
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 262201271
+RX-Missed (Dropped): 1976590043 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 207685861
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                227321754
+Packets received:            286328144
+Packets forwarded:            286328144
+Packets dropped:                     0
+Packets tx dropped:              59006384
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 273117298
+RX-Missed (Dropped): 2058956921 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 216329483
+TX-Errors          : 0
+------------------------------
+
+10.92 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                235955416
+Packets received:            297233393
+Packets forwarded:            297233390
+Packets dropped:                     0
+Packets tx dropped:              61277974
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 284022634
+RX-Missed (Dropped): 2141334210 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 224963262
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                244600317
+Packets received:            308151182
+Packets forwarded:            308151178
+Packets dropped:                     0
+Packets tx dropped:              63550861
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 294940331
+RX-Missed (Dropped): 2223699730 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 233608086
+TX-Errors          : 0
+------------------------------
+
+10.92 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                253236753
+Packets received:            319058512
+Packets forwarded:            319058501
+Packets dropped:                     0
+Packets tx dropped:              65821748
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 305847696
+RX-Missed (Dropped): 2306075122 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 242244565
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                261877886
+Packets received:            329971809
+Packets forwarded:            329971809
+Packets dropped:                     0
+Packets tx dropped:              68093919
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 316760979
+RX-Missed (Dropped): 2388444724 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 250885665
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                270518081
+Packets received:            340884525
+Packets forwarded:            340884499
+Packets dropped:                     0
+Packets tx dropped:              70366411
+Average rx batch sz: 0
+--- Port 0 Hardware Stats ---
+RX-Packets (Good)  : 327673643
+RX-Missed (Dropped): 2470814644 (Hardware queue full)
+RX-Errors (Bad)    : 0 (MAC mismatch, bad CRC, etc.)
+RX-No-Mbuf         : 0 (Software ran out of memory)
+TX-Packets (Good)  : 259525981
+TX-Errors          : 0
+------------------------------
+
+10.91 Mpps
+Cycle per fwd packet: 462
+====================================================
+Minimum: 10.90
+Maximum: 13.21
+Average: 11.00
+dramblast destroyed and memory cleaned up successfully.
+Bye...

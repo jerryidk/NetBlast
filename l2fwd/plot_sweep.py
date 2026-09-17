@@ -11,62 +11,25 @@ Run:  nix develop .. -c python3 plot_sweep.py
 """
 
 import json
-import pathlib
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
-
-# --- design tokens -----------------------------------------------------------
-# Categorical slots 1 and 2 of the reference palette, used unmodified.
-# Validated light-mode: CVD dE 24.7 (protan), normal-vision dE 33.6, contrast >= 3:1.
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_2 = "#52514e"
-INK_MUTED = "#8a8983"
-GRID = "#e4e3de"
-BLUE = "#2a78d6"
-ORANGE = "#eb6834"
+# Design tokens, rcParams and the two drawing primitives are shared with
+# plot_clock_arms.py; see l2fwd/plotlib.py.
+from plotlib import (DOCS, INK, INK_2, INK_MUTED, BLUE, ORANGE, RC,  # noqa: E402
+                     line, style)
 
 COND = "linerate_2tx_instr"   # 2 TX gen at line rate, float stats, instrumented
 GEN_CEILING = 93.28        # Mpps offered: physical line rate for 110-byte frames
 
-plt.rcParams.update({
-    "figure.facecolor": SURFACE,
-    "axes.facecolor": SURFACE,
-    "savefig.facecolor": SURFACE,
-    "font.family": "DejaVu Sans",
-    "text.color": INK,
-    "axes.labelcolor": INK_2,
-    "xtick.color": INK_2,
-    "ytick.color": INK_2,
-    "axes.edgecolor": GRID,
-    "axes.linewidth": 1.0,
-    "xtick.major.size": 0,
-    "ytick.major.size": 0,
-})
+plt.rcParams.update(RC)
 
-
-def style(ax, title, xlabel, ylabel):
-    ax.set_title(title, fontsize=12, color=INK, pad=12, loc="left", fontweight="medium")
-    ax.set_xlabel(xlabel, fontsize=10)
-    ax.set_ylabel(ylabel, fontsize=10)
-    ax.grid(True, color=GRID, linewidth=0.8, alpha=0.9)
-    ax.set_axisbelow(True)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    ax.set_xticks(range(1, 11))
-    ax.tick_params(labelsize=9)
-
-
-def line(ax, xs, ys, color, label):
-    """2px line, >=8px markers with a 2px surface ring."""
-    ax.plot(xs, ys, color=color, linewidth=2.0, marker="o", markersize=6,
-            markerfacecolor=color, markeredgecolor=SURFACE, markeredgewidth=2.0,
-            label=label, zorder=3, clip_on=False)
+# Every panel in this file is a queue-pair sweep, so every one of them fixes the
+# x ticks at 1..10; plotlib.style applies them only when asked.
+XTICKS = range(1, 11)
 
 
 def band(ax, xs, lo, hi, color):
@@ -113,7 +76,7 @@ def main():
                     xytext=(-8, 11), fontsize=9, color=INK_2, ha="right")
 
         style(ax, mode, "RX/TX queue pairs  (-q)",
-              "Forwarded  (Mpps)" if mode == "dramblast" else "")
+              "Forwarded  (Mpps)" if mode == "dramblast" else "", XTICKS)
         ax.set_xlim(0.7, 10.6)
         ax.set_ylim(0, 125)
 
@@ -156,7 +119,8 @@ def main():
     # For the core-cycle view, and for the pinned-vs-turbo contrast, see
     # plot_clock_arms.py, whose arms each carry their own measured frequency.
     style(ax, "Per-packet cost rises with queue count",
-          "RX/TX queue pairs  (-q)", "TSC ticks per forwarded packet  (2.1 GHz)")
+          "RX/TX queue pairs  (-q)", "TSC ticks per forwarded packet  (2.1 GHz)",
+          XTICKS)
     ax.set_xlim(0.7, 10.6)
     ax.set_ylim(0, 200)
     ax.legend(loc="upper left", frameon=False, fontsize=9, labelcolor=INK_2)
@@ -176,7 +140,7 @@ def main():
         ax.annotate(mode, (qs[i], ys[i]), textcoords="offset points",
                     xytext=(dx, dy), fontsize=9, color=INK_2, ha=ha)
     style(ax, "...because each poll returns fewer packets",
-          "RX/TX queue pairs  (-q)", "Average RX burst size  (packets)")
+          "RX/TX queue pairs  (-q)", "Average RX burst size  (packets)", XTICKS)
     ax.set_xlim(0.7, 10.6)
     ax.set_ylim(0, 70)
     ax.legend(loc="upper right", frameon=False, fontsize=9, labelcolor=INK_2)
@@ -217,7 +181,7 @@ def main():
                     color=INK_2, ha="right")
 
         style(ax, mode, "RX/TX queue pairs  (-q)",
-              "Forwarded  (Mpps)" if mode == "dramblast" else "")
+              "Forwarded  (Mpps)" if mode == "dramblast" else "", XTICKS)
         ax.set_xlim(0.7, 10.6)
         ax.set_ylim(0, 105)
 

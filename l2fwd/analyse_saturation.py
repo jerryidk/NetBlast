@@ -128,6 +128,8 @@ EXPECTED = {
                  "offcore_reqs_outstanding_data_rd"],
     "tlbmem":   ["cycles", "instructions", "dtlb_walk_completed",
                  "dtlb_walk_active", "stalls_l3_miss", "LLC-load-misses"],
+    "latency":  ["cycles", "offcore_reqs_outstanding_data_rd",
+                 "offcore_reqs_data_rd"],
     # bw is checked structurally instead: eight controllers, read and write.
     "bw":       ["cas_rd_%d" % i for i in range(8)]
               + ["cas_wr_%d" % i for i in range(8)],
@@ -251,6 +253,17 @@ def main(outdir):
         if p_ and pc:
             series.setdefault("_mlp", {})[q] = p_ / pc
 
+        # Mean data-read latency, Little's law: outstanding requests accumulated
+        # per cycle, divided by requests completed. Like MLP this is a count
+        # rather than a fraction -- there is no ceiling to divide by, and that
+        # is the point. A bandwidth utilisation says how close the memory system
+        # is to its throughput limit; this says what one access costs. The two
+        # can disagree completely, and on this workload they do: see 5.32.
+        out = get(q, "latency", "offcore_reqs_outstanding_data_rd")
+        req = get(q, "latency", "offcore_reqs_data_rd")
+        if out and req:
+            series.setdefault("_latency", {})[q] = out / req
+
     # ---- text table ----
     print("%-28s %s" % ("resource (utilisation)",
                         " ".join("%8s" % ("q=%d" % q) for q in qs)))
@@ -258,7 +271,8 @@ def main(outdir):
         print("%-28s %s" % (lab, " ".join(
             "%7.1f%%" % (series[lab][q] * 100) if q in series[lab] else "      --"
             for q in qs)))
-    for lab, unit in (("_dram_gbs", "GB/s"), ("_mlp", "misses")):
+    for lab, unit in (("_dram_gbs", "GB/s"), ("_mlp", "misses"),
+                      ("_latency", "cyc/read")):
         if lab in series:
             print("%-28s %s" % (lab[1:] + " (" + unit + ")", " ".join(
                 "%8.1f" % series[lab][q] if q in series[lab] else "      --"

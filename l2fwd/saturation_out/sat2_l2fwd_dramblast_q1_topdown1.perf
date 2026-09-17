@@ -1,0 +1,5 @@
+78762595860,,slots,8001045731,100.00,,
+47566430440,,topdown-retiring,8001045731,100.00,60.6,retiring
+926618774,,topdown-bad-spec,8001045731,100.00,1.2,bad speculation
+17296883796,,topdown-fe-bound,8001045731,100.00,22.0,frontend bound
+12663789922,,topdown-be-bound,8001045731,100.00,16.1,backend bound

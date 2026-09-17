@@ -17,7 +17,7 @@ import pathlib
 import statistics as st
 import sys
 
-DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
+from plotlib import DOCS, esc, wrap_caption
 
 SURFACE, INK, INK_2, GRID = "#fbfaf7", "#1a1a1a", "#5a5a5a", "#e0ddd6"
 BLUE, ORANGE, GREEN = "#12707f", "#bb551c", "#4a7a3a"
@@ -37,10 +37,6 @@ ORDER = [
 
 CAPTION = ("Every arm but the first also carries the find-mask fix, so each is "
            "the shipped code plus one further change.")
-
-
-def esc(s):
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def main(path):
@@ -130,19 +126,9 @@ def main(path):
         a('<text x="%.1f" y="%.1f" font-size="11" fill="%s">%s</text>'
           % (lx + 15, ly + 9, INK_2, esc(txt)))
 
-    # Caption, wrapped so it cannot run off the right edge.
-    words, lines, cur = CAPTION.split(), [], ""
-    for w in words:
-        # 0.6*font-size per character, the same generous estimate the
-        # viewBox check uses. An earlier 0.52 let the caption fit the wrap test
-        # and overrun the canvas by 56 px -- the wrap and the check must agree
-        # or the check is testing a different string than the one drawn.
-        if len(cur) + len(w) + 1 > int((W - 2 * PAD_L) / (11 * 0.6)):
-            lines.append(cur)
-            cur = w
-        else:
-            cur = (cur + " " + w).strip()
-    lines.append(cur)
+    # Caption, wrapped so it cannot run off the right edge. The 0.6*font-size
+    # per character estimate and the reason for it live in plotlib.wrap_caption.
+    lines = wrap_caption(CAPTION, W - 2 * PAD_L, 11)
     for j, ln in enumerate(lines):
         a('<text x="%d" y="%.1f" font-size="11" fill="%s">%s</text>'
           % (PAD_L, ly + 26 + j * 13, INK_2, esc(ln)))

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="500" viewBox="0 0 760 500" font-family="Inter,Helvetica,Arial,sans-serif">
+<rect width="760" height="500" fill="#fbfaf7"/>
+<text x="74" y="26" font-size="15" font-weight="600" fill="#1a1a1a">Latency, not bandwidth</text>
+<text x="74" y="44" font-size="12" fill="#5a5a5a">one access costs 9.3x more at 23 workers; the memory system is never above 8% of its ceiling</text>
+<line x1="74" y1="350.0" x2="686" y2="350.0" stroke="#e0ddd6"/>
+<text x="66" y="353.0" font-size="10" text-anchor="end" fill="#5a5a5a">0</text>
+<line x1="74" y1="277.0" x2="686" y2="277.0" stroke="#e0ddd6"/>
+<text x="66" y="280.0" font-size="10" text-anchor="end" fill="#5a5a5a">200</text>
+<line x1="74" y1="204.0" x2="686" y2="204.0" stroke="#e0ddd6"/>
+<text x="66" y="207.0" font-size="10" text-anchor="end" fill="#5a5a5a">400</text>
+<line x1="74" y1="131.0" x2="686" y2="131.0" stroke="#e0ddd6"/>
+<text x="66" y="134.0" font-size="10" text-anchor="end" fill="#5a5a5a">600</text>
+<line x1="74" y1="58.0" x2="686" y2="58.0" stroke="#e0ddd6"/>
+<text x="66" y="61.0" font-size="10" text-anchor="end" fill="#5a5a5a">800</text>
+<text transform="translate(20,204) rotate(-90)" x="0" y="0" font-size="11" fill="#a8324a" text-anchor="middle">cycles per data read</text>
+<text x="694" y="353.0" font-size="10" fill="#12707f">0%</text>
+<text x="694" y="280.0" font-size="10" fill="#12707f">25%</text>
+<text x="694" y="207.0" font-size="10" fill="#12707f">50%</text>
+<text x="694" y="134.0" font-size="10" fill="#12707f">75%</text>
+<text x="694" y="61.0" font-size="10" fill="#12707f">100%</text>
+<text transform="translate(738,204) rotate(-90)" x="0" y="0" font-size="11" fill="#12707f" text-anchor="middle">% of DRAM ceiling</text>
+<text x="135.2" y="368" font-size="10" text-anchor="middle" fill="#5a5a5a">1</text>
+<text x="257.6" y="368" font-size="10" text-anchor="middle" fill="#5a5a5a">4</text>
+<text x="380.0" y="368" font-size="10" text-anchor="middle" fill="#5a5a5a">8</text>
+<text x="502.4" y="368" font-size="10" text-anchor="middle" fill="#5a5a5a">16</text>
+<text x="624.8" y="368" font-size="10" text-anchor="middle" fill="#5a5a5a">23</text>
+<text x="380.0" y="388" font-size="11" text-anchor="middle" fill="#1a1a1a">worker cores</text>
+<polyline fill="none" stroke="#a8324a" stroke-width="2.2" points="135.2,322.6 257.6,316.3 380.0,283.8 502.4,217.0 624.8,94.4"/>
+<circle cx="135.2" cy="322.6" r="3" fill="#a8324a"/>
+<circle cx="257.6" cy="316.3" r="3" fill="#a8324a"/>
+<circle cx="380.0" cy="283.8" r="3" fill="#a8324a"/>
+<circle cx="502.4" cy="217.0" r="3" fill="#a8324a"/>
+<circle cx="624.8" cy="94.4" r="3" fill="#a8324a"/>
+<polyline fill="none" stroke="#12707f" stroke-width="2.2" points="135.2,346.4 257.6,339.4 380.0,334.6 502.4,328.3 624.8,336.9"/>
+<circle cx="135.2" cy="346.4" r="3" fill="#12707f"/>
+<circle cx="257.6" cy="339.4" r="3" fill="#12707f"/>
+<circle cx="380.0" cy="334.6" r="3" fill="#12707f"/>
+<circle cx="502.4" cy="328.3" r="3" fill="#12707f"/>
+<circle cx="624.8" cy="336.9" r="3" fill="#12707f"/>
+<polyline fill="none" stroke="#bb551c" stroke-width="2.2" stroke-dasharray="5,3" points="135.2,283.9 257.6,285.1 380.0,287.9 502.4,291.9 624.8,311.2"/>
+<circle cx="135.2" cy="283.9" r="3" fill="#bb551c"/>
+<circle cx="257.6" cy="285.1" r="3" fill="#bb551c"/>
+<circle cx="380.0" cy="287.9" r="3" fill="#bb551c"/>
+<circle cx="502.4" cy="291.9" r="3" fill="#bb551c"/>
+<circle cx="624.8" cy="311.2" r="3" fill="#bb551c"/>
+<rect x="74" y="402" width="10" height="10" fill="#a8324a"/>
+<text x="88" y="411" font-size="10" fill="#5a5a5a">mean data-read latency</text>
+<rect x="274" y="402" width="10" height="10" fill="#12707f"/>
+<text x="288" y="411" font-size="10" fill="#5a5a5a">DRAM bandwidth used</text>
+<rect x="474" y="402" width="10" height="10" fill="#bb551c"/>
+<text x="488" y="411" font-size="10" fill="#5a5a5a">misses in flight (x10)</text>
+<text x="74" y="470" font-size="10" fill="#5a5a5a">Ceiling = 184.2 GB/s, measured (dram_ceiling.sh). Latency is Little's law over OFFCORE_REQUESTS[_OUTSTANDING].DATA_RD.</text>
+<text x="74" y="486" font-size="10" fill="#5a5a5a">Misses in flight scaled x10 to share the right axis; it falls 2.3 -&gt; 1.3 while latency rises.</text>
+</svg>

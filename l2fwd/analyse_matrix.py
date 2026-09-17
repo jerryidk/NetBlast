@@ -711,7 +711,8 @@ def main():
         print("       burst-cost model, which cannot separate the two.")
 
     # ---- the per-fill ramp model, calibrated then tested -------------------
-    # See docs/depth_prediction.md, written before the depth-32 arm finished.
+    # See docs/INVESTIGATION.md Appendix A (formerly docs/depth_prediction.md),
+    # written before the depth-32 arm finished.
     # With queue depth Q and burst B the pipeline fills ceil(B/Q) times per
     # burst, so the ramp is paid per fill, not per burst. At the shipped depth
     # Q == B and the two are the same event, which is why the burst model

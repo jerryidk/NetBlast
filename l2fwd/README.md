@@ -52,6 +52,12 @@ bash check_codegen.sh                # the alloc/free pairs and prefetches still
 ./page_watch.sh & python3 verify_backing.py <log>   # the backing each run ACTUALLY got
 ```
 
+`plotlib.py` is not a command. It holds what the figure scripts share — the `docs/`
+path, XML escaping, caption wrapping, the `<text>`-extent check against the viewBox,
+and the matplotlib palette and axis helpers — so a plotter is the figure and nothing
+else. It imports no plotting library at module scope, because the SVG plotters exist
+precisely so figures can be regenerated outside the nix dev shell.
+
 Two cautions learned the hard way, both written up in `docs/INVESTIGATION.md`:
 
 - Serving N queues needs **N+1** lcores — one worker each plus the main lcore.

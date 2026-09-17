@@ -12,48 +12,21 @@ Run:  nix develop .. -c python3 plot_clock_arms.py
 """
 
 import json
-import pathlib
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
-
-SURFACE, INK, INK_2, INK_MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8983", "#e4e3de"
-BLUE, ORANGE = "#2a78d6", "#eb6834"
+# Design tokens, rcParams and the two drawing primitives are shared with
+# plot_sweep.py; see l2fwd/plotlib.py.
+from plotlib import (DOCS, INK, INK_2, INK_MUTED, BLUE, ORANGE, RC,  # noqa: E402
+                     line, style)
 
 TSC_MHZ = 2100.0      # invariant TSC rate; identical in BOTH arms
 GEN_CEILING = 93.28   # Mpps offered, 100 GbE line rate at 110-byte frames
 
-plt.rcParams.update({
-    "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
-    "savefig.facecolor": SURFACE, "font.family": "DejaVu Sans",
-    "text.color": INK, "axes.labelcolor": INK_2,
-    "xtick.color": INK_2, "ytick.color": INK_2,
-    "axes.edgecolor": GRID, "axes.linewidth": 1.0,
-    "xtick.major.size": 0, "ytick.major.size": 0,
-})
-
-
-def style(ax, title, xlabel, ylabel):
-    ax.set_title(title, fontsize=12, color=INK, pad=12, loc="left", fontweight="medium")
-    ax.set_xlabel(xlabel, fontsize=10)
-    ax.set_ylabel(ylabel, fontsize=10)
-    ax.grid(True, color=GRID, linewidth=0.8, alpha=0.9)
-    ax.set_axisbelow(True)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    ax.tick_params(labelsize=9)
-
-
-def line(ax, xs, ys, color, label, dashed=False):
-    ax.plot(xs, ys, color=color, linewidth=2.0,
-            linestyle=(0, (4, 3)) if dashed else "-",
-            marker="s" if dashed else "o", markersize=6,
-            markerfacecolor=color, markeredgecolor=SURFACE, markeredgewidth=2.0,
-            label=label, zorder=3, clip_on=False)
+plt.rcParams.update(RC)
 
 
 def rows(cond, mode):

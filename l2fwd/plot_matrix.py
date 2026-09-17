@@ -25,6 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from fit_burst_model import DOCS, lsq, points          # noqa: E402
 from analyse_matrix import at_q1                        # noqa: E402
 from make_report import alloc_rows                      # noqa: E402
+from plotlib import esc                                 # noqa: E402
 
 # Same palette as the report, so the figure and the page read as one thing.
 SURFACE, INK, INK_2, GRID = "#fbfaf7", "#1a1a1a", "#5a5a5a", "#e0ddd6"
@@ -33,10 +34,6 @@ PERF_WINDOW = 8.0
 
 PW, PH = 500, 430          # one panel
 PAD = 26
-
-
-def esc(s):
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def frame(x0, title, sub=""):
