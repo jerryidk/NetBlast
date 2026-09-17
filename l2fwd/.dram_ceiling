@@ -1,0 +1,38 @@
+# WITHDRAWN VALUE NOTE: this file previously carried
+# DRAM_ACHIEVED_GBS=360.0, being the peer's 24-thread read ceiling scaled by
+# the 4-core mixed/read ratio. That extrapolation is withdrawn (see below) and
+# the field is now deliberately EMPTY so the analysis falls through to a named
+# lower bound instead. The stale value survived the script fix by twenty
+# minutes, because the script that writes this file had not been re-run --
+# which is precisely the "derived constant stored away from the thing that
+# derived it" failure this project keeps paying for.
+#
+# DRAM ceilings measured on cpus 24-27 (4 physical cores), 2 GiB buffer,
+# 2 MiB pages, differenced over two pass counts so the pre-touch cancels.
+# Both arms are the same binary on the same cores.
+READ_4=61.9
+MIXED_4=97.9
+MIXED_4_RD=49.7
+MIXED_4_WR=48.2
+MIXED_OVER_READ=1.582
+PEER_READ_4=60.59
+PEER_READ_24=227.53
+#
+# The saturation denominator. l2fwd runs up to 23 workers, which this
+# session cannot reach, so the 24-thread mixed ceiling is ESTIMATED as
+# the peer's 24-thread read ceiling scaled by the mixed/read ratio
+# measured here at 4 cores. Two caveats travel with it:
+#   - the ratio is assumed constant with thread count; untested
+#   - the peer's 227.53 had not plateaued at 24 threads (+18.3% from
+#     16), so it is a lower bound, and dividing by a lower bound
+#     OVERSTATES utilisation -- safe for a saturation claim, but said
+#     rather than assumed
+DRAM_ACHIEVED_GBS=184.2
+# --- measured by dram_ceiling.sh on 2026-09-17T03:14:38Z ---
+# 24 threads on cpus: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23
+# 2048 MiB/thread, differenced over 3 vs 9 passes, mixed (rmwn) arm.
+# NOT comparable to READ_4/MIXED_4 above: those were taken on cpus
+# 24-27, the contended housekeeping set. Different cores, different
+# contention, and 24-27 is where the 178-tick reading came from.
+# Status: measured plateau (+4.0% from 16 threads).
+# Full series: l2fwd/dram_ceiling_out/dram_ceiling.csv

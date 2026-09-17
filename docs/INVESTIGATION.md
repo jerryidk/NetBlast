@@ -3575,3 +3575,300 @@ diff is one line if it is ever worth the cost:
   `floor/b` and the rig's own (64, 5) marked, so the bracket is visible rather
   than tabulated. Carries the separate legend and the `<text>`-extent check
   §5.22 made standard.
+
+### 5.30 The DRAM ceiling, measured at last: 184.2 GB/s, and why 360.0 was wrong in method (2026-09-17)
+
+§5.28 built `l2fwd/dram_ceiling.sh`, could not run it, and recorded the refusal
+rather than the result. The run has now happened. This section records what it
+found, which is both a number and a reason.
+
+#### What unblocked it
+
+Nothing in this repository. §5.28's account of the blocker — a denial on the
+`sudo systemd-run --scope --slice=bench.slice` that `benchctl` itself performs —
+describes a `benchctl` that no longer exists. It was replaced with a narrower
+operation that writes its own pid to `/sys/fs/cgroup/bench.slice/cgroup.procs`
+and `exec`s. §5.28's diagnosis was correct when written and is now stale; it is
+left in place, as retractions on this page are, because the reasoning about why a
+committed script could not route around a per-session permission is still sound
+and would apply again.
+
+One practical note for the next person: `benchctl` resolves the caller's identity
+from the tmux session name, so a run launched from a session named for the job
+(`dramceiling`) is refused against a lease held by `nb`. `BENCH_SESSION=nb` is the
+fix, and the tool's own error message says so.
+
+#### The result
+
+```
+cpus_allowed_list: 0-23
+  nthreads   read        mixed
+   1        15.9        27.6
+   2        31.8        55.3
+   4        62.2        97.7
+   8       115.3       140.9
+  16       195.7       177.2
+  24       228.3       184.2
+
+mixed ceiling at 24 threads: 184.2 GB/s
+growth from 16 to 24 threads: 4.0%  (plateaued: yes)
+```
+
+`DRAM_ACHIEVED_GBS=184.2`, written by the script that measured it, with the cpu
+list, the method and the plateau verdict appended beside it. The guard at
+`dram_ceiling.sh:78` reported `0-23`, so this is 24 distinct physical cores and
+not the housekeeping set wearing a 24-core label.
+
+**It plateaued.** 4.0% growth over the last step, under the script's 5%
+threshold, so the figure is a measured ceiling rather than a lower bound — which
+is the defect the withdrawn 360.0 carried and the reason the sweep exists.
+
+#### Why the withdrawn 360.0 was wrong, and it is not the reason that was given
+
+The withdrawn value was the peer session's 24-thread READ ceiling scaled by a
+mixed/read ratio of 1.582 measured at **four** cores. It was retracted on the
+grounds that the ratio was assumed constant with thread count and untested, and
+that the peer's figure had not plateaued. Both concerns were right to raise. The
+sweep shows the first one is not merely untested but false, and false in the
+strong sense that the ratio **inverts**:
+
+| threads | read | mixed | mixed/read |
+|---|---|---|---|
+| 4 | 62.2 | 97.7 | **1.57** |
+| 24 | 228.3 | 184.2 | **0.81** |
+
+At four cores a mixed stream beats a read-only one; by twenty-four, read
+overtakes mixed decisively. So the extrapolation was not an imprecise estimate of
+the right quantity, it was the wrong operation. 360.0 against a true 184.2 is
+nearly 2x high.
+
+**The peer's read number was right all along.** Our independently measured
+24-thread read arm is **228.3** against the peer's `PEER_READ_24=227.53` — 0.3%
+apart, different session, different probe invocation. Their non-plateau
+reproduces too: we read +16.7% from 16 to 24 threads on the read arm against
+their +18.3%. The READ arm is genuinely still climbing. The MIXED arm, which is
+the one that becomes the denominator, is not. Only the ratio assumption was
+broken, and it is worth separating those, because "the peer's number was
+unreliable" would have been the easy and wrong lesson to draw.
+
+#### The direction of the error was backwards
+
+`.dram_ceiling`'s header states that dividing by a lower bound **overstates**
+utilisation. With the field empty, `analyse_saturation.dram_ceiling()` fell
+through to preference 2, `PEER_READ_24=227.53`, labelled "a LOWER BOUND". But
+227.53 is a *read* ceiling, and at 24 threads the read ceiling **exceeds** the
+mixed one. It was therefore not a lower bound on the quantity actually wanted; it
+was an over-estimate of it by 23.5%.
+
+Every DRAM utilisation drawn against it is consequently **understated** by that
+factor, not overstated. The caveat that travelled with the figures pointed the
+wrong way, which is worse than no caveat, because a reader discounting in the
+named direction moves further from the truth.
+
+#### The hedge that was supposed to make this safe is not on the figure
+
+The reassurance carried in `analyse_saturation.py`'s own docstring is that the
+peer figure "is a lower bound and is named as such, so utilisations against it
+read as 'at least'" (`:41`). If that were true on the page, every published
+percentage would remain true as written, because the real denominator is smaller
+and the real percentages are therefore larger.
+
+It is not true on the page. The label is built by splitting `CEIL_SRC` at the
+first comma and keeping only the head:
+
+```python
+            put("DRAM bandwidth (of %s)" % CEIL_SRC.split(",")[0], gbs / DRAM_CEIL)
+```
+<sub>`l2fwd/analyse_saturation.py:242`</sub>
+
+`CEIL_SRC` is `"peer 24-thread READ ceiling, a LOWER BOUND"`. Everything after
+the comma — which is the entire qualifier — is discarded. The rendered label in
+`docs/saturation.svg` reads:
+
+```
+DRAM bandwidth (of peer 24-thread READ ceiling)
+```
+
+and the strings `least` and `lower bound` appear **zero** times anywhere in that
+file. So the caveat exists in the source, in `.dram_ceiling`'s header and in this
+document, and in none of the places a reader of the figure would look. It also
+pointed the wrong way, per the subsection above. A qualifier that is absent from
+the artefact and inverted where it is present is not a hedge.
+
+Two further points against leaning on it. The percentages are rendered bare —
+`"%7.1f%%"` at `:259` and `'%d%%'` at `:304` — with no "≥" or "at least" anywhere
+in the formatting. And the surviving half of the label does at least say *READ
+ceiling*, so a careful reader could in principle notice that a read ceiling is
+the wrong denominator for a mixed workload; that is an inference available to an
+expert, not a stated caveat.
+
+The change is one line and is **not applied**, because it alters a figure whose
+underlying data cannot currently be regenerated, and a relabelled plot drawn on
+a stale denominator would be worse than an honestly stale one:
+
+```diff
+-            put("DRAM bandwidth (of %s)" % CEIL_SRC.split(",")[0], gbs / DRAM_CEIL)
++            put("DRAM bandwidth (of %s)" % CEIL_SRC, gbs / DRAM_CEIL)
+```
+
+With `DRAM_ACHIEVED_GBS=184.2` now present, `CEIL_SRC` becomes the short
+`"measured mixed ceiling"` and carries no comma, so the split is harmless from
+here on and the defect is self-closing for future runs. It is recorded because it
+silently removed a caveat for every figure drawn before today.
+
+**The shape of this defect is one this document has already paid for twice.** It
+is not a missing caveat — it is a string operation that silently *ate* one, on a
+field whose second clause was the entire safety argument. Compare the integer
+quotient of "Measurement-harness defects" (§ at line 469): `total_hash_duration /
+total_packets_fwded` with both operands `uint64_t`, truncating a quantity that is
+not an integer and losing the fractional part with nothing downstream able to
+notice. Both are apparatus quietly discarding the part that says how much to
+trust the number, in a way no consumer can detect, because what arrives looks
+exactly like a well-formed answer. The generalisation worth carrying: when a
+value and its qualifier travel in one string or one expression, any operation
+that narrows it is a candidate for having dropped the qualifier rather than the
+value. (The same family produced the cancelled-alarm incident in the DRAMHiT
+tree, which is that project's to record, not this one's.)
+
+#### `docs/saturation.svg` is stale, and cannot be refreshed from disk
+
+The new denominator is in place and `analyse_saturation.py` will now select it as
+preference 1, "measured mixed ceiling". The committed figure does **not** reflect
+it: it was drawn against 227.53. It cannot simply be re-plotted, because the raw
+`.perf` and `.log` files from the saturation run are not in the tree and are not
+in any scratchpad — regenerating the figure requires re-running `saturation.sh`,
+which needs the box and a working generator, and node1's generator has been
+unusable since ~21:45 on 2026-09-16. This is recorded rather than quietly fixed
+so that nobody reads the percentages on that page as current.
+
+#### Cross-checked against a sibling project's defect, and clear
+
+The DRAMHiT session hit a harness bug worth checking for here before trusting
+184.2: its perf greps matched `instructions:u`, and the `:u` suffix is one perf
+emits only **outside** `bench.slice`. The probe therefore matched nothing in
+precisely the environment it was written to run in — an instrument that behaves
+differently depending on whether it is inside the cpuset, which is invisible to
+anyone who tests outside a lease and then runs under one.
+
+This sweep ran inside `bench.slice`, so the same failure would have applied.
+Checked and clear: no `:u` or `:k` suffix appears in any perf-reading code in
+this tree. `counter_groups.sh` specifies everything as raw encodings —
+`cpu/event=0x48,umask=0x01,name=.../` for core events and
+`uncore_imc_N/event=0x05,umask=0xcf/` for the CAS counters this ceiling is built
+from (`:73-74`) — and raw encodings resolve identically inside and outside the
+slice. The only `cycles:u` strings in the tree are in
+`l2fwd/compare_userspace_ice.py`, where they are *data*: keys being looked up in
+another project's result CSVs, not events being requested from perf here.
+
+Two further reasons to trust the number rather than only the absence of this bug.
+`counter_groups.sh` already carries the `<not supported>` guard (`:23-27`) —
+counters written as a plain comma list report `<not supported>` at a run time of 0
+while still claiming 100.00% enabled, which is the same "absent counter read as a
+measured zero" trap this document has paid for before. And the read arm
+reproduced an independent session's figure to 0.3%, which a dead counter cannot
+do.
+
+#### Repository additions
+
+- `l2fwd/dram_ceiling_out/dram_ceiling.csv` — the full six-point sweep, both
+  arms, with the core list per row, so the inversion above is checkable rather
+  than asserted.
+- `docs/dram_ceiling.svg` — achieved bandwidth against thread count, both arms,
+  the nominal 307.2 GB/s peak drawn for reference and the plateau verdict
+  rendered on the figure. Separate legend and the `<text>`-extent check
+  (`plot_dram_ceiling.py:155`, which `sys.exit`s rather than warning).
+
+### 5.31 Reading the saturation figure back, and the two resources that were never on the list (2026-09-17)
+
+§5.30 filled `DRAM_ACHIEVED_GBS` and noted that `docs/saturation.svg` is stale
+against it. The obvious next question is whether the staleness matters. Answering
+it needs the plotted values, and the raw `.perf` files are gone — so they were
+recovered from the figure's own geometry, by calibrating the y-axis against its
+gridline labels (`y=365` is 0%, `y=65` is 100%) and mapping each `<polyline>`
+back to its legend entry by stroke colour. Values below are therefore accurate to
+roughly ±0.3 percentage points, which is far inside every margin they are used
+for. This is a weaker source than the raw counters and is used only because the
+raw counters no longer exist; the re-run supersedes it.
+
+| resource | q=1 | q=4 | q=8 | q=16 | q=23 |
+|---|---|---|---|---|---|
+| link rate (of line rate) | 19.9% | 66.1% | **98.0%** | 81.7% | 12.8% |
+| core: retiring / slots | 60.2% | 54.7% | 47.5% | 31.5% | 15.3% |
+| core: backend-bound | 18.6% | 26.1% | 24.4% | 45.2% | **73.1%** |
+| core: memory-bound | 6.5% | 16.9% | 13.2% | 43.9% | **58.4%** |
+| PCIe (of Gen4 x16) | 7.4% | 22.8% | 33.6% | 28.1% | 4.9% |
+| DRAM bandwidth | 1.7% | 2.9% | 3.4% | 3.9% | 4.1% |
+| L1D fill buffers full | 6.6% | 4.6% | 3.4% | 1.2% | 1.0% |
+| stalled on L3 miss | 1.6% | 1.6% | 1.4% | 1.3% | 1.2% |
+| page walker active | 1.0% | 1.0% | 1.0% | 1.1% | 1.0% |
+
+#### The staleness does not matter, and the pre-registration was right
+
+Applying §5.30's 1.235x correction moves DRAM bandwidth from 1.7-4.1% to
+2.1-5.1%. No conclusion on the page turns on that. §5.27 pre-registered "the
+honest prediction is that **DRAM bandwidth is not the limit**... about 2%", and
+the measurement lands there. That prediction is confirmed rather than rescued by
+the correction, which is the stronger of the two outcomes.
+
+So the re-run is worth doing for the denominator, but not urgently, and nothing
+published needs withdrawing on account of it. That is worth stating plainly,
+because §5.30 establishes an error and it would be easy to leave the impression
+that the saturation results are in doubt. They are not.
+
+#### What the figure cannot explain, and it is the interesting part
+
+At q=23 the core is **58.4% memory-bound** while every instrument that measures a
+memory *resource* reads between 1% and 5%: DRAM bandwidth 4.1%, L3-miss stalls
+1.2%, fill buffers 1.0%, page walker 1.0%. Those cannot simultaneously describe a
+bandwidth or a capacity limit. The core is waiting on memory and nothing on
+§5.27's list accounts for it.
+
+This is also the first measurement bearing on the §1 collapse, which §5.27 noted
+"no measurement has ever shown what the forwarder runs *out of*". The shape is
+now visible: link rate climbs to 98.0% of line rate at q=8, then falls to 81.7%
+and 12.8% as workers are added, while `retiring` collapses 60.2% -> 15.3% and
+backend-bound rises 18.6% -> 73.1%. Throughput is lost to the core going
+backend-bound, not to any shared resource reaching its ceiling.
+
+#### Two resources from the original brief are absent from the enumeration
+
+§5.27's table lists nine resources. The brief it was written against also named
+**DRAM latency**, as a thing distinct from DRAM bandwidth, and **coherence
+traffic between cores**. Neither appears in the table, and neither is
+instrumented: `counter_groups.sh` and `analyse_saturation.py` contain no snoop,
+no HITM, and no latency event of any kind.
+
+They are also precisely the two candidates the q=23 signature points at. High
+memory-bound with low bandwidth is what latency that is not being hidden looks
+like; and a per-core cost that worsens as workers are added, with no shared
+ceiling reached, is what inter-core interference looks like. §5.27's own opening
+argument applies to itself here: *a bottleneck that was never on the list cannot
+be found by refining the measurement of one that was.*
+
+#### One instrument exists and is not on the figure
+
+MLP is computed — `analyse_saturation.py:248-250` divides
+`l1d_pend_miss_pending` by `l1d_pend_miss_pending_cycles` — but is reported as a
+count rather than a utilisation, because it has no fixed ceiling, and so never
+reached the plot. It is the single measurement that discriminates latency-bound
+from bandwidth-bound: an MLP pinned at a hard ceiling while DRAM bandwidth sits
+at 4% is a latency answer. Recovering it requires the same re-run.
+
+#### What the next run should carry
+
+Ordered so that one sweep answers the open question rather than re-confirming a
+closed one:
+
+1. Add DRAM-latency and coherence encodings to `counter_groups.sh`, and validate
+   them against `bench_membw` first. Per §5.23, a raw encoding on this part is
+   untrusted until checked against a workload with a known answer, because a
+   generic alias can map to nothing and read zero.
+2. Re-run `saturation.sh`. This picks up `DRAM_ACHIEVED_GBS=184.2`
+   automatically, recovers MLP, and closes the `.split(",")[0]` label defect of
+   §5.30 without a code change, since the new `CEIL_SRC` carries no comma.
+3. Make the find-mask fix an arm of the same sweep. §5.27 pre-registered that the
+   shipped and fixed builds should differ in DRAM traffic, and that comparison
+   has never been run.
+
+Steps 2 and 3 need the box and a working generator; node1's has been unusable
+since ~21:45 on 2026-09-16. Step 1 needs neither.
