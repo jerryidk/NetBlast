@@ -65,6 +65,14 @@ pats = {
 # The per-second "%.2f Mpps" lines (main.c:207) are printed BEFORE truncation, so
 # full precision is recoverable from the log. steady_mpps below is the median of
 # those, excluding the cold first sample: immune to all three defects.
+# One asymmetry this creates, quantified in INVESTIGATION.md 5.29: steady_mpps
+# excludes the cold sample, but cycles_per_pkt beside it cannot, because
+# main.c:217-218 divides two running totals and so is a cumulative mean over the
+# whole run including the warm-up. The two are not taken over the same window.
+# For `-m none` nothing moves -- it is flat from the first interval. For maglev
+# q=1 the printed value decays 231 -> 166 and the tail implies a steady state of
+# 163-165, about 1%: under the one-tick resolution, but real, and a reason not
+# to read a sub-tick difference between an engine and the floor as physical.
 SAMPLE_RE = re.compile(r"^([0-9.]+) Mpps", re.M)
 # condition -> log filename prefix
 CONDS = {

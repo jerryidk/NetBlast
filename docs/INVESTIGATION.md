@@ -2944,3 +2944,634 @@ were checked and all ten held; the difference is not care, it is that this
 page's numbers are mostly generated while theirs were mostly typed. The
 generated architecture makes this failure *rarer*, which is worse for noticing
 and is the reason the dozen exceptions needed a guard of their own.
+
+### 5.26 dramblast's find path never finds anything (2026-09-16)
+
+Asked to look over the dramblast implementation for optimization
+opportunities, the first thing found was not an optimization. The SIMD find
+path compares the search key against the wrong half of the cache line, so it
+returns a miss for every key in the table — including keys inserted
+microseconds earlier.
+
+#### The defect
+
+A bucket is 64 bytes holding four `dramblast_kv_t`, and that type is
+`{uint64_t k; uint64_t v;}` (`dramblast.h:8-11`), so as eight qwords the line is
+`k0 v0 k1 v1 k2 v2 k3 v3` — **keys on the even lanes, values on the odd ones**.
+The find loop masks the comparison to a subset of lanes:
+
+```c
+#define DRAMBLAST_SIMD_KEY_MASK 0b10101010
+...
+__mmask8 key_cmp = _mm512_mask_cmpeq_epu64_mask(DRAMBLAST_SIMD_KEY_MASK,
+                                                cacheline, key_vector);
+if (key_cmp > 0) {
+  int offset = __builtin_ctz(key_cmp);
+  result->v = cacheline[(offset + 1)];
+```
+
+`0b10101010` selects lanes 1, 3, 5, 7 — the **value** lanes. The search key is
+therefore compared against stored MAC addresses and never against a stored key.
+
+The `+ 1` is itself the proof, and needs no measurement: it is only meaningful
+for an even `offset`, because the value of the pair whose key matched at lane
+`2i` lives at lane `2i + 1`. A mask of `0b10101010` can only ever yield an odd
+`offset`, for which `offset + 1` is the *next pair's key* — and at `offset = 7`
+it is `cacheline[8]`, one past the end of an eight-lane vector. The two lines
+cannot both be right, and the constant is the one that is wrong.
+
+#### Confirmed by running, because the disassembly is ambiguous
+
+Reading was not enough here, for a reason worth recording. The peer DRAMHiT
+session, asked independently, quoted the upstream `Item::find_simd`
+(`kvtypes.hpp:640-670`), which uses `0b01010101` over exactly this layout and
+the same `bucket[idx+1]` idiom — strong evidence, but it also warned that the
+mask's *shape* in the object code is build-dependent: GCC may fold it into an
+EVEX write-mask register or leave the compare unmasked and apply the constant
+afterwards on a GPR. Grepping the disassembly for `0x55` would have found
+nothing either way. (This build takes the first form: `mov $0xffffffaa,%eax`,
+`kmovb %eax,%k1`, `vpcmpequq %zmm1,%zmm0,%k0{%k1}`.)
+
+The general form of that warning, after the peer corrected their own framing of
+it: the two encodings they meant were the two ways a *correct* mask can appear,
+but this case is worse than that, because the constant is plainly visible in the
+expected EVEX form and is simply the wrong value. Grepping for `0x55` finds
+nothing and proves nothing. **Read the constant that is there; do not search for
+the one you expect.**
+
+It is also a port defect rather than an inherited one. Upstream DRAMHiT has
+`constexpr __mmask8 KEYMSK = 0b01010101` (`kvtypes.hpp:643`), used for both the
+key compare (:649) and the empty-slot compare (:663), and the peer reports its
+correctness harness passing all 28 cases on this host — hits, misses, empty
+keys, reprobes and a soak — which a `0xAA` mask could not survive. The bit
+pattern was inverted when the code was brought into this tree.
+
+So the question was settled by execution. `l2fwd/test_dramblast_find.c` links
+the real `libsashstore`, inserts 64 keys, reads them back with a **scalar**
+probe that does not use the SIMD path at all — establishing independently that
+the inserts are really there — and then looks the same 64 keys up:
+
+| arm | present (scalar readback) | find hits | hits correct |
+|---|---|---|---|
+| shipped, mask `0b10101010` | 64 | **0** | 0 |
+| mask `0b01010101` | 64 | **64** | 64 |
+
+One character. Nothing else differs between the two columns.
+
+#### Why nothing caught it
+
+Because the forwarder cannot tell the two apart. `populate_lut` fills the entire
+backend table with `0xff` and returns before reaching the Maglev code
+(`conshash.c:22-26`), so a hit and a miss produce the *same destination MAC*.
+`dramblast_process_frames` reacts to a miss by consulting that LUT and calling
+`dramblast_insert_one` (`dramblast.c:282-291`), which finds the key already
+present and updates it. Every packet is forwarded, to the right place, with the
+right address, and the packet counters are identical. There is no error path, no
+dropped packet and no log line — the only observable is speed.
+
+That also means **every dramblast number in this document was measured on a
+100%-miss workload.** Not a workload with a poor hit rate: a workload where the
+hit rate is exactly zero by construction. §5.22 is the section this most
+directly revises. It reported dramblast at 0.007 `LLC-load-misses` per packet
+and explained the number as prefetch attribution — the fills being done by
+`_mm_prefetch` rather than by a demand load. That explanation stands, and is
+still the reason the counter cannot see the traffic. But the section went on to
+frame dramblast as "one random DRAM read per packet", and that is not what the
+shipped code does. It does a read *and* a write: the insert that every miss
+triggers stores through the same line the find just examined, turning a clean
+read into a read-for-ownership and a later writeback.
+
+#### What it costs
+
+`l2fwd/bench_dramblast_path.c` drives the real `dramblast_process_frames` in
+bursts of 64, as `main.c:337` does, over a table at the rig's 3% occupancy.
+`l2fwd/check_dramblast_arms.sh` builds each arm from a copy of the real source
+with exactly one edit, and interleaves the arms across repeats. Nine repeats,
+TSC ticks per packet, median:
+
+| arm | median | vs shipped |
+|---|---|---|
+| as shipped | 52.9 | — |
+| + find-mask fix | 35.7 | **−17.3** |
+| + hoisted result buffer (`-A -1`) | 30.3 | −22.6 |
+| + `prefetcht0` | 34.6 | −18.4 |
+| + `prefetcht1` instead of `prefetcht2` | 35.6 | −17.3 |
+| + find-loop state hoisted into locals | 35.3 | −17.7 |
+| + no vector spill on the hit path | 36.8 | −16.1 |
+
+Figure: `docs/dramblast_arms.svg`.
+
+**Scope, stated because it limits every row.** This is a 256 MiB table on 2 MiB
+THP with no NIC, not the rig's 8 GiB on 1 GiB pages behind a 100 Gbps port. It
+is several times this part's 52.5 MiB L3, so the access is still a DRAM access
+and the read-versus-read-modify-write comparison is still the right one, but the
+absolute ticks are not comparable to the rig's ~98 and the ordering is
+indicative rather than final. The rig has to confirm it.
+
+**A second limit, and it is mine.** These were taken on the shared housekeeping
+cpuset (cores 24-27,52-55), because the attempt to run them inside `bench.slice`
+was refused by this session's own permission settings. An earlier pass of the
+identical sweep, run while two peer sessions were compiling on that set, read
+178 ticks with a standard deviation of 60 against 53 on a quiet machine — 52-55
+are the hyperthread siblings of 24-27, so a compile on 52 halves core 24. The
+numbers above were re-taken after the peers moved off, use a median rather than
+a mean, and have standard deviations of 0.25-1.1. The ranking was identical in
+both passes.
+
+#### Three candidates the measurement killed
+
+Recorded because they were all read straight off the disassembly and all three
+looked convincing there.
+
+- **The prefetch hint constants are inverted, and correcting them buys almost
+  nothing.** `dramblast.c:60-64` defines `PREFETCH_T0 0, PREFETCH_T1 1,
+  PREFETCH_T2 2, PREFETCH_NTA 3`. The ISA encoding is the exact reverse —
+  `_MM_HINT_T0 = 3, _MM_HINT_T1 = 2, _MM_HINT_T2 = 1, _MM_HINT_NTA = 0`
+  (`xmmintrin.h:42-45`). So the shipped `PREFETCH_T1` emits **`prefetcht2`**,
+  confirmed in the object code (`prefetcht2 (%r14,%rax,1)`), and `PREFETCH_NTA`
+  would emit `prefetcht0`. **§5.22 is wrong on this point**: it states the line
+  is `prefetcht1`. Correcting the constant to a true `prefetcht1` changes
+  nothing measurable (35.6 against 35.7), which is expected — T1 and T2 both
+  land in L2 on this part. Going all the way to `prefetcht0`, which also fills
+  L1, is worth about 0.9 ticks: an interleaved seven-repeat paired test gives
+  **−0.95 ± 0.24**, real but small. The inverted table is worth fixing for
+  honesty regardless of the ~1 tick, because the source currently says one thing
+  and the silicon does another.
+- **Hoisting the find loop's state into locals does nothing.** The shipped loop
+  reaches the queue through three helpers that each re-derive `&ht->queues[id]`,
+  and the object code reloads `ht->len` inside the push loop (`mov 0x8(%rbx),%rdx`)
+  and recomputes the mask every iteration, because a store through
+  `dramblast_queue_item_t *` may alias the header. `opt/dramblast-hoist.patch`
+  reads all of it once. Measured: 35.3 against 35.7, inside the scatter. The
+  loop is not issue-bound at this occupancy; the removed instructions were
+  running in slack.
+- **Removing the vector spill on the hit path makes it slightly worse.**
+  `cacheline[(offset + 1)]` subscripts an `__m512i` by a variable, which GCC
+  implements by storing all 64 bytes to the stack (`vmovdqa64 %zmm0,0x40(%rsp)`)
+  and reloading 8 — a wide-store-narrow-load forwarding stall on every hit.
+  Reading the value from the table line instead, which is in L1 by then,
+  measured 36.8 against 35.7: **worse**, not better. Recorded as a refuted
+  hypothesis rather than dropped.
+
+#### The flow hash, which is not dramblast's but is on its path
+
+Separately measured, because it sits inside every per-packet number here and had
+never been separated from the lookup it precedes. `flowhash()`
+(`packettool.c:110`) calls `fnv_1_multi()` three times over 8, 1 and 4 bytes;
+`fnv_1_multi` (`hash.c:12`) is a byte-at-a-time loop carrying its state through
+an `imul`, so thirteen bytes are thirteen 3-cycle multiplies in series. Neither
+function is inlined into the caller — `libsashstore/meson.build` sets
+`override_options: ['b_lto=false']` on the whole library, so `main.c` is built
+with `-flto=auto` and the entire lookup library is not, and `flowhash` remains
+an out-of-line call making three more.
+
+`l2fwd/bench_flowhash.c`, TSC ticks per packet:
+
+| | throughput | latency |
+|---|---|---|
+| FNV, as shipped | 34.0 | 65.4 |
+| CRC32C over the same 13 bytes | 5.6 | 34.0 |
+
+The throughput column is the forwarder's regime — `main.c:322-333` hashes every
+packet of a burst with no dependency between them, so the hashes overlap. The
+first version of this benchmark measured only the latency column and would have
+overstated the saving by a factor of two; the number to quote is **~28 ticks per
+packet**. CRC32C needs no justification as the comparison arm: dramblast already
+runs `_mm_crc32_u64` on this hash's output (`dramblast.c:78`).
+
+The caveat that has to travel with it: changing the flow hash changes which
+flows collide, so it changes the measured workload and not merely its speed.
+
+#### One more build-configuration finding
+
+DPDK 21.11's `libdpdk-libs.pc` carries `-march=nehalem` in its `Cflags`, and
+meson appends dependency flags *after* project arguments, so every translation
+unit in this project is compiled as
+`... -mavx512f -mavx512dq -march=native ... -march=nehalem`, and the last
+`-march` wins. Verified with `gcc -Q --help=target`: the effective target is
+`-march=nehalem -mtune=nehalem`, with `-mbmi2` and `-mfma` **disabled** and
+`-mavx256-split-unaligned-load/store` **enabled**, against `-march=cooperlake`
+for `-march=native` alone on this part. The explicit `-mavx512f`/`-mavx512dq`
+survive, which is why the AVX-512 code compiles at all and why this was
+invisible. One visible consequence in the find loop: `bsf` where a BMI build
+would use `tzcnt`.
+
+This has not been measured and no change is proposed for it yet. It is recorded
+because it means the entire dataset was taken from a binary tuned for a 2008
+microarchitecture, and because re-ordering the flags would change the binary
+every measurement in this document was taken with — the same reason §5.19 gives
+for not yet widening the printed cycle counter.
+
+#### Repository additions
+
+- `l2fwd/test_dramblast_find.c` — the insert-then-find correctness harness.
+- `l2fwd/bench_dramblast_path.c` — per-packet cost of the real
+  `dramblast_process_frames`.
+- `l2fwd/bench_flowhash.c` — FNV against CRC32C, throughput and latency.
+- `l2fwd/check_dramblast_arms.sh` — builds every arm from a copy of the real
+  source with one edit each, interleaves them, writes the TSV.
+- `l2fwd/opt/dramblast-hoist.patch` — the loop-hoisting change, kept although it
+  measured flat, so the refutation is reproducible.
+- `l2fwd/plot_dramblast_arms.py` — `docs/dramblast_arms.svg`.
+
+Nothing under `l2fwd/libsashstore/` has been modified. The find-mask fix is a
+one-character change and is not applied.
+
+### 5.27 Every resource that could be the limit, and how each one is measured
+
+Everything in this document so far is a **cost**: cycles or ticks per packet,
+attributed to a piece of code. A cost says how expensive something is. It does
+not say whether the machine has any headroom left in the resource that cost is
+drawn from, and therefore cannot answer the question that decides whether an
+optimization is worth making — if a shared resource is already at its ceiling,
+removing work elsewhere buys nothing.
+
+So this section enumerates every resource that could plausibly be the limit,
+gives each one a ceiling, and names the instrument that measures its
+utilisation. The enumeration comes first deliberately: a bottleneck that was
+never on the list cannot be found by refining the measurement of one that was.
+
+#### The resources, their ceilings, and where the ceiling comes from
+
+| resource | ceiling | source of the ceiling |
+|---|---|---|
+| offered load | 96.15 Mpps | 100 Gbps / (110 B frame + 8 B preamble + 12 B IFG) |
+| NIC PCIe link | 31.5 GB/s one way | `lspci`: Gen4 x16, 16 GT/s x 16 lanes x 128b/130b |
+| DRAM bandwidth | 307.2 GB/s | `dmidecode`: 8 populated channels x DDR5-4800 x 8 B |
+| L1D fill buffers | 100% of cycles | `L1D_PEND_MISS.FB_FULL` is already a cycle count |
+| miss parallelism | — (reported as a count) | no fixed ceiling; the count is the result |
+| page walker | 100% of cycles | `dtlb_walk_active` is already a cycle count |
+| last-level cache | 52.5 MiB | `lscpu`, one instance |
+| core issue width | 6 slots/cycle | Golden Cove allocation width; top-down normalises it |
+| core count | 23 workers | `bench.slice` owns CPUs 0-23, one is the main lcore |
+
+Two of these have a measured ceiling as well as a nominal one, and the measured
+one is what the utilisation should be divided by: DRAM's achievable streaming
+bandwidth is well below 307.2 GB/s, and `validate_counters.sh` measures it.
+
+#### The instruments, and why they are split into groups
+
+| resource | instrument |
+|---|---|
+| offered load | `l2fwd`'s own `Packets received` and `RX-Missed (Dropped)` — if the NIC is not dropping, the forwarder is keeping up and nothing on this list is the limit |
+| PCIe | forwarded bytes/s against the link |
+| DRAM bandwidth | `uncore_imc_{0..7}/cas_count_read,cas_count_write` x 64 B |
+| miss parallelism | `L1D_PEND_MISS.PENDING / PENDING_CYCLES` — mean misses in flight while any is |
+| fill buffers | `L1D_PEND_MISS.FB_FULL / cycles` |
+| address translation | `dtlb_walk_active / cycles` |
+| LLC | `stalls_l3_miss / cycles`, `LLC-load-misses` |
+| core issue | top-down level 1 (`retiring`, `bad-spec`, `fe-bound`, `be-bound`) and level 2 (`mem-bound`, `fetch-lat`, `heavy-ops`, `br-mispredict`) |
+
+Top-down is the load-bearing addition. It partitions **every** issue slot into
+one of four fates, so unlike any single counter it cannot miss a bottleneck by
+not having been asked about it — whatever the core is waiting on shows up
+somewhere in the four. Level 2 then splits the backend into memory and core,
+which is precisely the distinction §5.11 and §5.22 could only approach
+indirectly, from clock-arm ratios and a miss counter that turned out to measure
+exposure rather than traffic.
+
+The events are split across six groups, each collected in its **own** `l2fwd`
+run, because a group large enough to hold them all would multiplex and silently
+scale every value (§5.24). That is expensive — one run per group per queue count
+— and it is why the default queue list is short. `saturation.sh` re-checks the
+enabled percentage on every run and marks the summary line `MULTIPLEXED` rather
+than leaving it to the analysis to notice.
+
+`L1D_PEND_MISS.PENDING`/`PENDING_CYCLES` and `FB_FULL` are deliberately in
+*different* groups. All three are event 0x48, and the peer DRAMHiT session found
+that three simultaneous 0x48-family events collide in the event scheduler — a
+general scheduling property rather than a quirk of particular codes. Splitting
+them costs an extra run and removes the collision.
+
+#### The axis is core count, and why that is the discriminating one
+
+A per-core resource — issue slots, fill buffers, the page walker — holds its
+utilisation roughly flat as cores are added, because each core brings its own.
+A shared resource — DRAM bandwidth, the memory controller, the NIC, the LLC —
+climbs towards its ceiling and then flattens the throughput curve. Plotting
+utilisation against worker count therefore separates the two classes without
+needing to model either, and the resource whose curve reaches the ceiling first
+is the answer.
+
+This also gives the §1 collapse a second look it has never had. That collapse
+was diagnosed as an invocation defect (§2) and did not reproduce once the
+invocation was corrected, but no measurement has ever shown what the forwarder
+runs *out of* at high queue counts — only that it stops scaling.
+
+#### Pre-registered: what each instrument can refute
+
+Written before the runs, as §5.9 and `depth_prediction.md` were.
+
+- **If DRAM bandwidth is the limit**, its utilisation rises with core count and
+  flattens where Mpps flattens. At 93 Mpps with one 64 B line touched per packet
+  this is only ~6 GB/s of compulsory read traffic against a 307 GB/s nominal
+  ceiling — about 2% — so the honest prediction is that **DRAM bandwidth is not
+  the limit**, and a measurement showing otherwise would mean the access pattern
+  is moving far more than one line per packet. The find-mask defect (§5.26) is
+  exactly such a mechanism, since every packet also writes, so the shipped build
+  and the fixed build should differ here.
+- **If fill buffers are the limit**, `FB_FULL/cycles` is high and the measured
+  MLP sits at a hard ceiling regardless of queue depth — which would mean the
+  depth-64 prefetch pipeline of §5.14 cannot actually keep 64 lines in flight,
+  and would explain why its returns are exhausted by depth 32.
+- **If the core is the limit**, top-down shows `retiring` high and `mem-bound`
+  low. §5.14 measured 398 instructions/packet at IPC 3.96, which is close enough
+  to the 6-wide allocation limit that this is a live possibility and would make
+  instruction count — the flow hash of §5.26, at ~34 of ~98 ticks — the thing
+  worth attacking.
+- **If nothing is saturated**, the forwarder is offered-load-bound and the
+  per-packet costs measured in this document are latency that is not being
+  hidden rather than capacity that has run out. `RX-Missed` decides this one
+  directly and needs no PMU at all.
+
+These are not mutually exclusive and the interesting outcome is a crossover:
+one resource limiting at low core counts and another taking over.
+
+#### Repository additions
+
+- `l2fwd/counter_groups.sh` — the event groups and the ceilings, sourced by both
+  scripts below so that what is validated and what is measured cannot drift.
+- `l2fwd/validate_counters.sh` — points every counter at a workload with a known
+  answer before it is pointed at the forwarder.
+- `l2fwd/bench_membw.c` — those workloads: a sequential stream (known bytes), a
+  dependent pointer chase (MLP must be ~1), and a register-only chain (memory
+  counters must read ~0).
+- `l2fwd/saturation.sh` — one `l2fwd` run per event group per queue count.
+- `l2fwd/analyse_saturation.py` — utilisations and `docs/saturation.svg`.
+
+### 5.28 The saturation denominator: a runner written, and the one thing blocking it (2026-09-17)
+
+`.dram_ceiling` carries `DRAM_ACHIEVED_GBS=` empty, and §5.27's whole table of
+utilisations divides by it. Until it holds a measured number, every DRAM
+utilisation in `docs/saturation.svg` is divided by a named lower bound, which
+**overstates** saturation. This section records the attempt to fill it, which
+did not succeed, and what stands in the way.
+
+#### Why the existing figures could not be extended
+
+`validate_counters.sh` measures the ceiling at four cores and says so
+(`validate_counters.sh:164-168`): the agent shell is confined to cpus
+24-27,52-55 by `user.slice`, and `taskset` cannot escape a cpuset. Four cores
+was a limit, not a choice. The withdrawn `DRAM_ACHIEVED_GBS=360.0` was that
+four-core mixed/read ratio applied to a peer session's 24-thread *read* ceiling,
+resting on an untested assumption — that the ratio is independent of thread
+count — and on a peer figure that had not plateaued (+18.3% from 16 threads).
+
+The repair is not a better extrapolation but a measurement at the thread count
+`l2fwd` actually runs at. Cores 0-23 are 24 *distinct physical* cores, since the
+sibling of core `c` is `c+28`, so `bench.slice` can supply exactly that.
+
+#### `l2fwd/dram_ceiling.sh`, and the two guards built into it
+
+The method is inherited unchanged from `validate_counters.sh` — mixed rather
+than read-only, differenced over 3 against 9 passes so the buffer memset and
+first touch cancel, both arms from one binary on the same cores. Two things are
+new, and both exist because of defects this document has already paid for:
+
+- **It refuses to run on the wrong cores.** A probe confined to the
+  housekeeping cpuset does not fail; it returns a plausible wrong number, and
+  would report the same four-core figure at every thread count. The script reads
+  its own `Cpus_allowed_list` and exits unless it is on bench cores.
+- **It sweeps thread count rather than measuring only at the top, and marks its
+  own result a lower bound.** If the mixed arm grows more than 5% over the last
+  step of the sweep, the value written to `.dram_ceiling` is annotated
+  `LOWER BOUND, still climbing`. That is precisely the defect the withdrawn
+  360.0 had, and nothing on the page showed it. The provenance block it appends
+  names the exact cpu list, and states that the new figure is **not** comparable
+  to `READ_4`/`MIXED_4`, which came from the contended 24-27 set — the same set
+  that produced the 178-tick reading of §5.26.
+
+The constant is therefore written by the thing that derives it, which is the
+failure `.dram_ceiling`'s own header is about.
+
+#### The run is blocked on a session permission, and a committed script does not help
+
+Attempted, and recorded because a negative result here saves the next attempt.
+`bench_membw` was built, the bench lease taken (journal `2026-09-17T00:28:45`,
+released `00:29:50` rather than held while blocked), and the run launched as:
+
+```
+benchctl run --cpus 0-23 --purpose "DRAM ceiling denominator (thread sweep)" \
+  -- l2fwd/dram_ceiling.sh <outdir>
+```
+
+Denied by this session's harness permissions. The denial is on the
+`sudo systemd-run --scope --slice=bench.slice` that **`benchctl` itself**
+performs, not on the script being launched — so shipping the probe as a
+committed script, which was the suggested alternative, does not route around
+it. Since that launch is the only path onto cores 0-23, no committed script ever
+can. It is a per-session harness permission and not a sudoers restriction, so
+the fix is a decision rather than a systems change. The work is otherwise ready.
+
+#### Machine-wide hazards in the *other* tree, and a question answered without touching the machine
+
+Flagged by the scheduler session and verified here, recorded because the blast
+radius reaches this project's runs even though the code does not belong to it.
+
+The scripts concerned — `run_tiny.sh`, `setup.sh`, `setup_hbm.sh`,
+`run_sweep_test.py`, `toggle_hyperthreading.sh` — are in
+`/users/sohamb/DRAMHiT-migrate/DRAMHiT/scripts/`. **None of them exist in
+NetBlast**, whose `scripts/` holds only `bind-dpdk-devices.sh`,
+`constant_freq.sh`, `get-dpdk-ice.sh`, `prefetch_control.sh` and
+`reserve_hugepages.sh`. The distinction is worth stating because a bare
+`scripts/...` path in a two-project document sends a later reader to the wrong
+repository, where finding nothing discredits the surrounding entries.
+
+Two mechanisms mattered. `run_tiny.sh` offlines cpus 28-55 mid-run by writing
+`/sys/devices/system/cpu/cpuN/online`, which deletes every SMT sibling of the
+bench cores and changes the machine's cpu count under any affinity mask already
+set, while other sessions are live. That alone justifies not running it. The
+*restore* path was initially reported as broken on the grounds that a bare
+invocation toggles rather than sets; reading it shows the toggle does restore in
+the nominal sequence, because the state is 0 when it is reached. The remaining
+doubt was the loop bound, `NPROC` from `lscpu`'s `CPU(s):` — if that counts
+online rather than present cpus, the restore pass would iterate 0..27 and leave
+28-55 offline permanently.
+
+That question was settled by the peer session without offlining a real cpu, by
+running `lscpu --sysroot` against a synthetic `/sys` tree first validated to
+reproduce this host, then altered to the post-offline state: `CPU(s):` stayed at
+56 with the offline set reported on its own line. `CPU(s):` is the **present**
+count, so the restore pass does cover 28-55. Strong evidence rather than a live
+test, and the method is worth reusing — a sysfs-reading script's behaviour under
+a machine state you must not create can be tested against a synthetic sysroot.
+
+#### Repository additions
+
+- `l2fwd/dram_ceiling.sh` — the thread-count sweep, with the cpuset guard and
+  the lower-bound self-marking described above.
+- `l2fwd/plot_dram_ceiling.py` — achieved bandwidth against thread count, with
+  the nominal 307.2 GB/s peak drawn for reference and the plateaued/still-
+  climbing verdict rendered on the figure rather than left in the CSV. Carries
+  the separate legend and the `<text>`-extent check against the viewBox that
+  §5.22 made standard, both exercised end to end on synthetic input.
+
+### 5.29 Verifying the 5 cycles per packet, by rebuilding the instrument (2026-09-17)
+
+The floor arm of §5.20 reports **5 cycles per packet** for `-m none` at a
+64-packet burst, and five cycles to write a destination MAC is low enough to be
+worth checking rather than believing. This section is that check. It splits into
+two questions that are answered differently: whether the *arithmetic* that
+produces the number is right, which is settled by reading the code and the logs,
+and whether the *instrument* that feeds it can resolve five cycles at all, which
+needed a separate measurement.
+
+The conclusion first: the arithmetic is correct, and 5 is if anything half a
+tick to one and a half ticks **low**. Nothing on the page needs retracting.
+
+#### The arithmetic: three things checked, three clean
+
+`main.c:217-218` prints `total_hash_duration / total_packets_fwded`. Four ways
+that quotient could be wrong, and what each one turned out to be:
+
+- **Denominator deflation.** The numerator accumulates over every packet in the
+  timed region, but the denominator is `fwded`, and the dramblast and maglev
+  branches only increment `fwded` on a hit (`main.c:344`, `main.c:319`), while
+  the `none` branch increments it for the whole burst (`main.c:357`). A dropping
+  engine would therefore charge its drops to its hits and read high, and the
+  95%/97% lookup shares of §5.20 would be inflated. **It does not happen here:**
+  `Packets dropped` is exactly `0` in all thirty trio logs, and `Packets
+  forwarded` tracks `Packets received` to within one burst. Checked directly in
+  `/users/sohamb/sweeps/trio/*.log`, not assumed.
+- **Ticks versus cycles.** Still sound: `set_clock.sh show` reports the machine
+  in the pinned arm, `no_turbo=1` and every core at 2 100 000 kHz, and the trio
+  logs record a delivered 2094-2095 MHz. §5.7's correction factor is 1.000.
+- **The integer quotient.** Unchanged and load-bearing: a printed 5 is any true
+  value in [5, 6). At the floor that is a 20%-wide bin, which is why everything
+  below is reported as a ledger of biases in ticks rather than as a corrected
+  number.
+- **A cumulative mean paired with a steady-state one.** New, and the one real
+  asymmetry. `total_hash_duration` and `total_packets_fwded` are both running
+  totals from process start, so the printed figure is a cumulative mean that
+  includes the warm-up — while `steady_mpps`, which the analysis divides
+  alongside it, is deliberately the median of the samples *excluding* the cold
+  first one (`extract_results.py:60-65`). The two are not taken over the same
+  window. For `-m none` this moves nothing: the printed value is flat at 5 from
+  the very first interval, because that arm has no table to warm. Where it bites
+  is maglev, whose q=1 sequence decays `231 200 188 ... 167 166` over 31
+  intervals; holding the recorded intervals fixed and solving for the tail gives
+  a steady state of **163-165 against the 166 recorded**, about 1%. That is
+  under one tick and changes no claim, but the pairing is an inconsistency in
+  the method rather than noise, and it is recorded here so the next reader does
+  not rediscover it as a discrepancy.
+
+#### The instrument: rebuilt rather than re-examined
+
+The stronger question is whether a pair of `rte_rdtsc()` reads can resolve a
+five-cycle region at all. Two properties of `rte_rdtsc()` say it might not, and
+neither is visible from the rig's output:
+
+- It is plain `rdtsc` with no fence (`dpdk-21.11/include/rte_cycles.h`;
+  `rte_rdtsc_precise()` is the fenced variant and is not what `main.c:309` calls).
+  The disassembly of `l2fwd_main_loop` confirms it — bare `rdtsc` at `403bcf`
+  and `403c9b`, no `lfence` on either side. A non-serialising closing read can
+  retire while the loop's stores are still in the store buffer, so the region
+  can read **less** than the work costs.
+- Executing `rdtsc` twice is not free, and whatever an *empty* region reads is
+  charged to every burst in every arm — divided by 64 at a full burst and by 2
+  at the tail of the queue sweep.
+
+§5.20 already put a number on the second one, `C = 32 ± 12` cycles per burst,
+but it came from a fit with **R² = 0.45** over data whose small-burst end is
+mostly rounding, and the section says so and calls it a bound. Rebuilding the
+loop replaces that bound with a measurement.
+
+`l2fwd/bench_timed_region.c` reproduces the `-m none` branch and times it with
+the same unfenced pair, in floating point so truncation is out of the picture.
+The reproduction is verified at the instruction level, not argued: the rig's
+inner loop at `403dd0-403df5` and the benchmark's are the same eleven
+instructions in the same order — two dependent loads off the mbuf, two reloads
+of the source MAC, and stores of 8, 4 and 2 bytes. Two attempts were needed to
+get there and both failures are worth recording, because each one silently
+measured something cheaper than the target:
+
+- A file-scope `static` MAC initialised in place was **constant-folded**, which
+  removed both reloads and merged three stores into two.  Making the table a
+  runtime-filled global restored the shape.
+- Selecting the burst with `k % pool` *after* the opening timestamp charged a
+  64-bit divider to the region under test — about 35 ticks per burst, which
+  moved the headline from 3.5 to 4.1 cycles per packet. Hoisting the index above
+  the opening read fixed it. This is the same class of defect as §5.13's: a
+  plausible number, internally consistent, describing the harness.
+
+#### What it measures
+
+Every figure below is at a 64-packet burst, on an idle bench core via
+`benchctl run --cpus 4`, median of 15 repetitions.
+
+| | ticks/burst | cycles/packet |
+|---|---|---|
+| empty region, bare pair (the rig's instrument) | **29.95** | 0.47 |
+| empty region, `lfence`-bracketed | 56.7 | 0.89 |
+
+The floor is **29.95 ticks per burst**, stable to ±0.02 across every footprint,
+stride and core it was run on. §5.20's `C = 32 ± 12` is confirmed, and can now
+be stated as a measurement rather than a bound.
+
+The loop itself, read through the rig's own unfenced instrument, depends
+entirely on where the packets are:
+
+| packet footprint | what has run out | cycles/packet |
+|---|---|---|
+| 0.1 MiB | nothing — L1/L2 resident | **3.47** |
+| 2.8 MiB | past L2 | 7.04 |
+| 8.4 MiB | past L2, at the L2 TLB's reach | 7.77 |
+| 28.1 MiB | inside L3, past the L2 TLB | 22.02 |
+| 84.4 MiB | past L3 | 21.98 |
+| 421.9 MiB | past L3, DRAM + page walks | 25.48 |
+
+**The rig's 5 falls inside that bracket**, above the issue-limited floor of the
+same eleven instructions and far below a cache miss — which is where a
+DDIO-fed forwarder belongs, since the NIC writes packet data into L3 before the
+core reads it and the mbuf pool is recycled continuously. The number is not
+implausible; it is where the mechanism predicts.
+
+#### The bias ledger, in ticks
+
+Three effects act on the printed 5 at a 64-packet burst, and the honest
+statement is their sum rather than any one of them:
+
+| effect | direction | size |
+|---|---|---|
+| integer truncation (`main.c:218`) | understates | −[0, 1) |
+| instrument floor, 29.95/64 | overstates | +0.47 |
+| stores hidden by the unfenced closing read, 58.7/64 | understates | −0.92 |
+
+Working backwards, a printed 5 corresponds to a true region cost of about
+**5.5 to 6.5 cycles per packet**. Every term is smaller than one tick, so the
+claim "5 cycles per packet" survives at the resolution the rig actually has, and
+no mechanism should be built on the difference — which is precisely the error
+§5.13 made and §5.19 cleaned up after.
+
+The store-shadow term is uniform across arms: it is a property of the timestamp
+pair, not of the engine between them. So dramblast's 98 and maglev's 166 are
+understated in the same way, and every *difference* taken on this page — which
+is every comparison that matters — is untouched.
+
+#### What was not changed, and why
+
+`main.c:218` was left emitting an integer. Printing a float would remove the
+truncation term outright, but it changes the binary that the whole of
+`results_reproduced.json` was taken with, and re-baselining costs a full sweep
+against a generator that is currently unusable (§5.28). The truncation is
+bounded, signed and now accounted for, which is cheaper than a re-baseline. The
+diff is one line if it is ever worth the cost:
+
+```c
+-    printf("\nCycle per fwd packet: %lu",
+-           total_hash_duration / total_packets_fwded);
++    printf("\nCycle per fwd packet: %.3f",
++           (double)total_hash_duration / total_packets_fwded);
+```
+
+#### Repository additions
+
+- `l2fwd/bench_timed_region.c` — the `-m none` branch reproduced
+  instruction-for-instruction and timed with both a bare and an `lfence`-bracketed
+  `rdtsc` pair, across burst sizes and packet footprints. `--pool` sizes the
+  packet working set; `--csv` appends so one file holds every arm.
+- `l2fwd/plot_timed_region.py` — `docs/timed_region.svg`: cycles per packet
+  against burst size for each footprint, with the instrument floor drawn as
+  `floor/b` and the rig's own (64, 5) marked, so the bracket is visible rather
+  than tabulated. Carries the separate legend and the `<text>`-extent check
+  §5.22 made standard.
