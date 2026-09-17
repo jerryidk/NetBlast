@@ -2003,6 +2003,25 @@ for noticing.
 
 ### 5.26 dramblast's find path never finds anything (2026-09-16)
 
+> **Status (updated 2026-09-17): fixed upstream, and this section's numbers predate
+> the fix.** `DRAMBLAST_SIMD_KEY_MASK` is `0b01010101` in the tree as of master
+> `2d8e93b`, which this branch is now rebased onto. Three consequences, and none of
+> them is optional reading before the next measurement:
+>
+> 1. **Every measurement in this document through `bdff61a` was taken with the
+>    shipped mask `0b10101010`**, i.e. on a find path that missed on every packet and
+>    therefore inserted on every packet. That includes the saturation and latency
+>    work in §5.30-§5.32. The numbers are not withdrawn -- they are correct for the
+>    code that was run -- but they do not describe the code that builds today.
+> 2. **A rebuild now measures the fixed path.** Anyone who builds this branch and
+>    re-runs a sweep is measuring a different workload from the one behind the tables
+>    below, and should not compare the two directly.
+> 3. `opt/dramblast-find-mask.patch` has been **deleted**, because it is applied
+>    upstream and would no longer apply. The arm scripts are inverted to match: the
+>    `shipped` arm is now synthesised by editing the mask *back* to `0b10101010`, and
+>    the unmodified tree is the `maskfix` arm. See `l2fwd/check_dramblast_arms.sh`
+>    and `l2fwd/run_maskfix_sweep.sh`.
+
 Asked to look over the dramblast implementation for optimization opportunities, the
 first thing found was not an optimization. The SIMD find path compares the search key
 against the wrong half of the cache line, so it returns a miss for every key in the
@@ -2196,8 +2215,26 @@ that binary — the same reason §5.19 gives for not yet widening the printed cy
   flat, so the refutation is reproducible.
 - `l2fwd/plot_dramblast_arms.py` — `docs/dramblast_arms.svg`.
 
-Nothing under `l2fwd/libsashstore/` has been modified. The find-mask fix is a
-one-character change and is **not applied**.
+**Superseded 2026-09-17.** When this section was written nothing under
+`l2fwd/libsashstore/` had been modified and the find-mask fix was deliberately left
+unapplied, so that every arm above measured a one-character edit against an otherwise
+untouched tree. That is no longer the state of the repository: master `2d8e93b` applies
+the fix, and this branch is rebased onto it. The measurements above stand as taken --
+all of them with the shipped mask `0b10101010` -- but the tree they were taken against
+is now the `shipped` *arm* rather than the tree, and a rebuild measures the fixed path.
+
+Two further changes of the same kind landed upstream in `2d8e93b` and are worth naming,
+because each one silently turns an arm above into a duplicate of its own baseline if the
+scripts are not inverted with it:
+
+- **The vector spill on the hit path is gone.** `result->v` now reads from the table
+  line, not by subscripting the `__m512i`. The old `novecspill` arm is therefore the
+  tree's behaviour; it has been replaced by a `vecspill` arm that re-introduces the
+  subscript, so the refuted hypothesis stays reproducible in the same direction.
+- **`opt/dramblast-hoist.patch` has been regenerated** against the new loop body. Two of
+  its four hunks no longer applied, and a third applied only with fuzz against changed
+  context, which is how a patch quietly lands somewhere it was not meant to. It is kept,
+  per the note above, so the flat result stays reproducible.
 
 ### 5.27 Every resource that could be the limit, and how each one is measured
 
