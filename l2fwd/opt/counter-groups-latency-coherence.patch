@@ -1,0 +1,103 @@
+Adds the two resources §5.27 enumerated the machine against but never listed:
+DRAM *latency* as distinct from bandwidth, and inter-core coherence traffic.
+
+WHY THESE TWO, AND WHY NOW
+--------------------------
+§5.31 found that at q=23 the core is 58.4% memory-bound while every instrument
+measuring a memory *resource* reads 1-5%: DRAM bandwidth 4.1%, L3-miss stalls
+1.2%, fill buffers 1.0%, page walker 1.0%. That combination cannot be a
+bandwidth or a capacity limit. Latency that is not being hidden, and cores
+interfering with each other, are the two candidates left, and neither is
+instrumented.
+
+DRAM LATENCY COMES FREE FROM LITTLE'S LAW
+-----------------------------------------
+No counter reports memory latency directly. But the group already collects
+OFFCORE_REQUESTS_OUTSTANDING.DATA_RD (event 0x20, umask 0x08) in G_FB. Adding
+OFFCORE_REQUESTS.DATA_RD (event 0x21, umask 0x08) gives
+
+    mean latency in core cycles = outstanding / requests
+
+which is Little's law with no modelling assumption beyond the counters being
+what they claim. This is why latency gets its own group rather than joining
+G_FB: the two 0x2x events plus FB_FULL's 0x48 in one group risks the same
+scheduler collision §5.27 documents for three simultaneous 0x48-family events.
+
+*** THESE ENCODINGS ARE UNVALIDATED AND MUST NOT BE TRUSTED YET ***
+Per §5.23, perf has no JSON event file for family 6 model 207, so a generic
+alias can map to nothing and read zero -- indistinguishable from a real zero.
+Every encoding below must be checked against a workload with a known answer
+before any number from it is quoted.
+
+  latency:   bench_membw's dependent pointer chase already IS the known answer.
+             MLP must be ~1 there, so outstanding/requests must come out at
+             roughly one full memory latency (order 200-400 cycles on this
+             part). If it reads 0, or reads ~1, the encoding is wrong.
+
+  coherence: THERE IS NO KNOWN-ANSWER WORKLOAD FOR THIS TODAY. bench_membw has
+             a sequential stream, a pointer chase and a register-only chain --
+             none of them share a line between cores, so all three must read
+             ~0 on the XSNP counters, which only proves the counters are not
+             stuck high. Validating that they are not stuck LOW needs a new
+             bench_membw arm: two threads ping-ponging a single shared line,
+             where every access must miss to a modified line in another core's
+             cache and the XSNP_FWD count must approach the access count.
+             That arm does not exist and is the prerequisite for this half of
+             the patch. Do not run the coherence group against l2fwd before it
+             does.
+
+The 0xd2 umask assignments in particular differ across microarchitectures; they
+are written here from the Golden Cove server encoding and are the single most
+likely thing in this file to be wrong.
+
+--- a/l2fwd/counter_groups.sh
++++ b/l2fwd/counter_groups.sh
+@@ -57,6 +57,38 @@
+ cpu/event=0xa3,umask=0x06,cmask=0x06,name=stalls_l3_miss/,\
+ LLC-load-misses"
+ 
++# --- DRAM latency, as distinct from DRAM bandwidth ------------------------
++# Little's law: mean outstanding data reads divided by the data-read
++# completion rate is the mean latency of one, in core cycles. Bandwidth can
++# sit at 4% while latency is the thing the core is waiting on, which is
++# exactly the q=23 signature of §5.31, and no group so far can tell them
++# apart.
++#
++# Kept in its own group rather than added to G_FB: FB_FULL is 0x48-family and
++# §5.27 records that three simultaneous 0x48 events collide in the event
++# scheduler. Two 0x2x events beside it is not worth the risk for one counter.
++#
++# Known answer for validate_counters.sh: bench_membw's dependent pointer
++# chase. MLP is ~1 there by construction, so this ratio must come out at
++# roughly one full memory latency. A reading of 0 means the encoding did not
++# resolve; a reading near 1 means it resolved to the wrong event.
++G_LATENCY="cycles,\
++cpu/event=0x20,umask=0x08,name=offcore_reqs_outstanding_data_rd/,\
++cpu/event=0x21,umask=0x08,name=offcore_reqs_data_rd/"
++
++# --- inter-core coherence: are the workers fighting over lines? -----------
++# A per-core resource holds its utilisation flat as cores are added; a shared
++# one climbs. Coherence traffic does neither -- it GROWS with core count
++# because it is created by the cores themselves, which is the shape §5.31
++# sees and cannot currently name.
++#
++# MEM_LOAD_L3_HIT_RETIRED.XSNP_* counts loads that hit in L3 and required a
++# cross-core snoop. XSNP_FWD is the expensive one: the line was modified in
++# another core's cache and had to be forwarded.
++#
++# NOT VALIDATED, AND NOT VALIDATABLE with the current bench_membw. See the
++# header of this patch: a shared-line ping-pong arm must be added first.
++G_COHERENCE="cycles,\
++cpu/event=0xd2,umask=0x01,name=mem_load_l3_hit_xsnp_miss/,\
++cpu/event=0xd2,umask=0x02,name=mem_load_l3_hit_xsnp_no_fwd/,\
++cpu/event=0xd2,umask=0x04,name=mem_load_l3_hit_xsnp_fwd/"
++
+ # --- DRAM bandwidth (uncore, per socket; must be collected system-wide) ----
+--- a/l2fwd/saturation.sh
++++ b/l2fwd/saturation.sh
+@@ -80,6 +80,8 @@
+     mlp)      echo "$G_MLP" ;;
+     fb)       echo "$G_FB" ;;
+     tlbmem)   echo "$G_TLBMEM" ;;
++    latency)  echo "$G_LATENCY" ;;
++    coherence) echo "$G_COHERENCE" ;;
