@@ -16,6 +16,25 @@
 # so that a build failure cannot leave one arm silently running the other's
 # binary.
 #
+# BUILDING THE TWO ARMS (inverted 2026-09-17). The find-mask fix is now applied
+# upstream -- master 2d8e93b carries DRAMBLAST_SIMD_KEY_MASK 0b01010101 -- so
+# the tree is the *fixed* code and it is the `shipped` arm that must now be
+# synthesised by editing the mask back. Before the rebase this was the other
+# way round, and building `shipped` from an unmodified tree would now silently
+# produce two identical binaries.
+#
+#   # maskfix: the unmodified tree
+#   meson compile -C build && cp build/l2fwd <bindir>/l2fwd.maskfix
+#
+#   # shipped: revert the mask, build, then restore the tree
+#   sed -i 's/DRAMBLAST_SIMD_KEY_MASK 0b01010101/DRAMBLAST_SIMD_KEY_MASK 0b10101010/' \
+#       libsashstore/dramblast.h
+#   meson compile -C build && cp build/l2fwd <bindir>/l2fwd.shipped
+#   git checkout -- libsashstore/dramblast.h
+#
+# The objdump guard below is unchanged: it checks each binary for the mask it
+# is supposed to carry, so it catches the mistake in either direction.
+#
 # The arms are interleaved within each repeat rather than run as two blocks, so
 # that drift over the half hour lands on both equally -- the same reasoning as
 # section 5.14, which had to redo a result taken in blocks.

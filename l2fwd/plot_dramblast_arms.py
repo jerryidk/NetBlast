@@ -32,11 +32,12 @@ ORDER = [
     ("prefetchT0", "+ prefetcht0", GREEN),
     ("hoistloop", "+ loop state in locals", GREEN),
     ("hoistloop+alloc", "+ that, and hoisted buffer", GREEN),
-    ("novecspill", "+ no vector spill on hit", GREEN),
+    ("vecspill", "+ vector spill on hit", GREEN),
 ]
 
-CAPTION = ("Every arm but the first also carries the find-mask fix, so each is "
-           "the shipped code plus one further change.")
+CAPTION = ("The find-mask fix is now upstream, so the tree is the fixed code "
+           "and `shipped` is synthesised by reverting the mask. Every other arm "
+           "is the tree plus one further change.")
 
 
 def main(path):
