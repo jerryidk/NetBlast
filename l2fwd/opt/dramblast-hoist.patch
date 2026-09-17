@@ -1,6 +1,6 @@
 --- a/l2fwd/libsashstore/dramblast.c
 +++ b/l2fwd/libsashstore/dramblast.c
-@@ -134,24 +134,50 @@
+@@ -140,24 +140,59 @@
    unsigned int args_head = 0;
    unsigned int result_head = 0;
  
@@ -36,8 +36,17 @@
 -      idx = dramblast_hash(ht, arg->k);
 -      dramblast_prefetch(ht, idx);
 -      dramblast_push_queue(ht, idx, arg->k, 0, arg->id, id);
++      /* dramblast_hash() inlined so the masking uses the hoisted tbl_mask
++         instead of re-reading ht->len. The #ifdef mirrors dramblast_hash()
++         exactly so the two cannot drift; SSE42 is defined unconditionally at
++         the top of this file, so the CRC32 arm is the live one. */
++#ifdef SSE42
 +      idx = (uint64_t)_mm_crc32_u64(0, arg->k) & tbl_mask &
 +            DRAMBLAST_BUCKET_IDX_MASK;
++#else
++      idx = (arg->k * 0x9E3779B97F4A7C15ULL) & tbl_mask &
++            DRAMBLAST_BUCKET_IDX_MASK;
++#endif
 +      LX_PREFETCH(&table[idx], PREFETCH_T1);
 +      dramblast_queue_item_t *slot = &fq[head];
 +      slot->idx = idx;
@@ -53,21 +62,21 @@
 +    tail = (tail + 1) & q_mask;
      idx = queue_tail_slot->idx;
      count = queue_tail_slot->visit_count;
--    dramblast_kv_t *bucket = (dramblast_kv_t *)&ht->table[idx];
-+    dramblast_kv_t *bucket = (dramblast_kv_t *)&table[idx];
+-    uint64_t *bucket = (uint64_t *)&ht->table[idx];
++    uint64_t *bucket = (uint64_t *)&table[idx];
      __m512i cacheline = _mm512_load_si512(bucket);
      __m512i key_vector = _mm512_set1_epi64(queue_tail_slot->k);
      __m512i zero_vector = _mm512_setzero_si512();
-@@ -166,7 +192,7 @@
+@@ -174,7 +209,7 @@
      } else {
  
        count += 4;
 -      if (unlikely(count >= ht->len)) {
 +      if (unlikely(count >= tbl_len)) {
-         // table full
+         // probe bound reached; we cannot say whether the key is present
          dramblast_result_t *result = &results[result_head];
          result->v = 0;
-@@ -179,11 +205,15 @@
+@@ -188,11 +223,15 @@
                                                        cacheline, zero_vector);
        if (ept_cmp == 0) {
          idx += 4;
@@ -85,9 +94,9 @@
 +        slot->visit_count = count;
 +        head = (head + 1) & q_mask;
        } else {
-         // didn't found
+         // an empty slot in this bucket proves the key is absent
          dramblast_result_t *result = &results[result_head];
-@@ -194,6 +224,13 @@
+@@ -204,6 +243,13 @@
      }
    }
  
