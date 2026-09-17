@@ -10,7 +10,8 @@ CC   ?= gcc
 # -march=native for AVX-512 + SSE4.2 CRC32 + cmpxchg16b, matching l2fwd/meson.build
 CFLAGS := -O2 -g -march=native -Wall -Wextra -Wno-unused-parameter \
           -I$(LIB) -Ishims
-SRCS := test_dramblast.c $(LIB)/dramblast.c $(LIB)/conshash.c $(LIB)/hash.c
+SRCS := test_dramblast.c $(LIB)/dramblast.c $(LIB)/conshash.c $(LIB)/hash.c \
+        $(LIB)/backing.c
 
 .PHONY: all run clean check-c5
 all: run
