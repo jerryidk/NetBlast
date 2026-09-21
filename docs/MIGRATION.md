@@ -9,7 +9,8 @@ let anything overwrite it (see the trap in §0.5).*
 
 ## Why there is a runbook rather than "just re-run the sweep"
 
-Two things changed while the box was gone, and they compose:
+Two things changed while the box was gone, and on a new pair of machines a third joins
+them. They compose:
 
 1. **The code under measurement changed.** master `2d8e93b` applies the dramblast find-mask
    fix. Every number in `INVESTIGATION.md` through `bdff61a` describes a find path that
@@ -18,10 +19,14 @@ Two things changed while the box was gone, and they compose:
    rig now takes one `rdtsc` per poll and reports `Full-loop cyc per fwd packet`, which is
    the whole lifecycle including the PMD (§5.33). The old label is retired, not renamed.
 
-So a fresh run differs from the committed tables in both the code and the region. Neither
-invalidates a recorded number — they are correct for what was run — but no new figure may be
-put in a series with an old one. The queue in §2 exists to re-establish the baseline before
-anything is compared against anything.
+3. **The machine may have changed.** Most of what the harness knows about this host is a
+   raw hardware encoding or a ceiling, and a different part does not make it fail — it makes
+   it report plausible wrong numbers. §0.0 is the gate.
+
+So a fresh run differs from the committed tables in the code, in the region, and possibly in
+the hardware. None of that invalidates a recorded number — they are correct for what was run
+— but no new figure may be put in a series with an old one. The queue in §2 exists to
+re-establish the baseline before anything is compared against anything.
 
 ---
 
@@ -30,6 +35,64 @@ anything is compared against anything.
 Everything in §0.2 and §0.3 is **runtime state that does not survive a reboot**. Re-apply
 it on every fresh allocation, and verify each step rather than assuming it took — every
 one of these has a failure mode that reads as success.
+
+### 0.0 Confirm the machine — this gates everything below
+
+**Skip this only if the host is the same SKU as the one every committed figure was taken
+on.** A different part does not make the harness fail; it makes it report plausible wrong
+numbers, because most of what is baked in is a raw hardware encoding or a ceiling.
+
+Everything measured so far was taken on **one socket, 28 physical cores, 1 NUMA node,
+sibling of CPU *k* is *k+28*, family 6 model 207 (Emerald Rapids / Raptor Cove), 52.5 MiB
+L3, 100 GbE on PCIe Gen4 x16**. Check each row before trusting anything downstream of it:
+
+| fact | baked in as | where | what goes wrong if it differs |
+|---|---|---|---|
+| **CPU model** family 6 / 207 | every raw PMU encoding | `counter_groups.sh` | **silent.** `perf` has no JSON event file for this part, so every interesting counter is raw-encoded. A wrong encoding reads a plausible number, or reads zero — indistinguishable from a real zero (§5.9, §5.23) |
+| **uncore IMC** encoding | `event=0x05,umask=0xcf/0xf0`, enumerated over `uncore_imc_N` | `counter_groups.sh` | silent; the DRAM bandwidth column becomes fiction |
+| **base freq = TSC rate** 2.1 GHz | `PINNED_KHZ=2100000` | `set_clock.sh` | ticks stop equalling core cycles. The §5.33 identity and every "cycles" figure lose their units |
+| **topology** sibling(k)=k+28 | bench `0-23`, housekeeping `24-27,52-55` | `sweep.sh`, `saturation.sh`, §0.3 | benchmark and housekeeping can land on the same physical core |
+| **L3** 52.5 MiB | buffer sizing "several times L3" | `bench_dramblast_path.c`, `bench_membw.c`, `dram_ceiling.sh` `MIB` | a buffer that fits in L3 measures cache, not DRAM |
+| **DRAM ceiling** 184.2 GB/s | `DRAM_ACHIEVED_GBS` | `.dram_ceiling` | every saturation percentage |
+| **NIC** 100 GbE, Gen4 x16 | line rate 93.28 Mpps | `plot_sweep.py`, `plot_matrix.py`, `analyse_saturation.py`, `counter_groups.sh` | every "% of line rate" and the PCIe column |
+| **PCI addresses** | l2fwd **blocks** `0000:00:05.0`; pktgen **allows** `17:00.0` | `sweep.sh`, `saturation.sh`, `run.sh`; `pktgen/run.sh` | wrong port, or two ports enumerated where `-p 1` expects one |
+
+```
+lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Socket|NUMA node\(s\)|L3'
+cat /sys/devices/system/cpu/cpu0/topology/thread_siblings_list      # sibling offset
+cat /sys/devices/system/cpu/cpu0/cpufreq/base_frequency             # must equal the TSC rate
+ls /sys/bus/event_source/devices/ | grep uncore_imc                 # IMC instances
+lspci | grep -i eth                                                 # BDFs for both hosts
+```
+
+**If any row differs, three things must happen before §2 means anything:**
+
+1. Re-encode and **re-validate** the PMU events (§1.1). `validate_counters.sh` exists for
+   exactly this and each of its checks carries a prediction a wrong encoding would fail.
+2. Re-measure `.dram_ceiling` (§1.2) — it is a property of the machine, so on a new one the
+   committed 184.2 is simply another machine's number.
+3. Recompute the cpuset split (§0.3) from the real sibling layout, and fix the PCI
+   addresses. `-b 0000:00:05.0` is a **blocklist** entry with no environment knob — it must
+   be edited in `sweep.sh:110`, `saturation.sh:121` and `run.sh:34`, or `-p 1` will not
+   select what you think it selects. `pktgen/run.sh` takes `PCI=`.
+
+**And one figure becomes a cross-machine comparison**, on top of the code and instrument
+changes in the preamble: nothing measured on the new pair may be put in a series with
+`results_reproduced.json` at all. §3 lists what that covers.
+
+#### A core-selection decision to make here, not later
+
+`sweep.sh` builds its lcore list with a **stride of 2** — `seq -s, 0 2 $((q*2))` — while
+`saturation.sh` uses consecutive CPUs, `seq -s, 0 1 $q`. The stride is inherited from
+`run.sh` and §2 of `INVESTIGATION.md` already records that it is pointless on this topology:
+CPUs 0-27 are all distinct physical cores, so stepping by 2 just spends twice the CPU range
+for the same core count.
+
+It has never bitten because `MAX_QUEUES` defaults to 10, which needs CPU 20. At **q=12 it
+needs CPU 24**, which is outside `BENCH_CPUS=0-23` and inside housekeeping. Decide on the
+new machine whether to keep the stride (and cap the sweep accordingly) or make `sweep.sh`
+consecutive like `saturation.sh` — but decide it deliberately and write down which, because
+the two harnesses currently put the same queue count on different cores.
 
 ### 0.1 Tree and build
 
@@ -124,31 +187,26 @@ cp l2fwd/.dram_ceiling l2fwd/.dram_ceiling.bak     # before validate_counters.sh
 
 `git checkout l2fwd/.dram_ceiling` also restores it, since it is tracked.
 
-### 0.6 `benchctl`, which is not in this repository
+### 0.6 `benchctl` — not needed on a dedicated pair
 
-The box is shared, and the lease tool lives at `~/.bench-coord/benchctl` on the host — **not
-in git, and not carried over by a clone.** It has already been rewritten once (§5.28's
-blocker describes a version that no longer exists), so check what is actually installed
-before trusting a recipe that names it.
+`benchctl` is a **lease tool for a shared box**: it lives at `~/.bench-coord/benchctl` on the
+old host, is not in git, and does not survive a fresh allocation. On machines dedicated to
+NetBlast there is nobody to coordinate with and none of it applies.
 
-Two things about it that have cost time:
+Nothing in the harness requires it. `sweep.sh` and `saturation.sh` place themselves — the
+first through `systemd-run --scope --slice=bench.slice`, the second by writing its own pid
+to `/sys/fs/cgroup/bench.slice/cgroup.procs` and `exec`ing. Only `dram_ceiling.sh`
+*documents* a `benchctl run` launch line, and what it actually needs is simply to be on
+bench cores; §1.2 gives the direct form.
 
-- It resolves the caller's identity from the **tmux session name**, so a run launched from a
-  session named for the job is refused against a lease held by `nb`. `BENCH_SESSION=nb` is
-  the fix and its own error message says so.
-- `benchctl run` does a ~6 s preflight per call, which is worth paying once and not 35
-  times. For a sweep, take the lease with `benchctl hold` and let the harness do its own
-  narrower `bench.slice` join.
-
-`saturation.sh` and `sweep.sh` do **not** need `benchctl`: they join `bench.slice` directly
-by writing their own pid to `cgroup.procs` and `exec`ing. `dram_ceiling.sh` is the one that
-expects to be launched through it.
-
-Decide here whether `.dram_ceiling` needs re-measuring at all. It is a property of the
-machine, not of the code, so if this is the **same** host allocation the 184.2 still holds
-and §1.2 can be skipped entirely. A different allocation means a different machine and the
-number must be re-taken — the file's own header records that "a derived constant stored away
-from the thing that derived it" is a failure this project keeps paying for.
+What does **not** go away with the shared box is the reason the tool existed: a probe
+confined to the wrong cpuset does not fail, it returns a plausible wrong number. Keep
+`bench.slice` and the §0.3 split even though nothing else is competing for the machine —
+housekeeping, kernel threads and the stats lcore are still there, and `dram_ceiling.sh`
+still guards itself by reading its own `Cpus_allowed_list`. That guard pattern-matches the
+**literal** old housekeeping set (`*24-27*|*52-55*`, `dram_ceiling.sh:82`), so if §0.0
+changed the split, change the guard with it or it will wave through exactly the case it
+exists to catch.
 
 ---
 
@@ -170,18 +228,38 @@ Each check carries a prediction a wrong counter would fail. Two failure modes it
 catch: an encoding that is wrong and reads a plausible number, and one that is not wired up
 on this part and reads zero, which is indistinguishable from a real zero.
 
+**On a different SKU this is not a re-validation, it is a re-derivation.** Every encoding in
+`counter_groups.sh` is raw because this part has no `perf` JSON event file, so the numbers
+in it are meaningful only for family 6 model 207. Re-derive each from the new part's SDM
+tables first, then run this script — validating the old encodings on a new part tells you
+nothing except that they happened to decode to something. The uncore IMC events
+(`event=0x05`, umasks `0xcf`/`0xf0`, enumerated across `uncore_imc_N`) need the same
+treatment and are the ones that feed the DRAM bandwidth column.
+
+Two structural properties of the file to preserve while editing it: the topdown groups'
+**braces are load-bearing** — written as a plain comma list the metrics report
+`<not supported>` at 100.00% enabled, so a multiplexing check passes and every top-down
+number is silently absent — and the `0x48`-family events are split across two groups
+because three of them collide in the PMU scheduler.
+
 ### 1.2 The DRAM ceiling
 
-Only if §0.6 says `.dram_ceiling` must be re-measured. If the committed 184.2 still
-applies, skip this and keep the file.
+**Mandatory on a new machine.** `.dram_ceiling` is a property of the hardware, so the
+committed 184.2 GB/s is another machine's number and using it would divide every saturation
+percentage by the wrong denominator. Skip this only when the host is the same allocation.
+
+No `benchctl` needed — it only has to run on bench cores:
 
 ```
-BENCH_SESSION=nb sudo ~/.bench-coord/benchctl run --cpus 0-23 \
-    --purpose "DRAM ceiling" --log /tmp/dc.log -- l2fwd/dram_ceiling.sh l2fwd/dram_ceiling_out
+sudo bash -c 'printf "%s" $$ > /sys/fs/cgroup/bench.slice/cgroup.procs
+              exec taskset -c 0-23 l2fwd/dram_ceiling.sh l2fwd/dram_ceiling_out'
 ```
 
-It **must** reach cores 0-23; from an agent or user shell the cpuset confines it to 24-27,
-and four cores is a limit, not a choice — that is where the withdrawn 360.0 came from. The
+Run it from the repository root, and substitute the real bench set for `0-23` if §0.0
+changed it — including in `dram_ceiling.sh`'s own housekeeping guard.
+
+It **must** reach the bench cores; from an agent or user shell the cpuset confines it to
+housekeeping, and four cores is a limit, not a choice — that is where the withdrawn 360.0 came from. The
 script guards itself: it reads its own `Cpus_allowed_list` and exits unless it is actually
 on bench cores, because a probe confined to housekeeping does not fail, it returns a
 plausible wrong number. `--hk` overrides, for a deliberate 4-core comparison against the
@@ -321,6 +399,7 @@ against the version in `docs/`, not trusted.
 | the dramblast/maglev tables | §5.5-§5.20 | taken on the pre-mask-fix find path |
 | §5.32's latency curve | §5.32 | same |
 | `compare_userspace_ice.py`'s constants | that script | measured under the old instrument; left as-is deliberately, re-measure rather than edit |
+| **everything, if §0.0 found a different part** | all of `docs/` | a cross-machine comparison on top of the other two. Ceilings (184.2 GB/s, 93.28 Mpps, Gen4 x16, 52.5 MiB L3) are properties of the old host |
 
 **Nothing above is withdrawn.** Each is correct for the code and the region it was taken
 with. What is forbidden is putting an old and a new figure in one series.
