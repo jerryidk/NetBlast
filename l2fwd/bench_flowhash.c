@@ -20,7 +20,7 @@
  * version of this file only asked the wrong one.
  *
  *   throughput  successive hashes independent, as in the forwarder's loop
- *               (main.c:322-333 hashes every packet of a burst with no
+ *               (main.c:364-375 hashes every packet of a burst with no
  *               dependency between them, so the out-of-order engine overlaps
  *               them and the imul chains of different packets interleave)
  *   latency     each hash's input made to depend on the previous hash's output
@@ -60,7 +60,7 @@ static inline uint64_t flowhash_crc(void *frame) {
   h = _mm_crc32_u32((uint32_t)h, *(uint32_t *)(f + 14 + v4len)); /* ports */
   h = _mm_crc32_u8((uint32_t)h, (uint8_t)proto);
   /* flowhash() returns 0 for "unparseable", and the forwarder tests for it
-     (main.c:329), so a real hash must never collide with it. */
+     (main.c:371), so a real hash must never collide with it. */
   return h | 0x100000000ULL;
 }
 

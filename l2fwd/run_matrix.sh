@@ -33,8 +33,8 @@
 #             and not merely a within-fit one.
 #
 #   trio      THE THREE ENGINES AGAINST THE FLOOR, in one sitting. `-m none`
-#             (main.c:438) takes the third branch of the forwarding loop
-#             (main.c:351-356): it writes the destination MAC exactly as the
+#             (main.c:483) takes the third branch of the forwarding loop
+#             (main.c:393-398): it writes the destination MAC exactly as the
 #             other two do, and skips only the lookup that produced the address.
 #             It is therefore the subtraction that turns "cycles per forwarded
 #             packet" into "cycles per LOOKUP" -- without it every per-packet

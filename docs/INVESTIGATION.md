@@ -1519,7 +1519,7 @@ One caution about the standard errors: they describe the scatter of numbers all 
 the same way, so a tight `sem` on a one-tick difference is not evidence of anything. The
 status column is computed from the tick count alone.
 
-**What would remove the limit.** `main.c:217` divides a cumulative cycle total by a
+**What would remove the limit.** `main.c:236` divides a cumulative cycle total by a
 cumulative packet count and prints the integer quotient. Both operands are already
 `uint64_t`; emitting the ratio as a float, or the two totals, gives roughly four more
 significant digits for a one-line change. Deliberately not done, because it would change
@@ -1531,7 +1531,7 @@ Every per-packet number here is read out of one timed region in `main.c` — an
 `rte_rdtsc()` before the per-packet loop and another after, accumulated into
 `hash_tsc` — and until now nothing said how much of that region is *not* the lookup.
 The control was already in the program and had never been run. `-m none`
-(`main.c:438`) takes the forwarding loop's third branch (`main.c:351-356`), which
+(`main.c:483`) takes the forwarding loop's third branch (`main.c:393-398`), which
 writes the destination MAC exactly as the engines do and skips only the lookup:
 
 ```c
@@ -2103,7 +2103,7 @@ just examined, turning a clean read into a read-for-ownership and a later writeb
 #### What it costs
 
 `l2fwd/bench_dramblast_path.c` drives the real `dramblast_process_frames` in bursts of
-64, as `main.c:337` does, over a table at the rig's 3% occupancy.
+64, as `main.c:379` does, over a table at the rig's 3% occupancy.
 `l2fwd/check_dramblast_arms.sh` builds each arm from a copy of the real source with
 exactly one edit, and interleaves the arms across repeats. Nine repeats, TSC ticks per
 packet, median:
@@ -2179,7 +2179,7 @@ inlined into the caller — `libsashstore/meson.build` sets
 | FNV, as shipped | 34.0 | 65.4 |
 | CRC32C over the same 13 bytes | 5.6 | 34.0 |
 
-The throughput column is the forwarder's regime — `main.c:322-333` hashes every packet of
+The throughput column is the forwarder's regime — `main.c:364-375` hashes every packet of
 a burst with no dependency between them, so the hashes overlap. The first version of this
 benchmark measured only the latency column and would have overstated the saving by 2x;
 the number to quote is **~28 ticks per packet**. CRC32C needs no justification as the
@@ -2448,12 +2448,12 @@ a half ticks **low**. Nothing needs retracting.
 
 #### The arithmetic: four things checked, four clean
 
-`main.c:217-218` prints `total_hash_duration / total_packets_fwded`.
+`main.c:236-237` prints `total_hash_duration / total_packets_fwded`.
 
 - **Denominator deflation.** The numerator accumulates over every packet in the timed
   region, but the denominator is `fwded`, and the dramblast and maglev branches only
-  increment `fwded` on a hit (`main.c:344`, `main.c:319`) while the `none` branch
-  increments it for the whole burst (`main.c:357`). A dropping engine would charge its
+  increment `fwded` on a hit (`main.c:386`, `main.c:361`) while the `none` branch
+  increments it for the whole burst (`main.c:399`). A dropping engine would charge its
   drops to its hits and read high, inflating §5.20's 95%/97% lookup shares. **It does not
   happen here:** `Packets dropped` is exactly `0` in all thirty trio logs, and `Packets
   forwarded` tracks `Packets received` to within one burst. Checked directly in
@@ -2481,7 +2481,7 @@ Two properties of `rte_rdtsc()` say a pair of reads might not resolve a five-cyc
 region, and neither is visible from the rig's output:
 
 - It is plain `rdtsc` with no fence (`dpdk-21.11/include/rte_cycles.h`;
-  `rte_rdtsc_precise()` is the fenced variant and is not what `main.c:309` calls).
+  `rte_rdtsc_precise()` is the fenced variant and is not what `main.c:351` calls).
   Disassembly of `l2fwd_main_loop` confirms it — bare `rdtsc` at `403bcf` and `403c9b`,
   no `lfence` either side. A non-serialising closing read can retire while the loop's
   stores are still in the store buffer, so the region can read **less** than the work
@@ -2538,7 +2538,7 @@ recycled continuously.
 
 | effect | direction | size |
 |---|---|---|
-| integer truncation (`main.c:218`) | understates | −[0, 1) |
+| integer truncation (`main.c:237`) | understates | −[0, 1) |
 | instrument floor, 29.95/64 | overstates | +0.47 |
 | stores hidden by the unfenced closing read, 58.7/64 | understates | −0.92 |
 
@@ -2551,7 +2551,7 @@ in the same way and every *difference* taken here is untouched.
 
 #### What was not changed, and why
 
-`main.c:218` left emitting an integer. Printing a float removes the truncation term
+`main.c:237` left emitting an integer. Printing a float removes the truncation term
 outright, but changes the binary the whole of `results_reproduced.json` was taken with,
 and re-baselining costs a full sweep against a generator that is currently unusable
 (§5.28). The diff, if it is ever worth the cost:

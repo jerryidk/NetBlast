@@ -12,7 +12,7 @@
  * read-for-ownership and a writeback.
  *
  * This drives the real `dramblast_process_frames` in bursts of 64, as
- * `main.c:337` does, over a table sized to the same 3% occupancy as the
+ * `main.c:379` does, over a table sized to the same 3% occupancy as the
  * generator's 16.8M flows in 2^29 slots, and scaled down only so that it fits
  * without reserving 1 GiB hugepages. The table is still several times L3
  * (52.5 MiB on this part), so the access is still a DRAM access and the

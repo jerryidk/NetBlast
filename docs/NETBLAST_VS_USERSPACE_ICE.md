@@ -2,6 +2,22 @@
 
 *2026-09-17. Read-only comparison; no code in either tree was modified.*
 
+> **Superseded in part, 2026-09-18 — the instrument this page is about no longer
+> exists.** Everything below describes `l2fwd` as it stood at `3fa7b68`, where an
+> `rdtsc` pair bracketed the mode branch alone and the result printed as `Cycle
+> per fwd packet`. `main.c` now takes a single `rdtsc` per poll and charges each
+> iteration from the previous read, so the timed region IS the whole loop — Rx
+> burst, mode branch, Tx burst, drop path — and prints as `Full-loop cyc per fwd
+> packet`. The old label is retired, not renamed.
+>
+> The finding on this page is unaffected and was the reason for the change: the
+> 5-vs-33 gap was an axis mismatch, and the rig now reports on the same axis as
+> `userspace-ice` directly instead of requiring the throughput derivation in §4.
+> What IS affected is every code transcription below — it quotes source that has
+> since been deleted. Read those blocks against `3fa7b68`, not against the
+> working tree, and do not refresh their line numbers: there is nothing left to
+> point them at.
+
 Companion script: [`../l2fwd/compare_userspace_ice.py`](../l2fwd/compare_userspace_ice.py),
 which derives every number quoted here. Sibling tree: `/users/sohamb/userspace-ice`,
 imported onto this box at 02:01 on 2026-09-17.
@@ -16,8 +32,8 @@ like a factor of seven and is not one: **the two numbers measure different regio
 the same loop.**
 
 - NetBlast's figure comes from an `rdtsc` bracket that opens *after* `rte_eth_rx_burst`
-  has returned and closes *before* `rte_eth_tx_burst` is called (`l2fwd/main.c:309`–
-  `:359`). The entire DPDK PMD — descriptor polling, mbuf refill, Tx descriptor writes,
+  has returned and closes *before* `rte_eth_tx_burst` is called (`l2fwd/main.c:351`–
+  `:401` @ `3fa7b68`; no longer present — see the banner above). The entire DPDK PMD — descriptor polling, mbuf refill, Tx descriptor writes,
   the doorbell — is outside it.
 - `userspace-ice`'s figure is whole-process `cycles:u` divided by packets forwarded
   (`analysis/scripts/refpool_symmetric_tables.py:101`). It includes every one of those
@@ -45,7 +61,11 @@ PMD and the poll loop — **84% of the per-packet cost**, and precisely the part
 
 1. NetBlast's printed `Cycle per fwd packet` must never be compared against a
    `userspace-ice` cyc/pkt. The comparison inflates the driver by ~6x. Note the shape of
-   the error: **the 5 was never wrong, the axis was.** §5.29 verified that 5 cyc/pkt is
+   the error: **the 5 was never wrong, the axis was.** *(2026-09-18: this is now
+   enforced by construction rather than by remembering it — that label is no
+   longer printed at all, and its replacement `Full-loop cyc per fwd packet` is
+   already on the `userspace-ice` axis. Archived logs still carry the old label
+   and still need this warning.)* §5.29 verified that 5 cyc/pkt is
    real by rebuilding the instrument, and that verification still stands. A bad number
    and a good number on the wrong axis look identical from outside, and "correcting" the
    5 would have destroyed a sound measurement while leaving the actual error untouched.
@@ -74,12 +94,12 @@ a real and interesting result — or the two figures are not comparable.
       unsigned nb_rx =
           rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
 ```
-<sub>`l2fwd/main.c:302`</sub>
+<sub>`l2fwd/main.c:344` @ `3fa7b68`</sub>
 
 ```c
         uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
 ```
-<sub>`l2fwd/main.c:361`</sub>
+<sub>`l2fwd/main.c:403` @ `3fa7b68`</sub>
 
 Descriptor rings, buffer recycling and doorbells are all behind the PMD.
 
@@ -112,7 +132,9 @@ The `c/` directory is an uninitialised submodule (`git submodule status` shows a
 
 This is the whole finding, visible in eight lines of each tree.
 
-**NetBlast brackets a sub-region.** The timer opens after the Rx burst has completed:
+**NetBlast brackets a sub-region.** *(As of `3fa7b68`; see the banner at the top —
+the current loop brackets no sub-region.)* The timer opens after the Rx burst has
+completed:
 
 ```c
       unsigned nb_rx =
@@ -124,7 +146,7 @@ This is the whole finding, visible in eight lines of each tree.
 
         uint64_t start = rte_rdtsc();
 ```
-<sub>`l2fwd/main.c:302`–`:309`</sub>
+<sub>`l2fwd/main.c:344`–`:351` @ `3fa7b68`</sub>
 
 and closes before the Tx burst begins:
 
@@ -133,7 +155,7 @@ and closes before the Tx burst begins:
 
         uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
 ```
-<sub>`l2fwd/main.c:359`–`:361`</sub>
+<sub>`l2fwd/main.c:401`–`:403` @ `3fa7b68`</sub>
 
 Between those two reads, in `-m none`, the program does this and nothing else:
 
@@ -145,7 +167,7 @@ Between those two reads, in `-m none`, the program does this and nothing else:
           }
           port_statistics[portid][lcore_id].fwded += nb_rx;
 ```
-<sub>`l2fwd/main.c:351`–`:356`</sub>
+<sub>`l2fwd/main.c:393`–`:398` @ `3fa7b68`</sub>
 
 Five cycles is an honest number for that loop. It is not a number for forwarding a packet.
 
@@ -236,7 +258,7 @@ reads the `userspace-ice` figures out of that project's campaign CSVs. Output:
 NetBlast l2fwd, -m none, q=1
   throughput           65.85 Mpps (core-limited; generator offers 93.28)
   clock                2.100 GHz pinned
-  bracketed cyc/pkt    5 (main.c:309-359, excludes the PMD)
+  bracketed cyc/pkt    5 (main.c:351-401, excludes the PMD)
   whole-loop cyc/pkt   31.9  = 2100 / 65.85
   PMD + poll share     26.9 cyc/pkt (84%)
 
@@ -314,7 +336,7 @@ static inline void l2fwd_mac_updating(struct rte_mbuf *m, unsigned dest_portid,
   rte_ether_addr_copy(&l2fwd_ports_eth_addr[dest_portid], &eth->src_addr);
 }
 ```
-<sub>`l2fwd/main.c:260`–`:265`</sub>
+<sub>`l2fwd/main.c:294`–`:299`</sub>
 
 Both touch the same 16 bytes and both are a handful of instructions. The semantic
 difference is real; the cost difference is not.
@@ -327,7 +349,7 @@ difference is real; the cost difference is not.
 | Ports | multi-port with a dst-port map | one BDF |
 | Ring depth | 4096 / 4096 | 2048 / 2048 |
 | Burst | `MAX_PKT_BURST` 64 | 128 default, 256 max |
-| Tx refusal | frees the mbuf, counts `tx_dropped` — **packet lost** (`main.c:364`) | never drops; marks `stalled`, `usleep(50)`, retries |
+| Tx refusal | frees the mbuf, counts `tx_dropped` — **packet lost** (`main.c:406`) | never drops; marks `stalled`, `usleep(50)`, retries |
 | Reporting | 32 one-second Mpps samples | one end-of-run Mpps/Gbps line |
 
 Both figures are single-core, so the queue-count difference does not enter.
@@ -335,7 +357,7 @@ Both figures are single-core, so the queue-count difference does not enter.
 **Two NetBlast observations worth recording** — neither affects this comparison, both are
 surprising on first reading:
 
-- `l2fwd_simple_forward` (`main.c:267`), which uses `rte_eth_tx_buffer` and `dst_port`, is
+- `l2fwd_simple_forward` (`main.c:301`), which uses `rte_eth_tx_buffer` and `dst_port`, is
   **defined and never called**. The live loop transmits back out `portid`, the port it
   received on — so at port level NetBlast is also a reflector, despite its
   forwarder-shaped MAC rewrite.

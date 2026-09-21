@@ -17,20 +17,36 @@ Conditions (all at 100 GbE line rate unless noted):
   engine_trio        logs tagged "trio"   -- all three engines in one sitting:
                                                dramblast, maglev, and `-m none` (the
                                                forwarding loop's third branch,
-                                               main.c:351-356 -- same MAC write, no
+                                               main.c:393-398 -- same MAC write, no
                                                lookup). The floor everything else must
                                                be read against.
   capped_72mpps      logs tagged "sweep"    -- generator -l 0-2  (1 TX core), 72 Mpps
 
-Caveat on cycles_per_pkt across conditions
-------------------------------------------
+Caveat on the cycle counters across conditions
+----------------------------------------------
 l2fwd measures with rte_rdtsc() and this SKU's TSC is invariant at 2.1 GHz, so
-"Cycle per fwd packet" is TSC ticks = elapsed time, in EVERY condition. It is
-therefore comparable across conditions as time, but it equals core cycles only
+every cycle counter here -- loop_cycles_per_pkt now, cycles_per_pkt in the
+archived logs -- is TSC ticks = elapsed time, in EVERY condition. Ticks are
+therefore comparable across conditions as time, but they equal core cycles only
 where the core clock is also 2.1 GHz, i.e. the pinned_2100mhz arm. For the turbo
 arms multiply by the recorded freq_mhz/2100 to get core cycles; where freq_mhz is
 absent (linerate_2tx_instr predates the instrumentation) that conversion is not
 available and must not be guessed.
+
+What the counters bracket, and the one that is gone
+---------------------------------------------------
+loop_cycles_per_pkt brackets the WHOLE iteration and is measured with a single
+rte_rdtsc() per poll: the read at the bottom of one iteration closes that
+iteration's region and opens the next one's. So rx burst, mode branch, tx burst
+and drop path are all inside it, and loop_tsc + idle_tsc is the forwarding
+loop's entire wall time with no gap and nothing double-counted.
+
+cycles_per_pkt is the retired predecessor. It bracketed the mode branch alone,
+which is why the two must never be mixed in one series: the newer number is the
+older one plus the NIC path, and it is larger for that reason and not because
+anything got slower. There is no longer a counter for the lookup on its own,
+deliberately -- the lookup's cost is (dramblast or maglev) minus none at equal
+burst size, and the rest of the lifecycle cancels in that subtraction.
 
 Delivered frequency and 1 GiB backing
 -------------------------------------
@@ -46,8 +62,38 @@ from perf_csv import parse_perf   # the multiplexing guard
 SP = pathlib.Path(sys.argv[1]); OUT = pathlib.Path(sys.argv[2])
 pats = {
     "min": r"Minimum: ([0-9.]+)", "max": r"Maximum: ([0-9.]+)", "avg": r"Average: ([0-9.]+)",
+    # ARCHIVAL. main.c no longer prints this label -- it named the mode branch
+    # alone (the retired hash_tsc), and the current binary times the whole
+    # iteration instead. The pattern stays so the archived logs this key was
+    # fitted against still parse; it simply finds nothing in a new log. Do not
+    # repoint it at the new label. Every downstream consumer of `cycles_per_pkt`
+    # is reading hash-region numbers, and silently feeding it full-loop numbers
+    # would make two incomparable quantities share one name across the corpus.
     "cycles_per_pkt": r"Cycle per fwd packet: (\d+)",
+    # The replacement, and the only cycle counter a current run produces. One
+    # rte_rdtsc() per poll, read at the bottom of the iteration and charged from
+    # the previous read, so this covers the entire packet lifecycle --
+    # rte_eth_rx_burst, the mode branch, rte_eth_tx_burst, the drop path and the
+    # statistics stores -- with no sub-region broken out. The lookup's own cost
+    # is a DIFFERENCE between arms at equal burst size (dramblast or maglev
+    # minus none), not a separate measurement.
+    # Old logs carry `cycles_per_pkt` and not this; new logs carry this and not
+    # `cycles_per_pkt`. Neither is ever zero-filled, and every consumer must keep
+    # treating absent as absent rather than as 0.
+    "loop_cycles_per_pkt": r"Full-loop cyc per fwd packet: (\d+)",
+    # loop_tsc and idle_tsc partition the forwarding loop's wall time exactly,
+    # so these two are not an aside: full-loop x fwded + empty x polls is the
+    # whole of it, which is what makes an unexplained residual visible.
+    "empty_polls": r"Empty polls:\s+(\d+)",
+    "cyc_per_empty_poll": r"Cyc per empty poll:\s+(\d+)",
+    # rx_batch divides by ALL polls, empty ones included, so it is the mean
+    # burst size scaled by the hit rate, not the mean burst size. It is kept
+    # because the archived corpus and every fit taken against it use that
+    # definition. rx_batch_nonempty divides by the polls that returned a packet
+    # and is the B the P + C/B burst model actually wants; it appears only in
+    # logs from the current binary.
     "rx_batch": r"Average rx batch sz: (\d+)",
+    "rx_batch_nonempty": r"Average rx batch sz \(nonempty polls\): (\d+)",
     "rx_missed": r"RX-Missed \(Dropped\): (\d+)",
 }
 
@@ -67,7 +113,7 @@ pats = {
 # those, excluding the cold first sample: immune to all three defects.
 # One asymmetry this creates, quantified in INVESTIGATION.md 5.29: steady_mpps
 # excludes the cold sample, but cycles_per_pkt beside it cannot, because
-# main.c:217-218 divides two running totals and so is a cumulative mean over the
+# main.c:236-237 divides two running totals and so is a cumulative mean over the
 # whole run including the warm-up. The two are not taken over the same window.
 # For `-m none` nothing moves -- it is flat from the first interval. For maglev
 # q=1 the printed value decays 231 -> 166 and the tail implies a steady state of

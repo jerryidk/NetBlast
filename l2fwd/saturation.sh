@@ -150,7 +150,12 @@ for q in $QUEUES; do
 
     T=$(tr -d '\033' < "$LOG")
     AVG=$(grep -oP 'Average: \K[0-9.]+'              <<<"$T" | tail -1)
-    CYC=$(grep -oP 'Cycle per fwd packet: \K[0-9]+'  <<<"$T" | tail -1)
+    # Was 'Cycle per fwd packet', which timed the mode branch alone and is now
+    # retired rather than renamed -- see main.c print_stats. This label is the
+    # whole iteration: rx burst, mode branch, tx burst, drop path. A log from
+    # the old binary leaves CYC empty instead of supplying the narrower number
+    # under the same name.
+    CYC=$(grep -oP 'Full-loop cyc per fwd packet: \K[0-9]+' <<<"$T" | tail -1)
     BAT=$(grep -oP 'Average rx batch sz: \K[0-9]+'   <<<"$T" | tail -1)
     MIS=$(grep -oP 'RX-Missed \(Dropped\): \K[0-9]+' <<<"$T" | tail -1)
     ERR=$(grep -oP 'Cause: \K.*'                     <<<"$T" | tail -1)
@@ -185,7 +190,7 @@ for q in $QUEUES; do
         $1 ~ /^[0-9]+$/ && $5 != "100.00" { print $3"@"$5"%" }' \
               "$PERFOUT" | paste -sd' ')
 
-    printf "arm=%-16s q=%-3s grp=%-9s workers=%-3s avg=%-7s cyc=%-5s batch=%-4s missed=%-14s %s%s\n" \
+    printf "arm=%-16s q=%-3s grp=%-9s workers=%-3s avg=%-7s loopcyc=%-5s batch=%-4s missed=%-14s %s%s\n" \
       "$ARM" "$q" "$grp" "$(echo "$WORKER_CPUS" | tr ',' '\n' | grep -c .)" \
       "${AVG:-NA}" "${CYC:-NA}" "${BAT:-NA}" "${MIS:-NA}" \
       "${MUX:+MULTIPLEXED[$MUX] }" "$ERR" \

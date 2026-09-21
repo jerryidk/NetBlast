@@ -1,33 +1,53 @@
 /*
- * What the rig's "Cycle per fwd packet" counter actually measures.
+ * What the rig's cycles-per-packet counter actually measures.
  *
- * main.c:309 and main.c:359 bracket the per-burst processing with a pair of
- * `rte_rdtsc()` reads and divide the accumulated delta by the number of
- * forwarded packets.  For the `-m none` arm -- the forwarding loop with the
- * lookup removed -- that quotient prints as 5, and 5 core cycles for a loop
- * that writes a destination MAC is low enough to be worth checking rather than
- * believing.  Three separate things could make it wrong, and this benchmark
+ * HISTORY, because it changes how the arms below should be read.  The rig used
+ * to time the mode branch alone with a PAIR of `rte_rdtsc()` reads and print
+ * the quotient as "Cycle per fwd packet".  It no longer does: main.c:376 seeds
+ * a running timestamp and main.c:455 (or :461 on an empty poll) is the single
+ * read per iteration, each iteration charged the interval since the previous
+ * read.  The region is now the whole packet lifecycle -- rte_eth_rx_burst, the
+ * mode branch, rte_eth_tx_burst, the drop path -- printed as `Full-loop cyc per
+ * fwd packet`, and the old label is retired rather than renamed.  What this
+ * file measures is unchanged and still needed; only the multiplier on point 1
+ * moved, and it moved in the rig's favour.
+ *
+ * For the `-m none` arm -- the forwarding loop with the lookup removed -- the
+ * old inner quotient printed as 5, and 5 core cycles for a loop that writes a
+ * destination MAC is low enough to be worth checking rather than believing.
+ * Three separate things could make a figure like that wrong, and this benchmark
  * separates them:
  *
  *   1. The instrument has a floor.  `rte_rdtsc()` is plain `rdtsc` with no
  *      fence (dpdk/include/rte_cycles.h, and the disassembly of
- *      l2fwd_main_loop confirms no lfence at 403bcf or 403c9b), but rdtsc
+ *      l2fwd_main_loop contains no lfence at all -- stated that way rather
+ *      than as two addresses, which went stale the first time the function
+ *      was edited), but rdtsc
  *      still costs tens of cycles to execute.  Whatever an EMPTY region reads
  *      is charged to every burst in every arm, so at a 64-packet burst it is
  *      divided by 64 and at a 2-packet burst by 2.  Arm `empty` measures it.
  *
- *   2. rdtsc is not serialising, so the second read can retire while the
- *      loop's stores are still in the store buffer.  The region can therefore
- *      read LESS than the work costs.  Arm `none` is timed both ways -- with
- *      the bare rdtsc pair the rig uses, and with lfence on both sides -- and
- *      the difference is exactly how much the unfenced instrument hides.
+ *      Arm `empty` times a bracketing PAIR, so against the current rig its
+ *      reading is an over-estimate by construction: one read per iteration is
+ *      half the executions the arm prices.  It is still the right arm to run --
+ *      halving a measured floor is sound, inventing one is not -- but the floor
+ *      it prints must be halved before being subtracted from a full-loop
+ *      figure.  This is the single reason the collapse to one read was worth
+ *      doing at small bursts, where the floor is divided by 2 rather than 64.
  *
- *   3. The rig prints an integer quotient (main.c:217-218), so a printed 5 is
+ *   2. rdtsc is not serialising, so a read can retire while the loop's stores
+ *      are still in the store buffer.  The region can therefore read LESS than
+ *      the work costs.  Arm `none` is timed both ways -- with the bare rdtsc
+ *      pair the rig used, and with lfence on both sides -- and the difference
+ *      is exactly how much the unfenced instrument hides.  Unchanged by the
+ *      collapse: consecutive-read timing is as unfenced as a bracketing pair.
+ *
+ *   3. The rig prints an integer quotient (main.c:279-280), so a printed 5 is
  *      any true value in [5, 6).  Here the quotient is a double, which is the
  *      only way to see where in that interval the truth sits.
  *
  * The loop body is a transcription of the `-m none` branch's codegen, not a
- * paraphrase: objdump of build/l2fwd at 403dd0-403df5 is eleven instructions
+ * paraphrase: objdump of build/l2fwd at 403fd0-403ff5 is eleven instructions
  * --- two dependent loads off the mbuf (buf_addr at +0x00, data_off at +0x10),
  * two loads of the source MAC from a fixed address, and three stores of 8, 4
  * and 2 bytes into the packet.  check_codegen_timed_region() below asserts the
@@ -91,7 +111,7 @@ static inline uint64_t rdtsc_fenced(void) {
   return ((uint64_t)hi << 32) | lo;
 }
 
-/* main.c:351-356, with rte_pktmbuf_mtod and l2fwd_mac_updating inlined as the
+/* main.c:429-434, with rte_pktmbuf_mtod and l2fwd_mac_updating inlined as the
    compiler inlines them in the rig. */
 static inline void none_branch(struct mbuf_like **burst, unsigned nb) {
   unsigned dst_port = dst_port_of[0];

@@ -1498,7 +1498,7 @@ either way, because the instrument cancels.</p>
 """
 
     snip_ticks = snip(
-        "main.c", 'printf("\\nCycle per fwd packet: %lu"', nlines=2,
+        "main.c", 'printf("\\nFull-loop cyc per fwd packet: %lu"', nlines=2,
         note="an integer quotient of two running totals. At a 64-packet burst "
              "one printed tick is 64 cycles per burst.")
 

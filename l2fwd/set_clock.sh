@@ -13,8 +13,8 @@
 # -------------------------
 # It is simultaneously this SKU's `base_frequency` and exactly the invariant TSC
 # rate (`rte_get_tsc_hz: 2100000000`). At that setting l2fwd's `rte_rdtsc()`
-# deltas -- which it prints as "Cycle per fwd packet" but which are really TSC
-# ticks, i.e. time -- become numerically equal to core cycles, so the
+# deltas -- which it prints as "Full-loop cyc per fwd packet" but which are really
+# TSC ticks, i.e. time -- become numerically equal to core cycles, so the
 # tick-to-cycle correction is exactly 1.000 rather than an estimated ~1.74.
 #
 # Why both arms are needed

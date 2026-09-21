@@ -116,12 +116,42 @@ struct rte_mempool *l2fwd_pktmbuf_pool = NULL;
 struct l2fwd_port_statistics {
   uint64_t tx;
   uint64_t rx;
-  uint64_t rx_cnt;
+  uint64_t rx_cnt; /* derived in get_aggregated_stats, not stored in the loop */
   uint64_t fwded;
   uint64_t unmapped; /* no backend mapping; still transmitted, not dropped */
   uint64_t rx_dropped;
   uint64_t tx_dropped;
-  uint64_t hash_tsc;
+  /* ONE rte_rdtsc() per loop iteration, read at the bottom, is the entire
+     instrument. Each iteration is charged the interval since the PREVIOUS
+     iteration's read, so the two accumulators below partition the forwarding
+     loop's wall time exactly: every cycle the core spends in l2fwd_main_loop
+     lands in one of them, with no gap between regions and nothing counted
+     twice. Which one it lands in is decided after rte_eth_rx_burst has already
+     returned, so nothing has to be predicted before the work is done.
+
+     The region therefore spans the whole packet lifecycle -- rte_eth_rx_burst,
+     the mode branch, rte_eth_tx_burst, the drop path and the statistics stores
+     -- and not the mode branch alone, which is what the retired hash_tsc timed.
+     There is deliberately no second timer around the lookup. The lookup's cost
+     is the difference between the dramblast (or maglev) arm and the `-m none`
+     arm at equal burst size, and every other term in the lifecycle is identical
+     across those arms by construction, so the delta isolates it without a
+     nested region and without the two extra rdtsc executions a nested region
+     put inside the outer one.
+
+     One seam: the read happens before this iteration's own accumulate, so those
+     few stores are charged to the next iteration. Where one lcore polls several
+     RX ports the next iteration is a different port, so a handful of cycles
+     cross-attribute between ports. The per-port split is approximate at that
+     granularity; the totals print_stats actually divides are exact either way.
+
+     Iterations that received nothing are charged to idle_tsc rather than
+     loop_tsc, because averaging them in would make the per-packet cost a
+     function of how often the queue ran dry. */
+  uint64_t loop_tsc;
+  uint64_t loop_cnt;
+  uint64_t idle_tsc;
+  uint64_t idle_cnt;
 } __rte_cache_aligned;
 
 struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS][RTE_MAX_LCORE];
@@ -138,11 +168,18 @@ static void get_aggregated_stats(unsigned portid,
     agg->tx += port_statistics[portid][lcore_id].tx;
     agg->rx += port_statistics[portid][lcore_id].rx;
     agg->unmapped += port_statistics[portid][lcore_id].unmapped;
-    agg->hash_tsc += port_statistics[portid][lcore_id].hash_tsc;
     agg->fwded += port_statistics[portid][lcore_id].fwded;
     agg->tx_dropped += port_statistics[portid][lcore_id].tx_dropped;
-    agg->rx_cnt += port_statistics[portid][lcore_id].rx_cnt;
+    agg->loop_tsc += port_statistics[portid][lcore_id].loop_tsc;
+    agg->loop_cnt += port_statistics[portid][lcore_id].loop_cnt;
+    agg->idle_tsc += port_statistics[portid][lcore_id].idle_tsc;
+    agg->idle_cnt += port_statistics[portid][lcore_id].idle_cnt;
   }
+  /* Every iteration increments exactly one of the two counts, so their sum is
+     the poll count the loop used to store separately. Deriving it here keeps
+     `Average rx batch sz` bit-for-bit what it always was while removing a
+     store from the hot loop. */
+  agg->rx_cnt = agg->loop_cnt + agg->idle_cnt;
 }
 
 void print_port_stats(uint16_t portid) {
@@ -174,7 +211,9 @@ uint64_t total_packets_fwded_prev = 0;
 
 struct l2fwd_port_statistics prev_agg;
 static void print_stats(void) {
-  uint64_t total_packets_fwded = 0, total_hash_duration = 0;
+  uint64_t total_packets_fwded = 0;
+  uint64_t total_loop_duration = 0, total_idle_duration = 0,
+           total_idle_polls = 0;
   unsigned portid;
   struct l2fwd_port_statistics agg;
 
@@ -199,8 +238,24 @@ static void print_stats(void) {
     if((agg.rx_cnt - prev_agg.rx_cnt) > 0){
         printf("\nAverage rx batch sz: %lu", (agg.rx - prev_agg.rx) / (agg.rx_cnt - prev_agg.rx_cnt));
     }
+    /* Same numerator, correct denominator. The line above divides by ALL polls,
+       empty ones included, so it is not the mean size of a burst -- it is the
+       mean size of a burst multiplied by the fraction of polls that returned
+       anything. That is the B in the P + C/B burst fit, and it is deflated
+       exactly where the fit needs it most: at high queue counts, where the
+       queue runs dry often. The figure is kept above, unchanged and under its
+       original label, because archived logs and every number already fitted
+       against them carry that definition; the corrected one is a separate
+       label so a log says which it is rather than being read wrong by whoever
+       greps it next. loop_cnt counts only the polls that returned a packet. */
+    if((agg.loop_cnt - prev_agg.loop_cnt) > 0){
+        printf("\nAverage rx batch sz (nonempty polls): %lu",
+               (agg.rx - prev_agg.rx) / (agg.loop_cnt - prev_agg.loop_cnt));
+    }
     total_packets_fwded += agg.fwded;
-    total_hash_duration += agg.hash_tsc;
+    total_loop_duration += agg.loop_tsc;
+    total_idle_duration += agg.idle_tsc;
+    total_idle_polls += agg.idle_cnt;
     print_port_stats(portid);
     prev_agg = agg;
   }
@@ -213,9 +268,27 @@ static void print_stats(void) {
     SAMPLE_SIZE++;
   }
 
+  /* The label `Cycle per fwd packet` is RETIRED, not renamed. It named the mode
+     branch alone, and the region this prints is the whole iteration, so a log
+     that reused the old phrase would be indistinguishable from one written
+     before the change while meaning something different. Every archived figure
+     taken against that phrase stays interpretable precisely because no new log
+     carries it: consumers that want the old number find the key absent rather
+     than silently rebound (extract_results.py keeps absent meaning absent). */
   if (total_packets_fwded > 0) {
-    printf("\nCycle per fwd packet: %lu",
-           total_hash_duration / total_packets_fwded);
+    printf("\nFull-loop cyc per fwd packet: %lu",
+           total_loop_duration / total_packets_fwded);
+  }
+
+  /* Empty polls are kept out of the figure above and reported on their own.
+     They cost real core time but forward no packets, so folding them in would
+     make cycles-per-packet rise with queue count for a reason that has nothing
+     to do with the cost of forwarding. Together the two figures still account
+     for the loop's entire wall time -- that is the point of timing with a
+     single read per iteration rather than a bracketed region. */
+  if (total_idle_polls > 0) {
+    printf("\nEmpty polls: %" PRIu64 "\nCyc per empty poll: %" PRIu64,
+           total_idle_polls, total_idle_duration / total_idle_polls);
   }
 
   total_packets_fwded_prev = total_packets_fwded;
@@ -295,18 +368,24 @@ static void l2fwd_main_loop(void) {
     return;
   }
 
+  /* Seeds the running timestamp. From here every iteration is charged the
+     interval since the previous iteration's read, so there is exactly one
+     rte_rdtsc() on the path -- at the bottom of the branch below -- and the
+     region it closes opened at the bottom of the previous iteration. Nothing
+     in the loop is outside some iteration's region. */
+  uint64_t t_prev = rte_rdtsc();
+
   while (!force_quit) {
     for (unsigned i = 0; i < qconf->n_rx_port; i++) {
       unsigned portid = qconf->rx_port_list[i].port_id;
       unsigned queueid = qconf->rx_port_list[i].queue_id;
+
       unsigned nb_rx =
           rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
 
-      port_statistics[portid][lcore_id].rx_cnt += 1;
       if (nb_rx > 0) {
         port_statistics[portid][lcore_id].rx += nb_rx;
 
-        uint64_t start = rte_rdtsc();
         if (l2fwd_maglev_enabled) {
           for (uint16_t j = 0; j < nb_rx; j++) {
             m = pkts_burst[j];
@@ -356,8 +435,6 @@ static void l2fwd_main_loop(void) {
           port_statistics[portid][lcore_id].fwded += nb_rx;
         }
 
-        port_statistics[portid][lcore_id].hash_tsc += (rte_rdtsc() - start);
-
         uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
         if (unlikely(nb_tx < nb_rx)) {
           for (uint16_t buf = nb_tx; buf < nb_rx; buf++) {
@@ -370,8 +447,21 @@ static void l2fwd_main_loop(void) {
           port_statistics[portid][lcore_id].tx += nb_tx;
         }
 
+        /* The instrument, in full. rte_eth_rx_burst, the mode branch, the TX
+           burst and the drop path are all behind this read; the matching open
+           is the identical read at the bottom of the previous iteration. The
+           branch is on nb_rx, which is already in hand, so the attribution
+           costs nothing the loop was not going to pay anyway. */
+        uint64_t t_now = rte_rdtsc();
+        port_statistics[portid][lcore_id].loop_tsc += t_now - t_prev;
+        port_statistics[portid][lcore_id].loop_cnt += 1;
+        t_prev = t_now;
       } else {
         rte_pause();
+        uint64_t t_now = rte_rdtsc();
+        port_statistics[portid][lcore_id].idle_tsc += t_now - t_prev;
+        port_statistics[portid][lcore_id].idle_cnt += 1;
+        t_prev = t_now;
       }
     }
   }

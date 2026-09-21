@@ -99,9 +99,16 @@ def parse_perf(path):
     return {_base(k): v for k, v in got.items()}, problems
 
 
+# `loopcyc=` was `cyc=` until the timer change. The field is not merely renamed:
+# `cyc=` carried the mode branch alone and `loopcyc=` carries the whole
+# iteration, so a summary written by the old saturation.sh must NOT be read
+# through this regex. It cannot be, because the literal differs -- and
+# _reject_pre_timer_summary below turns the resulting zero matches into an
+# explicit error rather than an empty plot.
 ROW = re.compile(r"(?:arm=(\S+)\s+)?q=(\d+)\s+grp=(\S+)\s+workers=(\d+)\s+"
-                 r"avg=([\d.]+|NA)\s+cyc=(\d+|NA)\s+batch=(\d+|NA)\s+"
+                 r"avg=([\d.]+|NA)\s+loopcyc=(\d+|NA)\s+batch=(\d+|NA)\s+"
                  r"missed=(\d+|NA)")
+OLD_ROW = re.compile(r"q=\d+\s+grp=\S+\s+workers=\d+\s+avg=\S+\s+cyc=")
 ARM_FILTER = __import__("os").environ.get("ARM_FILTER")
 
 # What each group MUST contain for its run to count.
@@ -142,9 +149,17 @@ def main(outdir):
     if not summary.exists():
         sys.exit("no summary.txt in %s" % outdir)
 
+    text = summary.read_text()
+    if not ROW.search(text) and OLD_ROW.search(text):
+        sys.exit(
+            "%s was written before the timer change: its cyc= field is the mode\n"
+            "branch alone, not the full iteration that loopcyc= reports, and the\n"
+            "two are not interchangeable. Re-run saturation.sh against the current\n"
+            "l2fwd rather than reading this one." % summary)
+
     conds = {}          # q -> {group: perf dict}
-    meta = {}           # q -> {avg, cyc, batch, missed, workers}
-    for line in summary.read_text().splitlines():
+    meta = {}           # q -> {avg, loopcyc, batch, missed, workers}
+    for line in text.splitlines():
         m = ROW.search(line)
         if not m:
             continue
@@ -154,7 +169,7 @@ def main(outdir):
         q, grp = int(m.group(2)), m.group(3)
         meta.setdefault(q, dict(workers=int(m.group(4)),
                                 avg=None if m.group(5) == "NA" else float(m.group(5)),
-                                cyc=None if m.group(6) == "NA" else int(m.group(6)),
+                                loopcyc=None if m.group(6) == "NA" else int(m.group(6)),
                                 batch=None if m.group(7) == "NA" else int(m.group(7)),
                                 missed=None if m.group(8) == "NA" else int(m.group(8))))
         # sidecar name mirrors saturation.sh

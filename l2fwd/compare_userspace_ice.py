@@ -2,11 +2,21 @@
 """Put NetBlast's forward path and the userspace-ice reflectors on one axis.
 
 The two projects both report a "cycles per packet", and the two numbers are not
-the same quantity.  NetBlast's is an rdtsc bracket around a sub-region of the
-forwarding loop (l2fwd/main.c:309-359), which excludes the PMD entirely.
-userspace-ice's is whole-process `cycles:u` divided by packets forwarded
+the same quantity.  The NetBlast figure hard-coded below is an rdtsc bracket
+around a sub-region of the forwarding loop (l2fwd/main.c:351-401 as of 3fa7b68),
+which excludes the PMD entirely.  userspace-ice's is whole-process `cycles:u`
+divided by packets forwarded
 (userspace-ice/analysis/scripts/refpool_symmetric_tables.py:101), which includes
 everything the core does.
+
+NOTE (2026-09-18): that bracket is gone.  main.c now takes one rdtsc per poll and
+charges each iteration from the previous read, so it prints the whole-loop figure
+directly as `Full-loop cyc per fwd packet` and the derivation below is no longer
+the only way to get one.  The constants in NETBLAST are left exactly as measured
+under the old instrument, because changing them would silently restate a recorded
+result; re-measure and update them deliberately rather than editing them to match
+a new run.  The comparison this script draws is unchanged either way -- the
+derived whole-loop number never depended on the bracket.
 
 This script derives NetBlast's *whole-loop* cost from its measured throughput and
 pinned clock, so that it can be compared against the userspace-ice figures on the
@@ -92,7 +102,8 @@ def main():
           f"(core-limited; generator offers {NETBLAST['offered_mpps']:.2f})")
     print(f"  clock                {NETBLAST['clock_ghz']:.3f} GHz pinned")
     print(f"  bracketed cyc/pkt    {NETBLAST['bracketed_cyc_pkt']} "
-          f"(main.c:309-359, excludes the PMD)")
+          f"(main.c:351-401 @ 3fa7b68, excludes the PMD; that bracket "
+          f"no longer exists -- see the module docstring)")
     print(f"  whole-loop cyc/pkt   {whole_loop:.1f}  "
           f"= {NETBLAST['clock_ghz'] * 1e3:.0f} / {NETBLAST['mpps_q1']:.2f}")
     print(f"  PMD + poll share     {whole_loop - NETBLAST['bracketed_cyc_pkt']:.1f}"

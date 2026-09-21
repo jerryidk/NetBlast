@@ -126,7 +126,7 @@ for MODE in "${MODES[@]}"; do
     # leave it at 16 -- so the two modes are each other's control in one sweep.
     #
     # FREQ: the TSC here is invariant at 2.1 GHz while cores boost to ~3.7, so
-    # "Cycle per fwd packet" is really TSC ticks, i.e. time. As q rises more
+    # the printed cycles-per-packet is really TSC ticks, i.e. time. As q rises more
     # cores go busy and all-core turbo drops, which inflates ticks/packet
     # independently of any real per-packet work.
     #
@@ -177,14 +177,26 @@ for MODE in "${MODES[@]}"; do
     MIN=$(grep -oP 'Minimum: \K[0-9.]+'                <<<"$T" | tail -1)
     MAX=$(grep -oP 'Maximum: \K[0-9.]+'                <<<"$T" | tail -1)
     AVG=$(grep -oP 'Average: \K[0-9.]+'               <<<"$T" | tail -1)
-    CYC=$(grep -oP 'Cycle per fwd packet: \K[0-9]+'   <<<"$T" | tail -1)
+    # `Cycle per fwd packet` is gone, not renamed: it timed the mode branch
+    # alone, and main.c now times the whole iteration with a single rdtsc per
+    # poll. It is NOT scraped here any more, so a log from the old binary makes
+    # this field absent rather than quietly supplying a number that means
+    # something else. LCY is the replacement and covers the full lifecycle --
+    # rx burst, mode branch, tx burst, drop path.
+    LCY=$(grep -oP 'Full-loop cyc per fwd packet: \K[0-9]+' <<<"$T" | tail -1)
+    EPC=$(grep -oP 'Cyc per empty poll: \K[0-9]+'     <<<"$T" | tail -1)
+    # Anchored on the trailing colon so it cannot also match the "(nonempty
+    # polls)" line below it. BAT divides by every poll including the empty
+    # ones; BATNE divides by the polls that actually returned a packet and is
+    # the one the P + C/B burst fit wants.
     BAT=$(grep -oP 'Average rx batch sz: \K[0-9]+'    <<<"$T" | tail -1)
+    BATNE=$(grep -oP 'Average rx batch sz \(nonempty polls\): \K[0-9]+' <<<"$T" | tail -1)
     MIS=$(grep -oP 'RX-Missed \(Dropped\): \K[0-9]+'  <<<"$T" | tail -1)
     ERR=$(grep -oP 'Cause: \K.*'                      <<<"$T" | tail -1)
 
-    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s cyc=%-6s batch=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz insns=%s extra='%s' %s\n" \
+    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s loopcyc=%-6s idlecyc=%-6s batch=%-4s batchne=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz insns=%s extra='%s' %s\n" \
       "$q" "$CORE_LIST" "${MIN:-NA}" "${MAX:-NA}" "${AVG:-NA}" \
-      "${CYC:-NA}" "${BAT:-NA}" "${MIS:-NA}" \
+      "${LCY:-NA}" "${EPC:-NA}" "${BAT:-NA}" "${BATNE:-NA}" "${MIS:-NA}" \
       "${HP_BEFORE:-NA}" "${HP_DURING:-NA}" "${FREQ_MHZ:-NA}" "${IPS:-NA}" \
       "$L2FWD_EXTRA" "$ERR"
   done
