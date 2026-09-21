@@ -3086,3 +3086,129 @@ Distinguishing them needs the coherence arm above.
   Refuses to plot at all if `.dram_ceiling` carries no measured value.
 - `l2fwd/saturation_out/` — 35 runs, raw `.perf` per run, committed so this
   sweep can be certified directly rather than by timestamp inference.
+
+### 5.33 The instrument now spans the loop it is quoted about (2026-09-18)
+
+§5.29 verified that the printed 5 cycles per packet was real. `NETBLAST_VS_USERSPACE_ICE.md`
+established that it was real *about the wrong region* — an `rdtsc` pair that opened after
+`rte_eth_rx_burst` returned and closed before `rte_eth_tx_burst` was called, excluding the
+PMD, which the throughput derivation put at **84% of the per-packet cost**. Two sound
+results that together say the rig reports a quantity nobody wants.
+
+Both fixes were available: keep the bracket and remember the caveat, or move the bracket.
+The caveat had already failed once — that is what §5.29 was written to clear up — so the
+bracket moved.
+
+#### What it is now
+
+One `rte_rdtsc()` per loop iteration, read at the bottom, each iteration charged the
+interval since the *previous* iteration's read. The region is therefore the whole packet
+lifecycle — Rx burst, mode branch, Tx burst, drop path, statistics stores — and two
+accumulators partition the forwarding loop's wall time with no gap and no double count:
+
+| accumulator | iterations | printed as |
+|---|---|---|
+| `loop_tsc` / `loop_cnt` | `nb_rx > 0` | `Full-loop cyc per fwd packet` |
+| `idle_tsc` / `idle_cnt` | `nb_rx == 0` | `Empty polls`, `Cyc per empty poll` |
+
+Empty polls are held out of the per-packet figure rather than averaged in, because folding
+them in makes cycles-per-packet a function of how often the queue ran dry — it would rise
+with queue count for a reason that is not the cost of forwarding.
+
+Halving the `rdtsc` executions is not incidental. The instrument floor is charged per burst
+and divided by the burst size (§5.29 measured it at 29.95 ticks for a bracketing pair), so
+at the high-queue end where `B` falls to ~4 it was divided by 4, not 64. There is
+deliberately **no** second timer around the lookup: the lookup's cost is an engine arm minus
+`-m none` at equal burst size, every other term cancels in that subtraction, and a nested
+region would have put two more `rdtsc` executions inside the outer one to measure something
+the subtraction already gives.
+
+#### Validated on software PMDs, which is the part that could be done without the rig
+
+`l2fwd` SIGILLs on any CPU without AVX-512, so no measurement runs off the CloudLab host.
+Two *functional* arms do, on DPDK's software PMDs with no NIC, no hugepages and no root,
+against a `main.c` compiled without the project-wide AVX-512 flags and linked to the
+existing `libsashstore.a`. Each arm was chosen because it drives one accumulator to
+everything and the other to nothing, which is the only way to tell a partition from a
+plausible pair of numbers.
+
+```
+l2fwd-novec --no-huge -m 512 -l 0,1 --vdev=net_null0 --no-pci -- -p 0x1 -q 1 -m none -T 1
+l2fwd-novec --no-huge -m 512 -l 0,1 --vdev=net_ring0 --no-pci -- -p 0x1 -q 1 -m none -T 1
+```
+
+| | `net_null` (every poll full) | `net_ring`, unfed (every poll empty) |
+|---|---|---|
+| packets forwarded | 417,101,440 | 0 |
+| `Average rx batch sz` | 64 | 0 |
+| `Average rx batch sz (nonempty polls)` | 64 | *absent* |
+| `Full-loop cyc per fwd packet` | 41 | *absent* |
+| `Empty polls` | *absent* | 122,370,599 |
+| `Cyc per empty poll` | *absent* | 143 |
+
+Each absence is the guarded branch declining to print rather than printing a zero, which is
+§5.23's rule: an instrument must be able to say it did not measure.
+
+**The check that proves the region, not just the plumbing.** If the accumulators really do
+span the loop's entire wall time, then ticks-per-packet times packets-per-second must equal
+the TSC rate — an identity the old bracket could not satisfy and never claimed to. Measured
+TSC on this box: **2.9184 GHz**.
+
+- `net_null`: 69.52 Mpps forwarded. 2.9184e9 / 69.52e6 = **41.98** ticks per packet; the rig
+  prints `41`, the integer truncation of it.
+- `net_ring`: six one-second intervals, poll deltas 20.382 / 20.391 / 20.384 / 20.387 /
+  20.410 / 20.415 M. At 143 ticks each that is 2.9165e9 ticks per second of loop, **99.94%
+  of the TSC rate**, the residual being the truncation of a true 143.09.
+
+The whole 6.000 s the `net_ring` worker ran is inside `idle_tsc` to within 4 ms. Under the
+old instrument the same run would have accounted for none of it, because an empty poll never
+entered the bracket at all.
+
+For contrast, the old bracket printed `5` for `-m none`. 5 x 69.52e6 is 348 MHz, which is
+not the clock of anything.
+
+#### What this invalidates, and what it does not
+
+Nothing measured is withdrawn. `cycles_per_pkt` in the archived corpus remains correct for
+the region it named, and every *difference* taken between arms at equal burst size — which
+is where §5.19's tick-by-tick claims and §5.20's lookup shares live — is untouched, because
+the added lifecycle terms are identical across arms and cancel.
+
+What is invalid is putting the two in one series. `loop_cycles_per_pkt` is the older quantity
+plus the NIC path; it is larger for that reason and not because anything got slower. The
+retirement is enforced rather than remembered: `main.c` no longer prints the old phrase at
+all, so a consumer of `cycles_per_pkt` finds the key absent in a new log instead of finding
+it silently rebound. `analyse_saturation.py` refuses a pre-change `summary.txt` outright.
+
+`compare_userspace_ice.py`'s hard-coded constants are left exactly as measured under the old
+instrument. The comparison that script draws never depended on the bracket — it derived the
+whole-loop number from throughput and clock — and editing the constants to match a new run
+would restate a recorded result rather than re-measure it.
+
+#### The batch-size denominator, printed but not yet acted on
+
+`Average rx batch sz` divides by *every* poll, empty ones included, so it is the mean burst
+size scaled by the hit rate rather than the mean burst size. That is the `B` in
+`cycles/packet = P + C/B`, and it is deflated exactly where the fit is most sensitive to it:
+the high-queue end, which sets the slope. The `net_null` arm above is the clean case — no
+empty polls, so both lines read 64 and the two definitions coincide; the `net_ring` arm is
+the degenerate one, where the per-poll figure reads 0 and the corrected one correctly
+declines to exist.
+
+Both lines are now printed. The original keeps its label and its definition, because the
+archived corpus and every fit taken against it use it, so the deflation is measurable as the
+gap between the two lines instead of being retroactively hidden. `rx_batch_nonempty` is the
+new results-JSON key.
+
+`fit_burst_model.py`, `make_report.py` and the `rx_batch == 64` matching keys are
+deliberately **not** repointed. Repointing them changes the published `C = 645 cyc/burst` and
+the 9.5-packet crossover by editing a divisor rather than by measuring, and the measurement
+that would settle them needs a sweep on the rig. It is the first thing the migration runbook
+queues.
+
+#### What the rig must produce before any of this is quoted
+
+Every cycle figure in this document predates the change, and §5.26's note already says every
+number through `bdff61a` describes the pre-mask-fix find path. The two invalidations compose:
+a current binary differs from the one the tables were taken with in both the code measured and
+the region measured. `docs/MIGRATION.md` carries the ordered list.
