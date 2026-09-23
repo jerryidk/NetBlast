@@ -49,7 +49,7 @@ inserted keys were found.
 ## Status
 
 ```
-pass 32   fail 0
+pass 41   fail 0
 ```
 
 Also clean under sanitizers, which finding C5 previously made impossible:

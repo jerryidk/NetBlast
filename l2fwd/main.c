@@ -417,8 +417,28 @@ static void l2fwd_main_loop(void) {
         } else if (l2fwd_dramblast_enabled) {
           unsigned int fn = 0;
           uint64_t hash;
+          unsigned int j = 0;
 
-          for (unsigned int j = 0; j < nb_rx; j++) {
+          /* 4 frames per flowhash4: 4 independent FNV chains in one block
+             (packettool.h says why). Same keys, same order, same
+             compaction as loop below; tail (nb_rx % 4) takes loop below. */
+          for (; j + 4 <= nb_rx; j += 4) {
+            uint64_t k4[4];
+            flowhash4(rte_pktmbuf_mtod(pkts_burst[j], void *),
+                      rte_pktmbuf_mtod(pkts_burst[j + 1], void *),
+                      rte_pktmbuf_mtod(pkts_burst[j + 2], void *),
+                      rte_pktmbuf_mtod(pkts_burst[j + 3], void *), k4);
+            for (unsigned int u = 0; u < 4; u++) {
+              if (k4[u] > 0) {
+                frames[fn] = pkts_burst[j + u];
+                args[fn].k = k4[u];
+                args[fn].id = fn;
+                fn++;
+              }
+            }
+          }
+
+          for (; j < nb_rx; j++) {
             m = pkts_burst[j];
             hash = flowhash(rte_pktmbuf_mtod(m, void *));
             if (hash > 0) {

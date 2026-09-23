@@ -57,6 +57,75 @@ static inline __attribute__((always_inline)) uint64_t flowhash(void *frame) {
 	h = FLOWHASH_FNV_STEP(h, l4[3]);
 	return h;
 }
+
+/* flowhash4: 4 frames at once, out[i] == flowhash(fi) for every input.
+
+   WHY: after inline rewrite, hash phase still 31 ticks/pkt on rig, IPC 2.2
+   (docs/REFLECT_PATH.md s7.5). Per packet 12 imul, all on port 1, plus ~40
+   other uops. Straight-line loop lets OOO overlap only neighbouring chains;
+   4 chains side by side in one block give scheduler 4 independent imul
+   streams. Scratch bench (L1 headers, 64-pkt burst, real compaction loop):
+   22.3 -> 20.5 ticks/pkt; 2 chains 21.3. Gain small because port 1 (imul) is
+   near saturated already, not latency: 12 imul/pkt = 12 cycle floor.
+
+   Fast path only when all 4 are IPv4 TCP/UDP: then no early-out, 4 chains
+   run unconditionally. Any other group -> flowhash per frame, out of line
+   and cold, so fallback code costs no registers in fast path (inline
+   fallback: register spills, measured same speed as no interleave;
+   `unused`: TUs that never call flowhash4 get no -Wunused-function). Keys
+   and bytes read identical to flowhash per frame in both paths: fast path
+   reads same 15 bytes per frame (14, 23, 26-33, 4 at L4), only for frames
+   that passed check. tests/test_dramblast.c T12 checks vs flowhash. */
+static inline __attribute__((always_inline)) int flowhash_ok(const unsigned char *f) {
+	const unsigned v = f[14], p = f[14 + 9];
+	/* & not &&: one test for 4 frames, no branch per frame */
+	return ((v >> 4) == 4) & ((p == 6) | (p == 17));
+}
+
+static __attribute__((noinline, cold, unused)) void
+flowhash4_slow(void *f0, void *f1, void *f2, void *f3, uint64_t out[4]) {
+	out[0] = flowhash(f0);
+	out[1] = flowhash(f1);
+	out[2] = flowhash(f2);
+	out[3] = flowhash(f3);
+}
+
+static inline __attribute__((always_inline)) void
+flowhash4(void *f0, void *f1, void *f2, void *f3, uint64_t out[4]) {
+	const unsigned char *b0 = f0, *b1 = f1, *b2 = f2, *b3 = f3;
+	if (__builtin_expect(!(flowhash_ok(b0) & flowhash_ok(b1) &
+	                       flowhash_ok(b2) & flowhash_ok(b3)), 0)) {
+		flowhash4_slow(f0, f1, f2, f3, out);
+		return;
+	}
+	const unsigned char *l0 = b0 + 14 + 4 * (b0[14] & 0xf);
+	const unsigned char *l1 = b1 + 14 + 4 * (b1[14] & 0xf);
+	const unsigned char *l2 = b2 + 14 + 4 * (b2[14] & 0xf);
+	const unsigned char *l3 = b3 + 14 + 4 * (b3[14] & 0xf);
+	uint64_t h0 = 0xcbf29ce484222325ull, h1 = h0, h2 = h0, h3 = h0;
+#define FLOWHASH4_STEP(p0, p1, p2, p3)                                         \
+	do {                                                                   \
+		h0 = FLOWHASH_FNV_STEP(h0, p0);                                \
+		h1 = FLOWHASH_FNV_STEP(h1, p1);                                \
+		h2 = FLOWHASH_FNV_STEP(h2, p2);                                \
+		h3 = FLOWHASH_FNV_STEP(h3, p3);                                \
+	} while (0)
+#define FLOWHASH4_AT(off) FLOWHASH4_STEP(b0[off], b1[off], b2[off], b3[off])
+	/* same byte order as flowhash: src+dst ip, proto, 4 L4 bytes */
+	FLOWHASH4_AT(26); FLOWHASH4_AT(27); FLOWHASH4_AT(28); FLOWHASH4_AT(29);
+	FLOWHASH4_AT(30); FLOWHASH4_AT(31); FLOWHASH4_AT(32); FLOWHASH4_AT(33);
+	FLOWHASH4_AT(23);
+	FLOWHASH4_STEP(l0[0], l1[0], l2[0], l3[0]);
+	FLOWHASH4_STEP(l0[1], l1[1], l2[1], l3[1]);
+	FLOWHASH4_STEP(l0[2], l1[2], l2[2], l3[2]);
+	FLOWHASH4_STEP(l0[3], l1[3], l2[3], l3[3]);
+#undef FLOWHASH4_AT
+#undef FLOWHASH4_STEP
+	out[0] = h0;
+	out[1] = h1;
+	out[2] = h2;
+	out[3] = h3;
+}
 void *get_udp_payload(char *frame);
 
 #endif

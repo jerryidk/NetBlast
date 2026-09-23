@@ -17,6 +17,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <immintrin.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <nmmintrin.h>
 
 #include "dramblast.h"
@@ -543,6 +545,140 @@ static void t_flowhash_equiv(void) {
   CHECK(valid > NRAND / 4, "only %zu random frames reached hashing", valid);
 }
 
+/* T12: flowhash4 (packettool.h, 4 frames at once) must give flowhash(f) for
+ * each frame, bit for bit, whatever mix of early-out frames group holds.
+ * (a) pktgen tuples, 4 consecutive per group (all-valid fast path).
+ * (b) 10M+ random frames (T11 generator) in groups of 4, validity mixed per
+ *     frame: covers fast path (all 4 valid) and cold fallback (any invalid).
+ * (c) main.c hash loop copied (x4 groups + scalar tail + compaction) vs old
+ *     scalar loop, random burst sizes 1..64: same fn, frames[], args[].
+ * (d) frames end 78 B before PROT_NONE page: read past byte 77 faults. */
+static void rand_frame(unsigned char *f, size_t len, uint64_t *s) {
+  for (size_t b = 0; b < len; b += 8) {
+    uint64_t w = xs64(s);
+    memcpy(f + b, &w, len - b < 8 ? len - b : 8);
+  }
+  uint64_t r = xs64(s);
+  /* 3/4 forced version 4: groups of 4 all valid often enough (~(1/2)^4 of
+     groups at T11's mix would leave fast path nearly untested) */
+  if (r & 3) f[14] = (unsigned char)(0x40 | ((r >> 8) & 0xf));
+  switch ((r >> 16) % 4) {
+  case 0: f[23] = 6; break;
+  case 1: case 2: f[23] = 17; break;
+  default: break; /* raw byte, incl. >= 0x80 */
+  }
+}
+
+static void t_flowhash4_equiv(void) {
+  HDR("T12 flowhash4 = flowhash per frame, bit for bit");
+  enum { FL = 128 };
+  static unsigned char g[4][FL];
+  const uint32_t mask = (1u << 22) - 1;
+  size_t mism = 0, n = 0;
+  for (uint32_t c = 48; c < 52; c++) {
+    uint32_t base = (10u << 24) | (c << 16);
+    uint16_t sport = 1025 + c * 100;
+    for (uint32_t ctr = 1; ctr <= mask + 1; ctr += 4) {
+      for (int u = 0; u < 4; u++) {
+        unsigned char *f = g[u];
+        memset(f, 0, FL);
+        f[14] = 0x45; f[14 + 9] = 17;
+        uint32_t src = base + ((ctr + u) & mask), dst = 0xc0a80101u;
+        for (int b = 0; b < 4; b++) {
+          f[26 + b] = src >> (24 - 8 * b);
+          f[30 + b] = dst >> (24 - 8 * b);
+        }
+        f[34] = sport >> 8; f[35] = sport & 0xff; f[36] = 0; f[37] = 80;
+      }
+      uint64_t o[4];
+      flowhash4(g[0], g[1], g[2], g[3], o);
+      for (int u = 0; u < 4; u++) { mism += o[u] != flowhash(g[u]); n++; }
+    }
+  }
+  printf("    generator tuples %zu (groups of 4): mismatches %zu\n", n, mism);
+  CHECK(n == 16777216 && mism == 0, "%zu of %zu generator tuples differ", mism, n);
+
+  enum { NGRP = 2750000 }; /* 11M frames */
+  uint64_t s = 0x243F6A8885A308D3ull;
+  size_t rm = 0, fast = 0, mixed = 0, zero = 0;
+  for (size_t i = 0; i < NGRP; i++) {
+    int nok = 0;
+    for (int u = 0; u < 4; u++) {
+      rand_frame(g[u], FL, &s);
+      nok += flowhash(g[u]) != 0;
+    }
+    uint64_t o[4];
+    flowhash4(g[0], g[1], g[2], g[3], o);
+    for (int u = 0; u < 4; u++) {
+      rm += o[u] != flowhash(g[u]);
+      zero += o[u] == 0;
+    }
+    fast += nok == 4;
+    mixed += nok > 0 && nok < 4;
+  }
+  printf("    random frames %d (groups of 4): mismatches %zu, groups all-valid"
+         " %zu, mixed %zu, zero keys %zu\n", 4 * NGRP, rm, fast, mixed, zero);
+  CHECK(rm == 0, "%zu random frames differ in flowhash4", rm);
+  CHECK(fast > NGRP / 10 && mixed > NGRP / 10,
+        "path coverage: all-valid %zu, mixed %zu groups", fast, mixed);
+
+  /* (c) main.c hash loop, both shapes, over fake mbuf pointers = frames */
+  static unsigned char pool[64][FL];
+  void *fr_a[64], *fr_b[64];
+  dramblast_arg_t ar_a[64], ar_b[64];
+  size_t lm = 0, bursts = 0;
+  for (size_t it = 0; it < 200000; it++) {
+    unsigned nb = 1 + (unsigned)(xs64(&s) % 64);
+    for (unsigned j = 0; j < nb; j++) rand_frame(pool[j], FL, &s);
+    unsigned fa = 0, fb = 0, j = 0;
+    for (unsigned q = 0; q < nb; q++) { /* HEAD loop */
+      uint64_t h = flowhash(pool[q]);
+      if (h > 0) { fr_a[fa] = pool[q]; ar_a[fa].k = h; ar_a[fa].id = fa; fa++; }
+    }
+    for (; j + 4 <= nb; j += 4) { /* new loop, as main.c */
+      uint64_t k4[4];
+      flowhash4(pool[j], pool[j + 1], pool[j + 2], pool[j + 3], k4);
+      for (unsigned u = 0; u < 4; u++)
+        if (k4[u] > 0) { fr_b[fb] = pool[j + u]; ar_b[fb].k = k4[u]; ar_b[fb].id = fb; fb++; }
+    }
+    for (; j < nb; j++) {
+      uint64_t h = flowhash(pool[j]);
+      if (h > 0) { fr_b[fb] = pool[j]; ar_b[fb].k = h; ar_b[fb].id = fb; fb++; }
+    }
+    int bad = fa != fb;
+    for (unsigned q = 0; !bad && q < fa; q++)
+      bad = fr_a[q] != fr_b[q] || ar_a[q].k != ar_b[q].k || ar_a[q].id != ar_b[q].id;
+    lm += bad;
+    bursts++;
+  }
+  printf("    main.c loop, %zu random bursts 1..64: differing bursts %zu\n",
+         bursts, lm);
+  CHECK(lm == 0, "%zu bursts compact differently", lm);
+
+  /* (d) over-read guard: frame = last 78 B before PROT_NONE page */
+  long pg = sysconf(_SC_PAGESIZE);
+  unsigned char *gf[4];
+  for (int u = 0; u < 4; u++) { /* one data page + one guard page per frame */
+    unsigned char *mu = mmap(NULL, 2 * pg, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(mu != MAP_FAILED, "mmap guard pages");
+    if (mu == MAP_FAILED) return;
+    mprotect(mu + pg, pg, PROT_NONE);
+    gf[u] = mu + pg - 78;
+  }
+  size_t gm = 0;
+  for (size_t i = 0; i < 1000000; i++) {
+    for (int u = 0; u < 4; u++) rand_frame(gf[u], 78, &s);
+    uint64_t o[4];
+    flowhash4(gf[0], gf[1], gf[2], gf[3], o);
+    for (int u = 0; u < 4; u++) gm += o[u] != flowhash(gf[u]);
+  }
+  printf("    guard-page frames 4M (78 B, next page PROT_NONE): no fault,"
+         " mismatches %zu\n", gm);
+  CHECK(gm == 0, "%zu guard frames differ", gm);
+  for (int u = 0; u < 4; u++) munmap(gf[u] - (pg - 78), 2 * pg);
+}
+
 int main(void) {
   printf("dramblast functional tests (no timing, no DPDK, no hugepages)\n");
   printf("table: %llu slots x %zu B = %llu KiB\n",
@@ -570,6 +706,7 @@ int main(void) {
   t_zero_key();
   t_backend_lut();
   t_flowhash_equiv();
+  t_flowhash4_equiv();
 
   printf("\n----------------------------------------------------------\n");
   printf("pass %d   fail %d\n", g_pass, g_fail);
