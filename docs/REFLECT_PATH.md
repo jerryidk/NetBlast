@@ -376,7 +376,18 @@ Not `-P`-specific (independent review): pc q=4 ship / pnone / p16 / p16p = 289 /
 355 / 297. Probe shows hash-phase work unchanged across all of these. Treated as broken;
 cause open. u/k split recorded in `deep/*.perf` for follow-up.
 
----|---|---|---|---|---|
+### 3.7 Fix A/B: flowhash unsigned bytes, `dramblast_queue_t` padded (2026-09-23)
+
+Fixes: `libsashstore/hash.c` `fnv_1_multi` / `fnv_1a_multi` XOR `(unsigned char)data[i]`;
+`libsashstore/dramblast.h` `dramblast_queue_t` `__attribute__((aligned(64)))` (sizeof 24 →
+64, checked by gdb). Four shipped binaries, only the named fix differing (built from source
+copies): base, hfix, pfix, both. Data `sweeps/reflect/fix/`, 60 runs, q 6→1, all
+forwarded, generator 93.28 Mpps throughout.
+
+Loop ticks/pkt (Mpps in brackets):
+
+| q | α | base | pfix | hfix | both |
+|---|---|---|---|---|---|
 | 6 | ≈0 | 135 (93.2) | 135 (93.2) | 135 (93.1) | 135 (93.1) |
 | 5 | ≈0 | 124 (84.1) | 121 (86.3) | 126 (83.3) | 122 (85.8) |
 | 4 | ≈0 | 121 (69.4) | 121 (68.9) | 120 (69.5) | 122 (68.5) |
