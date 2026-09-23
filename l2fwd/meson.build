@@ -24,6 +24,12 @@ add_project_arguments('-march=native', language: 'c')
 
 add_project_arguments('-DALLOW_EXPERIMENTAL_API', language: 'c')
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
+if get_option('nbprobe')
+	add_project_arguments('-DNB_PROBE', language: 'c')
+endif
+if get_option('nbptw')
+	add_project_arguments('-DNB_PTW', language: 'c')
+endif
 
 # enable extra warnings and disable any unwanted warnings
 warning_flags = [

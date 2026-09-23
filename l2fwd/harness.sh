@@ -190,6 +190,17 @@ QUEUES="${QUEUES:-$(seq 1 "$MAX_QUEUES")}"
 # what produced it.
 L2FWD_EXTRA="${L2FWD_EXTRA:-}"
 
+# Binary under test. Default = shipped build. Probe arms point this at
+# build-probe/l2fwd (meson -Dnbprobe=true); same knob name `saturation` uses.
+L2FWD_BIN="${L2FWD_BIN:-./build/l2fwd}"
+
+# SAMPLE_AFTER: when set, wait for l2fwd's "Link UP" line (printed after init
+# and main.c's 5 s settle, just before workers launch), then sleep this many
+# seconds before perf. For -P prefill runs: init takes 5-20 s depending on
+# load factor and lcore count, so fixed SAMPLE_AT from launch would sample
+# init, not forwarding. Unset = old fixed SAMPLE_AT behaviour, unchanged.
+SAMPLE_AFTER="${SAMPLE_AFTER:-}"
+
 # Counters sampled per run. cycles gives the delivered clock, instructions the
 # equal-work control. The extras are what decide where the per-burst cost goes:
 # dTLB-load-misses separates address translation from data access (the two modes
@@ -230,7 +241,7 @@ for MODE in "${MODES[@]}"; do
     # Fail loudly rather than silently reporting a stale or missing result:
     # delete the log first so a crashed run cannot leave the previous run's
     # numbers in place, and refuse to proceed without the binary.
-    [ -x ./build/l2fwd ] || { echo "FATAL: ./build/l2fwd missing or not executable" >&2; exit 1; }
+    [ -x "$L2FWD_BIN" ] || { echo "FATAL: $L2FWD_BIN missing or not executable" >&2; exit 1; }
     rm -f "$LOG"
 
     HP1G=/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages
@@ -238,7 +249,7 @@ for MODE in "${MODES[@]}"; do
 
     sudo systemd-run --scope --quiet --collect \
         --slice=bench.slice -p AllowedCPUs="$BENCH_CPUS" \
-        ./build/l2fwd \
+        "$L2FWD_BIN" \
         --in-memory \
         -l "$CORE_LIST" \
         -m "$DPDK_MEM" \
@@ -276,7 +287,17 @@ for MODE in "${MODES[@]}"; do
     # task-clock ratio needed, because DPDK busy-polls: the workers sit at 100%
     # with no populate phase or idle time to contaminate the average.
     # Worker cores only -- lcore 0 runs the stats loop, not forwarding.
-    sleep "${SAMPLE_AT:-12}"
+    if [ -n "$SAMPLE_AFTER" ]; then
+      # bounded wait: a run that dies in init must not hang the sweep
+      for _ in $(seq 1 240); do
+        grep -aq 'Link UP' "$LOG" 2>/dev/null && break
+        kill -0 $RUN_PID 2>/dev/null || break
+        sleep 0.5
+      done
+      sleep "$SAMPLE_AFTER"
+    else
+      sleep "${SAMPLE_AT:-12}"
+    fi
     HP_DURING=$(cat $HP1G)
 
     WORKER_CPUS=$(echo "$CORE_LIST" | cut -d, -f2-)
@@ -329,11 +350,11 @@ for MODE in "${MODES[@]}"; do
     MIS=$(grep -oP 'RX-Missed \(Dropped\): \K[0-9]+'  <<<"$T" | tail -1)
     ERR=$(grep -oP 'Cause: \K.*'                      <<<"$T" | tail -1)
 
-    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s loopcyc=%-6s idlecyc=%-6s batch=%-4s batchne=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz insns=%s extra='%s' %s\n" \
+    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s loopcyc=%-6s idlecyc=%-6s batch=%-4s batchne=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz insns=%s extra='%s' bin=%s %s\n" \
       "$q" "$CORE_LIST" "${MIN:-NA}" "${MAX:-NA}" "${AVG:-NA}" \
       "${LCY:-NA}" "${EPC:-NA}" "${BAT:-NA}" "${BATNE:-NA}" "${MIS:-NA}" \
       "${HP_BEFORE:-NA}" "${HP_DURING:-NA}" "${FREQ_MHZ:-NA}" "${IPS:-NA}" \
-      "$L2FWD_EXTRA" "$ERR"
+      "$L2FWD_EXTRA" "$L2FWD_BIN" "$ERR"
   done
 done
 
@@ -1083,7 +1104,7 @@ mkdir -p "$OUT_DIR"
 CSV="$OUT_DIR/dram_ceiling.csv"
 
 [ -x "$BM" ] || { echo "FATAL: bench_membw not built at $BM" >&2
-                  echo "       cc -O2 -o $BM $HERE/bench_membw.c" >&2; exit 1; }
+                  echo "       cc -O2 -pthread -o $BM $HERE/bench_membw.c" >&2; exit 1; }
 
 # --- the guard: are we actually on the cores we think we are? --------------
 ALLOWED="$(awk '/Cpus_allowed_list/{print $2}' /proc/self/status)"

@@ -2,6 +2,7 @@
 #include "dramblast.h"
 #include "backing.h"
 #include "conshash.h"
+#include "nbprobe.h"
 #include "packettool.h"
 #include "rte_branch_prediction.h"
 #include "rte_mbuf_core.h"
@@ -110,12 +111,14 @@ try_insert:
       swapped.pair.k = k;
       swapped.pair.v = v;
       if (__sync_bool_compare_and_swap((__int128 *)kv, (__int128)0, *(__int128 *)&swapped)) {
+          NBP_ADD(ins_steps, count);
           return 0;
       }
   }
 
   if(kv->k == k) {
     kv->v = v;
+    NBP_ADD(ins_steps, count);
     return 0;
   }
 
@@ -139,6 +142,10 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
 
   unsigned int args_head = 0;
   unsigned int result_head = 0;
+#ifdef NB_PROBE
+  /* locals, not nbp->cur: one store per burst instead of per pop */
+  uint32_t nbp_pops = 0, nbp_reprobes = 0, nbp_occ_sum = 0, nbp_occ_max = 0;
+#endif
 
   uint64_t idx, count;
   while (result_head < args_len) {
@@ -151,8 +158,17 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
       idx = dramblast_hash(ht, arg->k);
       dramblast_prefetch(ht, idx);
       dramblast_push_queue(ht, idx, arg->k, 0, arg->id, id);
+      NBW(NBW_PUSH, arg->id, idx);
     }
 
+#ifdef NB_PROBE
+    {
+      uint32_t occ = dramblast_get_queue_sz(ht, id); /* in flight at this pop */
+      nbp_pops++;
+      nbp_occ_sum += occ;
+      if (occ > nbp_occ_max) nbp_occ_max = occ;
+    }
+#endif
     // pop_find_queue
     dramblast_queue_item_t *queue_tail_slot = dramblast_pop_queue(ht, id);
     idx = queue_tail_slot->idx;
@@ -171,6 +187,7 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
       result->id = queue_tail_slot->id;
       result->status = DRAMBLAST_FOUND;
       result_head++;
+      NBW(NBW_FOUND, queue_tail_slot->id, count);
     } else {
 
       count += 4;
@@ -181,6 +198,7 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
         result->id = queue_tail_slot->id;
         result->status = DRAMBLAST_TABLE_FULL;
         result_head++;
+        NBW(NBW_FULL, queue_tail_slot->id, count);
         continue;
       }
 
@@ -193,6 +211,10 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
         dramblast_prefetch(ht, idx);
         dramblast_push_queue(ht, idx, queue_tail_slot->k, count, queue_tail_slot->id,
                              id);
+        NBW(NBW_REPROBE, queue_tail_slot->id, count);
+#ifdef NB_PROBE
+        nbp_reprobes++;
+#endif
       } else {
         // an empty slot in this bucket proves the key is absent
         dramblast_result_t *result = &results[result_head];
@@ -200,10 +222,15 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
         result->id = queue_tail_slot->id;
         result->status = DRAMBLAST_ABSENT;
         result_head++;
+        NBW(NBW_ABSENT, queue_tail_slot->id, count);
       }
     }
   }
 
+  NBP_SET(pops, nbp_pops);
+  NBP_SET(reprobes, nbp_reprobes);
+  NBP_SET(occ_sum, nbp_occ_sum);
+  NBP_SET(occ_max, nbp_occ_max);
   return result_head;
 }
 
@@ -277,36 +304,62 @@ void dramblast_process_frames(dramblast_arg_t *args, unsigned int args_len,
     }
   }
 
+  NBP_MARK(NBP_B_ALLOC);
+  NBW(NBW_PHASE, 0, NBP_B_ALLOC);
   unsigned int len =
       dramblast_find_batch_sync(dramblast_ht, args, args_len, results, id);
+  NBP_MARK(NBP_B_FIND);
+  NBW(NBW_PHASE, 0, NBP_B_FIND);
 
   if (len != args_len) {
     printf("dramblast sync is not correct ");
     exit(-1);
   }
 
+#ifdef NB_PROBE
+  /* locals: NBP_ADD per packet was a store->load chain through one TLS word,
+     ~5 cyc/pkt inside `post` -- the probe timing itself. One store per burst. */
+  uint32_t nbp_found = 0, nbp_absent = 0, nbp_full = 0;
+#endif
   for (unsigned int i = 0; i < len; i++) {
     int64_t backend_mac_addr;
     dramblast_result_t *result = &results[i];
 
     if (result->status == DRAMBLAST_ABSENT) {
+#ifdef NB_PROBE
+      nbp_absent++;
+#endif
       uint64_t client_hash = args[result->id].k;
       backend_mac_addr = dramblast_backends[client_hash % TABLE_SIZE];
       if (dramblast_insert_one(dramblast_ht, client_hash, backend_mac_addr) < 0)
         backend_mac_addr = 0; // insertion failed
     } else if (result->status == DRAMBLAST_TABLE_FULL) {
+#ifdef NB_PROBE
+      nbp_full++;
+#endif
       /* Presence is unknown, so re-probing the whole table on the insert path
        * would only repeat the scan that just gave up. Report no mapping. */
       backend_mac_addr = 0;
     } else {
+#ifdef NB_PROBE
+      nbp_found++;
+#endif
       backend_mac_addr = result->v;
     }
 
     ret[result->id] = backend_mac_addr;
   }
 
+  NBP_SET(found, nbp_found);
+  NBP_SET(absent, nbp_absent);
+  NBP_SET(inserts, nbp_absent); /* every ABSENT inserts */
+  NBP_SET(full, nbp_full);
+  NBP_MARK(NBP_B_POST);
+  NBW(NBW_PHASE, 0, NBP_B_POST);
   if (dramblast_alloc_pairs >= 0)
     free(results);
+  NBP_MARK(NBP_B_FREE);
+  NBW(NBW_PHASE, 0, NBP_B_FREE);
 }
 
 /* The page-size choice and the round-up that has to agree with it both moved
@@ -403,4 +456,96 @@ void dramblast_destroy() {
   dramblast_ht = NULL;
 
   printf("dramblast destroyed and memory cleaned up successfully.\n");
+}
+
+/*
+ * -P <alpha>: prefill table to load factor alpha with filler keys before
+ * traffic starts.
+ *
+ * Why a filler, not TOTAL_FLOWS: generator flow count moves load factor AND
+ * touched working set together (16M flows = 1 GiB of lines touched, past L3).
+ * Filler holds traffic fixed at 16M flows and moves only load factor: probe
+ * length, empty-slot odds, insert walk. Occupancy = load factor here, by the
+ * user's definition.
+ *
+ * Filler keys: xorshift64* per part, fixed seeds, 0 skipped (0 = empty slot).
+ * Collision with a traffic key needs 64-bit equality: ~16M x 5e8 / 2^64, nil.
+ * Value 0xff, same as dramblast_backends, so a filler hit is indistinguishable
+ * from a traffic hit anyway.
+ *
+ * Runs on every lcore via rte_eal_mp_remote_launch (main.c) before forwarding:
+ * 0.9 x 2^29 serial inserts at ~100 ns DRAM each would be ~48 s on one core.
+ * Batches of 16 prefetch the home bucket first so each lcore keeps 16 misses
+ * in flight. insert_one is CAS-safe, so parts may race on a slot.
+ */
+double dramblast_prefill_alpha = 0;
+static uint64_t dramblast_prefill_failed;
+
+void dramblast_prefill_part(unsigned part, unsigned nparts) {
+  dramblast_ht_t *ht = dramblast_ht;
+  uint64_t target = (uint64_t)(dramblast_prefill_alpha * (double)ht->len);
+  uint64_t mine = target / nparts + (part == 0 ? target % nparts : 0);
+  uint64_t x = 0x9E3779B97F4A7C15ULL * (part + 1), keys[16];
+  uint64_t failed = 0;
+
+  for (uint64_t done = 0; done < mine;) {
+    unsigned b = 0;
+    for (; b < 16 && done + b < mine; b++) {
+      do {
+        x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+        keys[b] = x * 0x2545F4914F6CDD1DULL;
+      } while (keys[b] == 0);
+      dramblast_prefetch(ht, dramblast_hash(ht, keys[b]));
+    }
+    for (unsigned i = 0; i < b; i++)
+      if (dramblast_insert_one(ht, keys[i], 0xff) < 0) failed++;
+    done += b;
+  }
+  __sync_fetch_and_add(&dramblast_prefill_failed, failed);
+}
+
+uint64_t dramblast_prefill_failures(void) { return dramblast_prefill_failed; }
+
+/*
+ * Table state, measured not assumed. One pass over every slot.
+ *
+ *   alpha         occupied slots / slots
+ *   disp          buckets between key's home bucket and its slot. A hit on
+ *                 that key loads disp+1 buckets. Histogram bins
+ *                 0,1,2,3,4-7,8-15,16-63,64+.
+ *   miss_buckets  buckets loaded before an empty slot proves absence, from
+ *                 2^20 random home buckets: cost of every ABSENT (new flow).
+ *
+ * Printed after prefill and at exit (exit includes traffic's inserts).
+ */
+void dramblast_table_stats(const char *when) {
+  dramblast_ht_t *ht = dramblast_ht;
+  uint64_t len = ht->len, occ = 0, dsum = 0, hist[8] = {0};
+  for (uint64_t i = 0; i < len; i++) {
+    uint64_t k = ht->table[i].k;
+    if (!k) continue;
+    occ++;
+    uint64_t d = (((i & DRAMBLAST_BUCKET_IDX_MASK) - dramblast_hash(ht, k)) & (len - 1)) >> 2;
+    dsum += d;
+    hist[d < 4 ? d : d < 8 ? 4 : d < 16 ? 5 : d < 64 ? 6 : 7]++;
+  }
+  uint64_t x = 88172645463325252ULL, msum = 0, mmax = 0, nm = 1u << 20;
+  for (uint64_t r = 0; r < nm; r++) {
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+    uint64_t idx = x & (len - 1) & DRAMBLAST_BUCKET_IDX_MASK, n = 1;
+    for (;;) {
+      dramblast_kv_t *bk = &ht->table[idx];
+      if (!bk[0].k || !bk[1].k || !bk[2].k || !bk[3].k) break;
+      if (++n > len / 4) break;
+      idx = (idx + 4) & (len - 1);
+    }
+    msum += n;
+    if (n > mmax) mmax = n;
+  }
+  printf("dramblast table %s slots=%lu occupied=%lu alpha=%.4f disp_mean=%.3f "
+         "hit_buckets_mean=%.3f miss_buckets_mean=%.3f miss_buckets_max=%lu "
+         "disp_hist=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+         when, len, occ, (double)occ / len, occ ? (double)dsum / occ : 0,
+         occ ? (double)dsum / occ + 1 : 0, (double)msum / nm, mmax, hist[0], hist[1],
+         hist[2], hist[3], hist[4], hist[5], hist[6], hist[7]);
 }

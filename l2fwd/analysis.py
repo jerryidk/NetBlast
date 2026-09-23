@@ -16,6 +16,8 @@ plot-latency   plot_latency_saturation.py   docs/latency_vs_bandwidth.svg
 plot-ceiling   plot_dram_ceiling.py         docs/dram_ceiling.svg
 backing        verify_backing.py            page_watch log -> did each arm get its backing
 selftest       test_perf_guard.py           fire perf multiplexing guard [--real]
+probe          (new, 2026-09-22)            nbprobe logs + ring dumps -> per-phase table, json
+ptw            (new, 2026-09-22)            PT ptwrite trace (build-ptw) -> per-packet push->resolve times
 
 Each section below keeps old module's header comment. Names that clashed
 between modules got section prefix (report_lsq, lat_dram_ceiling, CEIL_W, ...).
@@ -5501,6 +5503,267 @@ def cmd_selftest():
         sys.exit(1)
     print("all checks passed")
 
+
+# =============================================================================
+# probe: nbprobe per-burst phase timer (libsashstore/nbprobe.h)
+# =============================================================================
+# Reads harness.sh sweep logs from build-probe/ runs plus the ring dumps they
+# name (`nbprobe dump <path> records=N`). Ring = last 2^18 sampled bursts per
+# lcore = steady state; log's own `nbprobe ... phase=` sums cover whole run
+# incl. insert warm-up, so ring is the primary per-phase source and log sums
+# are kept only for insert counts.
+#
+# Correction: each phase opens with one boundary read, so each phase carries
+# one mark cost. Subtracted per phase: cal_tsc (and cal per counter) / burst.
+# Uncorrected numbers kept alongside -- correction is a model, raw is data.
+#
+# Wait taxonomy, from bench_membw known answers (docs/REFLECT_PATH.md s0):
+#   mem_wait  = stall_l1d   (0 on nomem, 0.86 on L3-resident chase)
+#   dram_wait = stall_l3    (subset of mem_wait; 0 when chase fits L3)
+#   other_stall = stall_total - stall_l1d  (dependency latency, frontend: 0.43 on nomem)
+#   work      = cycles - stall_total (cycles some uop executed)
+# st_bound = store-buffer-full cycles, NOT a sharing signal (padded > fshare).
+# rfo_hitm = RFO served by modified line in another core: sharing signal.
+import struct as _struct
+
+NBP_REC = _struct.Struct("<Q8I48I6H4I2H")
+NBP_PHASES = ["rx", "hash", "alloc", "find", "post", "free", "mac", "tx"]
+NBP_EVS = ["cycles", "stall_total", "stall_l1d", "stall_l3", "st_bound", "rfo_hitm"]
+
+
+def nbp_load(path):
+    b = pathlib.Path(path).read_bytes()
+    hdr = _struct.unpack_from("<8Q", b, 0)
+    if hdr[0] != 0x3170726f6270626e or hdr[2] != NBP_REC.size:
+        sys.exit(f"{path}: not an nbprobe v1 dump (magic/recsize)")
+    nev, every, n, cal_tsc, lcore = hdr[3], hdr[4], hdr[5], hdr[6], hdr[7]
+    cal_ev = _struct.unpack_from("<6Q", b, 64)
+    off = 64 + 48
+    # raw tuples, not dicts: 2^18 records per lcore, dict per record was minutes
+    # v[0] tsc0, v[1:9] tsc, v[9+8i : 17+8i] ev i, v[57] nb_rx, v[58] fn,
+    # v[59..62] found absent full inserts, v[63..66] pops reprobes occ_sum ins_steps, v[67] occ_max
+    recs = list(NBP_REC.iter_unpack(b[off: off + n * NBP_REC.size]))
+    return {"lcore": lcore, "nev": nev, "every": every, "cal_tsc": cal_tsc,
+            "cal_ev": cal_ev[:nev], "recs": recs}
+
+
+def nbp_summarise(dumps, tail_s=None, tsc_hz=None):
+    """Per-phase per-packet means over ring records. tail_s: keep last N s."""
+    nev = dumps[0]["nev"] if dumps else 0
+    NP = len(NBP_PHASES)
+    tsc_raw = [0] * NP
+    tsc_cor = [0] * NP
+    ev = [[0] * NP for _ in range(nev)]
+    per = [[] for _ in range(NP)]
+    nb = pk = fn = pops = absent = full = reprobes = occ_sum = 0
+    occ_max = 0
+    for d in dumps:
+        rs = d["recs"]
+        if tail_s and tsc_hz and rs:
+            cut = rs[-1][0] - tail_s * tsc_hz
+            rs = [r for r in rs if r[0] >= cut]
+        cal, cev = d["cal_tsc"], d["cal_ev"]
+        for r in rs:
+            n_rx = r[57]
+            if not n_rx:
+                continue
+            nb += 1
+            pk += n_rx
+            fn += r[58]; absent += r[60]; full += r[61]
+            pops += r[63]; reprobes += r[64]; occ_sum += r[65]
+            if r[67] > occ_max:
+                occ_max = r[67]
+            for p in range(NP):
+                t = r[1 + p]
+                tsc_raw[p] += t
+                per[p].append(t / n_rx)
+                # phase length 0 = boundary never reached (copied): no mark inside it
+                if t:
+                    tsc_cor[p] += t - cal
+                    for i in range(nev):
+                        ev[i][p] += r[9 + 8 * i + p] - cev[i]
+    if not pk:
+        return None
+    out = {"bursts": nb, "pkts": pk, "burst_mean": pk / nb, "phase": {}}
+    for p, name in enumerate(NBP_PHASES):
+        ph = {"tsc_raw": tsc_raw[p] / pk, "tsc": tsc_cor[p] / pk}
+        for i in range(nev):
+            ph[NBP_EVS[i]] = ev[i][p] / pk
+        if nev:
+            ph["work"] = ph["cycles"] - ph["stall_total"]
+            ph["mem_wait"] = ph["stall_l1d"]
+            ph["other_stall"] = ph["stall_total"] - ph["stall_l1d"]
+        xs = sorted(per[p])
+        ph["p50"], ph["p90"], ph["p99"] = xs[len(xs) // 2], xs[int(len(xs) * .9)], xs[min(len(xs) - 1, int(len(xs) * .99))]
+        out["phase"][name] = ph
+    fn = fn or 1
+    out["counts"] = {"absent_frac": absent / fn, "full_frac": full / fn,
+                     "pops_per_key": pops / fn, "reprobes_per_key": reprobes / fn,
+                     "occ_mean": occ_sum / (pops or 1), "occ_max": occ_max}
+    out["tsc_total"] = sum(out["phase"][p]["tsc"] for p in NBP_PHASES)
+    return out
+
+
+def nbp_parse_log(path):
+    t = pathlib.Path(path).read_text(errors="replace").replace("\x1b", "")
+    rec = {"log": str(path)}
+    samples = [float(x) for x in SAMPLE_RE.findall(t)]
+    # skip 3 not 1: -P runs spend first seconds inserting 16M new flows
+    if len(samples) > 4:
+        rec["steady_mpps"] = round(statistics.median(samples[3:]), 2)
+    m = re.findall(r"Full-loop cyc per fwd packet: (\d+)", t)
+    rec["loopcyc"] = int(m[-1]) if m else None
+    m = re.findall(r"Average rx batch sz \(nonempty polls\): (\d+)", t)
+    rec["batch_ne"] = int(m[-1]) if m else None
+    for when in ("prefill", "exit"):
+        m = re.search(rf"dramblast table {when} .*?alpha=([\d.]+) disp_mean=([\d.]+) "
+                      rf"hit_buckets_mean=([\d.]+) miss_buckets_mean=([\d.]+)", t)
+        if m:
+            rec[f"table_{when}"] = dict(zip(("alpha", "disp_mean", "hit_buckets", "miss_buckets"),
+                                            map(float, m.groups())))
+    m = re.search(r"dramblast prefill (\d+) lcores ([\d.]+) s failed=(\d+)", t)
+    if m:
+        rec["prefill_s"], rec["prefill_failed"] = float(m.group(2)), int(m.group(3))
+    m = re.search(r"nbprobe lcore=all counts keys=(\d+) found=([\d.]+) absent=([\d.]+).*?"
+                  r"inserts_per_key=([\d.]+) ins_steps_per_insert=([\d.]+)", t)
+    if m:
+        rec["run_counts"] = dict(zip(("keys", "found", "absent", "inserts_per_key",
+                                      "ins_steps_per_insert"), map(float, m.groups())))
+    rec["dumps"] = re.findall(r"nbprobe dump (\S+) records=\d+", t)
+    rec["rfo_hitm_by_lcore"] = {}
+    for l, v in re.findall(r"nbprobe lcore=(\d+) phase=find .*?rfo_hitm_pkt=([\d.]+)", t):
+        rec["rfo_hitm_by_lcore"][int(l)] = float(v)
+    rec["errors"] = re.findall(r"^\s*(?:Cause:|Error:|FATAL|nbprobe: )[^\n]*", t, re.M)
+    return rec
+
+
+def cmd_probe():
+    """analysis.py probe <out.json> <log ...>"""
+    if len(sys.argv) < 3:
+        sys.exit("usage: analysis.py probe <out.json> <log ...>")
+    out, logs = sys.argv[1], sys.argv[2:]
+    tsc_hz = 2.1e9  # TSC invariant 2.1 GHz on this part (harness.sh sweep FREQ note)
+    rows = []
+    for lg in logs:
+        rec = nbp_parse_log(lg)
+        # dump next to its log wins over the recorded absolute path: logs moved
+        # to an archive dir must not read a later run's dump at the old path
+        here = [pathlib.Path(lg).parent / pathlib.Path(p).name for p in rec["dumps"]]
+        paths = [str(h) if h.exists() else p for h, p in zip(here, rec["dumps"])]
+        dumps = [nbp_load(p) for p in paths if pathlib.Path(p).exists()]
+        if rec["dumps"] and len(dumps) != len(rec["dumps"]):
+            rec["errors"].append("missing ring dump(s)")
+        if dumps:
+            rec["ring"] = nbp_summarise(dumps, tail_s=10, tsc_hz=tsc_hz)
+        rows.append(rec)
+    pathlib.Path(out).write_text(json.dumps(rows, indent=1))
+    hdr = f"{'log':<34}{'Mpps':>7}{'loop':>6}{'B':>4}{'alpha':>7}" + \
+          "".join(f"{p:>7}" for p in NBP_PHASES) + f"{'sum':>7}{'memw/f':>8}{'pops/k':>8}{'occ':>6}"
+    print(hdr)
+    for r in rows:
+        g = r.get("ring") or {}
+        ph = g.get("phase", {})
+        alpha = (r.get("table_exit") or {}).get("alpha")
+        line = (f"{pathlib.Path(r['log']).stem[-34:]:<34}{r.get('steady_mpps') or 0:>7.2f}"
+                f"{r.get('loopcyc') or 0:>6}{r.get('batch_ne') or 0:>4}"
+                f"{alpha if alpha is not None else float('nan'):>7.3f}")
+        line += "".join(f"{ph[p]['tsc']:>7.1f}" if p in ph else f"{'-':>7}" for p in NBP_PHASES)
+        line += f"{g.get('tsc_total', 0):>7.1f}"
+        f = ph.get("find", {})
+        line += f"{f.get('mem_wait', float('nan')):>8.1f}"
+        c = g.get("counts", {})
+        line += f"{c.get('pops_per_key', float('nan')):>8.3f}{c.get('occ_mean', float('nan')):>6.1f}"
+        if r["errors"]:
+            line += "  ERR: " + "; ".join(r["errors"][:2])
+        print(line)
+
+
+# =============================================================================
+# ptw: per-packet timeline from Intel PT ptwrite marks (nbprobe.h NBW_*)
+# =============================================================================
+# Input: `perf script -i X.pt --itrace=w --ns -F time,synth` text. Payload =
+# kind<<56 | id<<40 | arg. PT validated on bench_membw ptmark: count, order,
+# ns/mark within 0.1% of program clock (docs/REFLECT_PATH.md s0).
+#
+# Per burst (NBW_BURST .. next NBW_BURST):
+#   inflight = push -> resolve (FOUND/ABSENT/FULL) per id: how long a lookup
+#              lived in the pipeline. Async layer wants this LONG.
+#   gap      = resolve(n) -> resolve(n+1): per-pop cost as seen by the core,
+#              incl. any stall on the bucket load. Async layer wants this SHORT.
+#   phase    = mark-to-mark durations, same boundaries as nbprobe.
+#   order    = resolved in submission order? (sync path: no, completion order)
+NBW_KIND = {1: "burst", 2: "push", 3: "found", 4: "absent", 5: "reprobe", 6: "full", 7: "phase"}
+PTW_RE = re.compile(r"(\d+)\.(\d{9}):.*?payload: (0x[0-9a-f]+|0)\b")
+
+
+def ptw_bursts(path):
+    bursts, cur = [], None
+    for line in open(path, errors="replace"):
+        m = PTW_RE.search(line)
+        if not m:
+            continue
+        t = int(m.group(1)) * 10**9 + int(m.group(2))
+        v = int(m.group(3), 16)
+        kind, pid, arg = v >> 56, (v >> 40) & 0xffff, v & 0xffffffffff
+        if kind == 1:
+            if cur:
+                bursts.append(cur)
+            cur = {"t": t, "nb_rx": pid, "ev": []}
+        elif cur is not None:
+            cur["ev"].append((t, kind, pid, arg))
+    if cur:
+        bursts.append(cur)
+    return bursts[1:-1]  # first/last may be cut by the trace window
+
+
+def pct(xs, q):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(len(xs) * q))] if xs else float("nan")
+
+
+def cmd_ptw():
+    """analysis.py ptw <perf-script.txt> [...]"""
+    for path in sys.argv[1:]:
+        bs = ptw_bursts(path)
+        infl, gaps, burst_ns, find_ns, inorder, reps = [], [], [], [], 0, []
+        phase = collections.defaultdict(list)
+        for i, b in enumerate(bs):
+            push, res, last_res, order = {}, {}, None, []
+            prev_t = b["t"]
+            for t, k, pid, arg in b["ev"]:
+                if k == 2:
+                    push.setdefault(pid, t)
+                elif k in (3, 4, 6):
+                    res[pid] = t
+                    order.append(pid)
+                    if last_res is not None:
+                        gaps.append(t - last_res)
+                    last_res = t
+                elif k == 7:
+                    phase[arg].append(t - prev_t)
+                    prev_t = t
+            for pid, t in res.items():
+                if pid in push:
+                    infl.append(t - push[pid])
+            reps.append(sum(1 for e in b["ev"] if e[1] == 5))
+            if order == sorted(order):
+                inorder += 1
+            if i + 1 < len(bs):
+                burst_ns.append(bs[i + 1]["t"] - b["t"])
+        n = len(bs)
+        print(f"== {path}: bursts={n} mean nb_rx={sum(b['nb_rx'] for b in bs) / max(n, 1):.1f}")
+        if not n:
+            continue
+        print(f"  burst period ns    p50 {pct(burst_ns, .5)}  p90 {pct(burst_ns, .9)}  mean {sum(burst_ns) / max(len(burst_ns), 1):.0f}")
+        print(f"  inflight ns        p10 {pct(infl, .1)}  p50 {pct(infl, .5)}  p90 {pct(infl, .9)}  p99 {pct(infl, .99)}  n={len(infl)}")
+        print(f"  gap between resolves ns  p10 {pct(gaps, .1)}  p50 {pct(gaps, .5)}  p90 {pct(gaps, .9)}  p99 {pct(gaps, .99)}")
+        print(f"  reprobes/burst mean {sum(reps) / n:.2f}   bursts resolved in submission order {inorder}/{n}")
+        names = {2: "hash", 3: "alloc", 4: "find", 5: "post", 6: "free", 7: "mac"}
+        for b_, name in names.items():
+            xs = phase.get(b_, [])
+            if xs:
+                print(f"  phase ending {name:<6} ns p50 {pct(xs, .5):>6}  p90 {pct(xs, .9):>6}  mean {sum(xs) / len(xs):8.1f}")
+
 # =============================================================================
 # dispatch
 # =============================================================================
@@ -5516,6 +5779,8 @@ COMMANDS = {
     "plot-ceiling": cmd_plot_ceiling,
     "backing": cmd_backing,
     "selftest": cmd_selftest,
+    "probe": cmd_probe,
+    "ptw": cmd_ptw,
 }
 
 

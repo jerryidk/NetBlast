@@ -1,0 +1,6 @@
+# Probe builds go in their own build dir (build-probe/), never build/: shipped
+# binary stays byte-identical. See libsashstore/nbprobe.h.
+option('nbprobe', type: 'boolean', value: false,
+       description: 'per-burst phase timer (-S/-D flags)')
+option('nbptw', type: 'boolean', value: false,
+       description: 'per-packet ptwrite marks for Intel PT')

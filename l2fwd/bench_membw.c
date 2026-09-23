@@ -56,6 +56,22 @@
  *           live sweep. Traffic per pass is arithmetic in both directions:
  *           one buffer of reads and one buffer of writebacks.
  *
+ *   pingpong Two threads hand one line back and forth, strict alternation,
+ *           <n> round trips. Each handoff = one load served by snoop forward
+ *           from the other core, so XSNP_FWD must be ~2n. Known answer for
+ *           coherence encoding (§5.32 prerequisite) and for perf c2c.
+ *
+ *   fshare / padded  Two threads each increment own word for <seconds>.
+ *           fshare: words 8 B apart, same line -- dramblast_queue_t pattern,
+ *           24 B stride by lcore_id. padded: words 128 B apart. c2c must flag
+ *           fshare line, two offsets, and find nothing on padded. Pattern
+ *           control, not count control: spin count depends on scheduling.
+ *
+ *   ptmark  Chase as below, ptwrite(i) every 16 steps, <n> marks. Intel PT
+ *           known answer: decode must give exactly n PTW packets, values 0..n-1
+ *           in order, and mean cycles between marks = 16 x chase latency from
+ *           perf stat cycles / loads. Run under `taskset -c` one CPU.
+ *
  *   nomem   A dependent ALU chain in registers. Touches no memory at all, so
  *           the memory counters must read ~0 and top-down must be almost
  *           entirely retiring. Catches a counter that is reading something
@@ -71,6 +87,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <time.h>
 
@@ -80,10 +97,55 @@ static double now(void) {
   return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+/* A single random cycle over all cache lines, so the walk cannot be
+   predicted and every step is a dependent miss. */
+static void link_chase(char *buf, size_t nlines) {
+  uint64_t *idx = malloc(nlines * sizeof(uint64_t));
+  for (size_t i = 0; i < nlines; i++) idx[i] = i;
+  uint64_t s = 88172645463325252ULL;
+  for (size_t i = nlines - 1; i > 0; i--) {   /* Fisher-Yates */
+    s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+    size_t j = s % (i + 1);
+    uint64_t t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+  }
+  for (size_t i = 0; i < nlines; i++)         /* link into one cycle */
+    *(uint64_t **)(buf + idx[i] * 64) =
+        (uint64_t *)(buf + idx[(i + 1) % nlines] * 64);
+  free(idx);
+}
+
+/* Two-thread modes. Shared words live in buf, so fshare/padded differ only
+   in word distance. Volatile: every spin iteration must be a real load. */
+struct pair_arg {
+  volatile uint64_t *w;  /* pingpong: flag. fshare/padded: own counter */
+  int side;              /* pingpong: 0 advances even, 1 advances odd */
+  uint64_t n;            /* pingpong: round trips */
+  double secs;           /* fshare/padded: duration */
+  uint64_t ops;          /* out */
+};
+static volatile int pair_stop;
+
+static void *pingpong_thread(void *a_) {
+  struct pair_arg *a = a_;
+  uint64_t end = 2 * a->n;
+  for (;;) {
+    uint64_t v = *a->w;
+    if (v >= end) break;
+    if ((v & 1) == (uint64_t)a->side) { *a->w = v + 1; a->ops++; }
+  }
+  return NULL;
+}
+
+static void *count_thread(void *a_) {
+  struct pair_arg *a = a_;
+  while (!pair_stop) { *a->w += 1; a->ops++; }
+  return NULL;
+}
+
 int main(int argc, char **argv) {
   if (argc < 4) {
-    fprintf(stderr, "usage: %s <stream|streamn|rmw|rmwn|chase|nomem> <MiB> "
-                    "<seconds, or passes for streamn>\n", argv[0]);
+    fprintf(stderr, "usage: %s <stream|streamn|rmw|rmwn|chase|pingpong|fshare|padded|ptmark|nomem> "
+                    "<MiB> <seconds, passes for streamn, count for pingpong/ptmark>\n", argv[0]);
     return 2;
   }
   const char *mode = argv[1];
@@ -104,21 +166,7 @@ int main(int argc, char **argv) {
   uint64_t touched = 0, sink = 0;
 
   if (!strcmp(mode, "chase")) {
-    /* A single random cycle over all cache lines, so the walk cannot be
-       predicted and every step is a dependent miss. */
-    uint64_t *idx = malloc(nlines * sizeof(uint64_t));
-    for (size_t i = 0; i < nlines; i++) idx[i] = i;
-    uint64_t s = 88172645463325252ULL;
-    for (size_t i = nlines - 1; i > 0; i--) {   /* Fisher-Yates */
-      s ^= s << 13; s ^= s >> 7; s ^= s << 17;
-      size_t j = s % (i + 1);
-      uint64_t t = idx[i]; idx[i] = idx[j]; idx[j] = t;
-    }
-    for (size_t i = 0; i < nlines; i++)         /* link into one cycle */
-      *(uint64_t **)(buf + idx[i] * 64) =
-          (uint64_t *)(buf + idx[(i + 1) % nlines] * 64);
-    free(idx);
-
+    link_chase(buf, nlines);
     uint64_t *p = (uint64_t *)buf;
     t0 = now();
     while (now() - t0 < secs) {
@@ -168,6 +216,49 @@ int main(int argc, char **argv) {
       sink += acc;
     }
     t1 = now();
+  } else if (!strcmp(mode, "pingpong")) {
+    uint64_t n = (uint64_t)secs;     /* third argument is round trips here */
+    volatile uint64_t *flag = (volatile uint64_t *)buf;
+    *flag = 0;
+    struct pair_arg a0 = {flag, 0, n, 0, 0}, a1 = {flag, 1, n, 0, 0};
+    pthread_t t;
+    t0 = now();
+    pthread_create(&t, NULL, pingpong_thread, &a1);
+    pingpong_thread(&a0);
+    pthread_join(t, NULL);
+    t1 = now();
+    /* handoffs, not bytes: known answer for XSNP_FWD is ~this count */
+    touched = a0.ops + a1.ops;
+    sink = *flag;
+  } else if (!strcmp(mode, "fshare") || !strcmp(mode, "padded")) {
+    size_t gap = !strcmp(mode, "fshare") ? 8 : 128;
+    struct pair_arg a0 = {(volatile uint64_t *)buf, 0, 0, secs, 0};
+    struct pair_arg a1 = {(volatile uint64_t *)(buf + gap), 1, 0, secs, 0};
+    pthread_t ta, tb;
+    pair_stop = 0;
+    t0 = now();
+    pthread_create(&ta, NULL, count_thread, &a0);
+    pthread_create(&tb, NULL, count_thread, &a1);
+    while (now() - t0 < secs) ;
+    pair_stop = 1;
+    pthread_join(ta, NULL);
+    pthread_join(tb, NULL);
+    t1 = now();
+    touched = a0.ops + a1.ops;       /* increments, not bytes */
+    sink = *a0.w + *a1.w;
+  } else if (!strcmp(mode, "ptmark")) {
+    uint64_t n = (uint64_t)secs;     /* third argument is mark count here */
+    link_chase(buf, nlines);
+    uint64_t *p = (uint64_t *)buf;
+    t0 = now();
+    for (uint64_t i = 0; i < n; i++) {
+      for (int k = 0; k < 16; k++) p = *(uint64_t **)p;
+      /* inline asm, not -mptwrite: file keeps plain `cc -O2` build line */
+      __asm__ volatile("ptwrite %0" :: "r"(i));
+    }
+    t1 = now();
+    touched = n * 16 * 64;
+    sink = (uint64_t)(uintptr_t)p;
   } else {                                      /* nomem */
     uint64_t a = 1;
     t0 = now();

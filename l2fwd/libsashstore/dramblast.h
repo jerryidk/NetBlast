@@ -66,5 +66,9 @@ extern int dramblast_alloc_pairs; /* -1 hoisted, 0 as shipped, n extra pairs */
 void dramblast_init(void);
 void dramblast_process_frames(dramblast_arg_t* args, unsigned int args_len, uint64_t* ret, unsigned int id);
 void dramblast_destroy(void);
+extern double dramblast_prefill_alpha; /* -P: target load factor, 0 = off */
+void dramblast_prefill_part(unsigned part, unsigned nparts);
+uint64_t dramblast_prefill_failures(void);
+void dramblast_table_stats(const char *when);
 
 #endif /* _MAGLEV_DPDK_H_ */

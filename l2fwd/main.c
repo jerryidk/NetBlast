@@ -43,6 +43,7 @@
 #include "generic/rte_cycles.h"
 #include "generic/rte_pause.h"
 #include "maglev.h"
+#include "nbprobe.h"
 #include "packettool.h"
 #include "sashstore.h"
 
@@ -373,6 +374,9 @@ static void l2fwd_main_loop(void) {
      rte_rdtsc() on the path -- at the bottom of the branch below -- and the
      region it closes opened at the bottom of the previous iteration. Nothing
      in the loop is outside some iteration's region. */
+#ifdef NB_PROBE
+  nbp_worker_init(lcore_id);
+#endif
   uint64_t t_prev = rte_rdtsc();
 
   while (!force_quit) {
@@ -380,10 +384,14 @@ static void l2fwd_main_loop(void) {
       unsigned portid = qconf->rx_port_list[i].port_id;
       unsigned queueid = qconf->rx_port_list[i].queue_id;
 
+      NBP_TOP();
       unsigned nb_rx =
           rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
 
       if (nb_rx > 0) {
+        NBP_MARK(NBP_B_RX);
+        NBW(NBW_BURST, nb_rx, t_prev);
+        NBP_SET(nb_rx, nb_rx);
         port_statistics[portid][lcore_id].rx += nb_rx;
 
         if (l2fwd_maglev_enabled) {
@@ -412,6 +420,9 @@ static void l2fwd_main_loop(void) {
             }
           }
 
+          NBP_MARK(NBP_B_HASH);
+          NBW(NBW_PHASE, 0, NBP_B_HASH);
+          NBP_SET(fn, fn);
           if (fn > 0)
             dramblast_process_frames(args, fn, mac_addrs, lcore_id);
 
@@ -434,6 +445,8 @@ static void l2fwd_main_loop(void) {
           }
           port_statistics[portid][lcore_id].fwded += nb_rx;
         }
+        NBP_MARK(NBP_B_MAC);
+        NBW(NBW_PHASE, 0, NBP_B_MAC);
 
         uint16_t nb_tx = rte_eth_tx_burst(portid, queueid, pkts_burst, nb_rx);
         if (unlikely(nb_tx < nb_rx)) {
@@ -456,7 +469,12 @@ static void l2fwd_main_loop(void) {
         port_statistics[portid][lcore_id].loop_tsc += t_now - t_prev;
         port_statistics[portid][lcore_id].loop_cnt += 1;
         t_prev = t_now;
+        /* after t_now: probe finish cost (ring copy, sums) lands in next
+           iteration's loop_tsc, not this burst's tx phase */
+        NBP_MARK(NBP_B_TX);
+        NBP_FINISH();
       } else {
+        NBP_CANCEL();
         rte_pause();
         uint64_t t_now = rte_rdtsc();
         port_statistics[portid][lcore_id].idle_tsc += t_now - t_prev;
@@ -469,6 +487,12 @@ static void l2fwd_main_loop(void) {
 
 static int l2fwd_launch_one_lcore(__attribute__((unused)) void *dummy) {
   l2fwd_main_loop();
+  return 0;
+}
+
+/* -P: every enabled lcore inserts its share. Runs before forwarding. */
+static int l2fwd_prefill_one_lcore(__attribute__((unused)) void *dummy) {
+  dramblast_prefill_part(rte_lcore_index(rte_lcore_id()), rte_lcore_count());
   return 0;
 }
 
@@ -498,6 +522,12 @@ static void l2fwd_usage(const char *prgname) {
          "  -Q DEPTH: dramblast prefetch pipeline depth (power of two, 64 as\n"
          "      shipped). Separates a pipeline-ramp cost from an allocator cost:\n"
          "      only the former responds to this.\n"
+         "  -P ALPHA: dramblast only. Prefill table to load factor ALPHA\n"
+         "      (0 < ALPHA <= 0.95) with filler keys before forwarding, so\n"
+         "      load factor moves while traffic stays 16M flows.\n"
+         "  -S K[p]: probe build only. Phase-time every K-th poll; 'p' also\n"
+         "      reads six PMCs. See libsashstore/nbprobe.h.\n"
+         "  -D PREFIX: probe build only. Dump sampled bursts to PREFIX_l<lcore>.nbp\n"
          "  --[no-]mac-updating: Enable/disable MAC updating\n",
          prgname);
 }
@@ -513,7 +543,7 @@ static int l2fwd_parse_args(int argc, char **argv) {
       {"no-mac-updating", no_argument, &mac_updating, 0},
       {NULL, 0, 0, 0}};
 
-  while ((opt = getopt_long(argc, argvopt, "p:q:T:m:c:B:A:Q:", lgopts,
+  while ((opt = getopt_long(argc, argvopt, "p:q:T:m:c:B:A:Q:P:S:D:", lgopts,
                             &option_index)) != EOF) {
     switch (opt) {
     case 0:
@@ -560,6 +590,38 @@ static int l2fwd_parse_args(int argc, char **argv) {
       }
       printf("dramblast prefetch pipeline depth: %d\n", dramblast_queue_depth);
       break;
+    case 'P':
+      dramblast_prefill_alpha = strtod(optarg, NULL);
+      if (!(dramblast_prefill_alpha > 0 && dramblast_prefill_alpha <= 0.95)) {
+        fprintf(stderr, "Error: -P %s must be in (0, 0.95]. Above that linear "
+                        "probing runs toward the probe bound.\n", optarg);
+        return -1;
+      }
+      printf("dramblast prefill target load factor: %.4f\n", dramblast_prefill_alpha);
+      break;
+    case 'S':
+    case 'D':
+#ifdef NB_PROBE
+      if (opt == 'S') {
+        char *end;
+        nbp_every = (int)strtol(optarg, &end, 10);
+        nbp_pmc = (*end == 'p');
+        if (nbp_every <= 0 || (*end && *end != 'p')) {
+          fprintf(stderr, "Error: -S %s: want K or Kp, K > 0.\n", optarg);
+          return -1;
+        }
+        printf("nbprobe every %d polls, pmc %s\n", nbp_every, nbp_pmc ? "on" : "off");
+      } else {
+        nbp_dump = optarg;
+      }
+      break;
+#else
+      /* Refuse, never ignore: a probe arm run on the shipped binary would
+         report shipped numbers under a probe tag. */
+      fprintf(stderr, "Error: -%c needs a probe build (meson -Dnbprobe=true, "
+                      "build-probe/).\n", opt);
+      return -1;
+#endif
     case 'B':
       if (backing_parse(optarg, &g_backing) < 0) {
         fprintf(stderr,
@@ -802,6 +864,17 @@ int main(int argc, char **argv) {
   else if (l2fwd_dramblast_enabled)
     dramblast_init();
 
+  if (dramblast_prefill_alpha > 0) {
+    if (!l2fwd_dramblast_enabled)
+      rte_exit(EXIT_FAILURE, "-P applies to -m dramblast only\n");
+    uint64_t t0 = rte_rdtsc();
+    rte_eal_mp_remote_launch(l2fwd_prefill_one_lcore, NULL, CALL_MAIN);
+    rte_eal_mp_wait_lcore();
+    printf("dramblast prefill %u lcores %.2f s failed=%lu\n", rte_lcore_count(),
+           (double)(rte_rdtsc() - t0) / rte_get_tsc_hz(), dramblast_prefill_failures());
+    dramblast_table_stats("prefill");
+  }
+
   samples = malloc(TOTAL_SAMPLES * sizeof(double));
   sleep(5);
 
@@ -860,6 +933,13 @@ int main(int argc, char **argv) {
     rte_eth_dev_stop(portid);
     rte_eth_dev_close(portid);
   }
+
+#ifdef NB_PROBE
+  nbp_report();
+#endif
+  /* exit scan only when load factor is the variable: it touches all 8 GiB */
+  if (l2fwd_dramblast_enabled && dramblast_prefill_alpha > 0)
+    dramblast_table_stats("exit");
 
   if (l2fwd_dramblast_enabled)
     dramblast_destroy();
