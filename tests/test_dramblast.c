@@ -34,6 +34,8 @@ uint64_t CAPACITY = 0;
  * The harness therefore re-implements them locally rather than calling them. */
 extern dramblast_ht_t *dramblast_ht;
 extern int dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v);
+extern int dramblast_insert_at(dramblast_ht_t *ht, uint64_t k, uint64_t v,
+                               uint64_t hint);
 extern uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht,
                                           dramblast_arg_t *args,
                                           unsigned int args_len,
@@ -262,18 +264,20 @@ static void t_roundtrip(find_fn fn, const char *label) {
   free_table(ht);
 }
 
-/* T3: keys never inserted must be reported absent. */
+/* T3: keys never inserted must be reported absent. Status, not v: ABSENT v
+ * carries insert hint (dramblast.h), never a value. */
 static void t_absent(find_fn fn, const char *label) {
-  HDR("T3 absent keys must report v == 0");
+  HDR("T3 absent keys must report ABSENT");
   printf("    kernel: %s\n", label);
   dramblast_ht_t *ht = make_table(TEST_TABLE_LEN);
   enum { N = 256 };
   uint64_t keys[N], out[N];
+  uint32_t st[N];
   for (int i = 0; i < N; i++) keys[i] = 0xDEAD0000ULL + i;
-  lookup(fn, ht, keys, N, out, 0);
+  lookup_st(fn, ht, keys, N, out, st, 0);
   int absent = 0;
-  for (int i = 0; i < N; i++) if (out[i] == 0) absent++;
-  CHECK(absent == N, "%d of %d absent keys reported a value", N - absent, N);
+  for (int i = 0; i < N; i++) if (st[i] == DRAMBLAST_ABSENT) absent++;
+  CHECK(absent == N, "%d of %d absent keys not reported ABSENT", N - absent, N);
   free_table(ht);
 }
 
@@ -341,20 +345,22 @@ static void t_false_hit(void) {
 
   /* c[1] was never inserted as a KEY. Correct answer: absent.
    * Buggy mask matches it in value-lane 1, then returns lane 2 == c[2]. */
+  /* status, not v: ABSENT v carries insert hint (dramblast.h) */
   uint64_t out[1];
-  lookup(dramblast_find_batch_sync, ht, &c[1], 1, out, 0);
-  printf("    lookup of key 0x%lx (never inserted) -> v = 0x%lx\n",
-         c[1], out[0]);
-  CHECK(out[0] == 0,
-        "a key that was never inserted returned 0x%lx (lane 2 holds key 0x%lx)",
-        out[0], c[2]);
+  uint32_t st1[1];
+  lookup_st(dramblast_find_batch_sync, ht, &c[1], 1, out, st1, 0);
+  printf("    lookup of key 0x%lx (never inserted) -> status %u\n",
+         c[1], st1[0]);
+  CHECK(st1[0] == DRAMBLAST_ABSENT,
+        "a key that was never inserted got status %u, v 0x%lx (lane 2 holds key 0x%lx)",
+        st1[0], out[0], c[2]);
 
   /* c[5] sits in value-lane 7. ctz(key_cmp) == 7, so dramblast.c:162 evaluates
    * cacheline[8] -- element 8 of an 8-element vector. */
-  lookup(dramblast_find_batch_sync, ht, &c[5], 1, out, 0);
-  CHECK(out[0] == 0,
-        "key 0x%lx sits only in a VALUE lane and must not match; got 0x%lx",
-        c[5], out[0]);
+  lookup_st(dramblast_find_batch_sync, ht, &c[5], 1, out, st1, 0);
+  CHECK(st1[0] == DRAMBLAST_ABSENT,
+        "key 0x%lx sits only in a VALUE lane and must not match; status %u v 0x%lx",
+        c[5], st1[0], out[0]);
 
   /* The corrected kernel must call both of these absent. */
   lookup(find_batch_fixed, ht, &c[1], 1, out, 1);
@@ -679,6 +685,21 @@ static void t_flowhash4_equiv(void) {
   for (int u = 0; u < 4; u++) munmap(gf[u] - (pg - 78), 2 * pg);
 }
 
+/* ABSENT hint as spec: scalar walk from home to first empty slot; high 32
+   bits = slots passed. Independent of find's bucket/lane arithmetic. */
+static uint64_t ref_hint(const dramblast_ht_t *ht, uint64_t k) {
+  uint64_t idx = ref_hash(k, ht->len), c = 0;
+  while (ht->table[idx].k != 0 && c < ht->len) {
+    idx = (idx + 1) & (ht->len - 1);
+    c++;
+  }
+  return idx | (c << 32);
+}
+
+static uint64_t val_of(uint64_t k, unsigned round) {
+  return ((k * 0x9E3779B97F4A7C15ull) ^ round) | 1;
+}
+
 /* T13: dramblast_find_batch_sync = HEAD e20527e find, per id. Spec copy
  * below (ref_find_head) = HEAD loop with push/pop/get_queue_sz helpers
  * inlined, queue depth read from queue as HEAD does. Random scenarios: table
@@ -690,7 +711,8 @@ static void t_flowhash4_equiv(void) {
  * checked anyway: it = bucket compare order = prefetch schedule, and D1/D3
  * (REFLECT_PATH s9) claim to leave it unchanged. A change that reorders
  * must say so and relax this. Library queue must be empty at return
- * (head == tail). */
+ * (head == tail). ABSENT v
+ * must equal ref_hint (scalar walk), not HEAD's 0. */
 static uint32_t ref_find_head(dramblast_ht_t *ht, dramblast_arg_t *args,
                               unsigned int args_len,
                               dramblast_result_t *results, unsigned int id) {
@@ -803,14 +825,17 @@ static void t_find_equiv(void) {
           int same = 1;
           for (unsigned j = 0; j < n; j++)
             same &= rl[j].id == rr[j].id && rl[j].status == rr[j].status &&
-                    rl[j].v == rr[j].v;
+                    (rl[j].v == rr[j].v || rr[j].status == DRAMBLAST_ABSENT);
           seq_same += same;
           qsort(rl, n, sizeof *rl, cmp_res_id);
           qsort(rr, n, sizeof *rr, cmp_res_id);
           for (unsigned j = 0; j < n; j++) {
             if (rl[j].id != j || rr[j].id != j) { badperm++; break; }
             if (rr[j].status < 3) st[rr[j].status]++;
-            if (rl[j].status != rr[j].status || rl[j].v != rr[j].v) mism++;
+            /* ABSENT: HEAD v = 0, library v = insert hint (dramblast.h) */
+            uint64_t ev = rr[j].status == DRAMBLAST_ABSENT
+                              ? ref_hint(ht, args[j].k) : rr[j].v;
+            if (rl[j].status != rr[j].status || rl[j].v != ev) mism++;
           }
         }
       }
@@ -828,6 +853,305 @@ static void t_find_equiv(void) {
         batches - seq_same, batches);
   CHECK(st[0] > 1000 && st[1] > 1000 && st[2] > 1000,
         "path coverage: found %zu absent %zu full %zu", st[0], st[1], st[2]);
+}
+
+/* T14: insert_at(hint) = insert_one, slot for slot, single thread. Two copies
+ * of one table; per batch: library find on each, ABSENT results inserted in
+ * result order, copy A via insert_one (old path), copy B via insert_at with
+ * find's hint (new path). Batches carry new keys, in-batch duplicates of new
+ * keys (both ABSENT, same hint), present keys (value update next round).
+ * Also: whole post loop through real dramblast_process_frames on B vs old
+ * post loop emulated on A; and crafted wrap case where failure bound decides
+ * (table full but 2 slots: home, home - 1). */
+static void t_insert_at_equiv(void) {
+  HDR("T14 insert_at(find hint) = insert_one from home, slot for slot");
+  static const unsigned lens[] = {1u << 8, 1u << 10, 1u << 12};
+  static const double alphas[] = {0, 0.3, 0.6, 0.8, 0.9, 0.95, 0.99};
+  enum { MAXB = 64 };
+  dramblast_arg_t args[MAXB];
+  dramblast_result_t ra[MAXB], rb[MAXB];
+  uint64_t s = 0xBB67AE8584CAA73Bull;
+  size_t batches = 0, absent = 0, dup_hint = 0, hint_bad = 0, res_diff = 0,
+         rc_diff = 0, fails = 0, tbl_diff = 0, pf_tbl_diff = 0, pf_ret_diff = 0;
+  for (unsigned li = 0; li < 3; li++)
+    for (unsigned ai = 0; ai < sizeof alphas / sizeof *alphas; ai++) {
+      unsigned len = lens[li];
+      dramblast_ht_t *A = make_table(len), *B = make_table(len);
+      uint64_t *keys = malloc(sizeof(uint64_t) * len * 2);
+      unsigned nk = fill_random(A, alphas[ai], keys, len, &s);
+      memcpy(B->table, A->table, len * sizeof(dramblast_kv_t));
+      for (unsigned round = 0; round < 60; round++) {
+        unsigned n = 1 + (unsigned)(xs64(&s) % MAXB);
+        for (unsigned j = 0; j < n; j++) {
+          uint64_t r = xs64(&s) % 10, k;
+          if (r < 3 && nk) k = keys[xs64(&s) % nk];
+          else if (r < 7 || j == 0) do k = xs64(&s); while (!k);
+          else k = args[xs64(&s) % j].k;
+          args[j].k = k; args[j].id = j;
+        }
+        unsigned ga = dramblast_find_batch_sync(A, args, n, ra, 0);
+        unsigned gb = dramblast_find_batch_sync(B, args, n, rb, 0);
+        batches++;
+        if (ga != n || gb != n) { res_diff++; continue; }
+        uint64_t seen_hint[MAXB]; unsigned nh = 0;
+        for (unsigned j = 0; j < n; j++) {
+          if (ra[j].id != rb[j].id || ra[j].status != rb[j].status ||
+              (ra[j].status == DRAMBLAST_FOUND && ra[j].v != rb[j].v)) {
+            res_diff++; continue;
+          }
+          if (rb[j].status != DRAMBLAST_ABSENT) continue;
+          uint64_t k = args[rb[j].id].k;
+          absent++;
+          if (rb[j].v != ref_hint(B, k)) hint_bad++;
+          for (unsigned h = 0; h < nh; h++) if (seen_hint[h] == rb[j].v) { dup_hint++; break; }
+          seen_hint[nh++] = rb[j].v;
+        }
+        /* ref_hint above read B before any insert of this batch: hint is
+           state at find time, as post loop sees it */
+        for (unsigned j = 0; j < n; j++) {
+          if (rb[j].status != DRAMBLAST_ABSENT) continue;
+          uint64_t k = args[rb[j].id].k, v = val_of(k, round);
+          int x = dramblast_insert_one(A, k, v);
+          int y = dramblast_insert_at(B, k, v, rb[j].v);
+          rc_diff += x != y;
+          fails += x < 0;
+          if (x == 0 && nk < 2 * len) keys[nk++] = k;
+        }
+        tbl_diff += memcmp(A->table, B->table, len * sizeof(dramblast_kv_t)) != 0;
+      }
+      /* real post loop: process_frames on B (D3 wiring) vs HEAD post loop
+         emulated on A. dramblast_backends never populated here (no init):
+         backend value 0 for every insert, as emulated. */
+      dramblast_ht_t *saved = dramblast_ht;
+      int saved_ap = dramblast_alloc_pairs;
+      dramblast_alloc_pairs = 0; /* no hoisted buffer without init */
+      for (unsigned round = 0; round < 60; round++) {
+        unsigned n = 1 + (unsigned)(xs64(&s) % MAXB);
+        for (unsigned j = 0; j < n; j++) {
+          uint64_t r = xs64(&s) % 10, k;
+          if (r < 3 && nk) k = keys[xs64(&s) % nk];
+          else if (r < 7 || j == 0) do k = xs64(&s); while (!k);
+          else k = args[xs64(&s) % j].k;
+          args[j].k = k; args[j].id = j;
+        }
+        uint64_t reta[MAXB], retb[MAXB];
+        memset(reta, 0xAB, sizeof reta); memset(retb, 0xCD, sizeof retb);
+        unsigned ga = dramblast_find_batch_sync(A, args, n, ra, 0);
+        for (unsigned j = 0; j < ga; j++) {
+          uint64_t m = 0;
+          if (ra[j].status == DRAMBLAST_ABSENT) {
+            uint64_t k = args[ra[j].id].k;
+            m = 0; /* dramblast_backends[k % TABLE_SIZE] == 0 here */
+            if (dramblast_insert_one(A, k, m) < 0) m = 0;
+          } else if (ra[j].status == DRAMBLAST_FOUND) m = ra[j].v;
+          reta[ra[j].id] = m;
+        }
+        dramblast_ht = B;
+        dramblast_process_frames(args, n, retb, 0);
+        pf_ret_diff += memcmp(reta, retb, n * sizeof(uint64_t)) != 0;
+        pf_tbl_diff += memcmp(A->table, B->table, len * sizeof(dramblast_kv_t)) != 0;
+      }
+      dramblast_ht = saved;
+      dramblast_alloc_pairs = saved_ap;
+      free(keys);
+      free_table(A); free_table(B);
+    }
+  printf("    %zu batches, %zu ABSENT inserts (%zu share hint with earlier key"
+         " in batch, %zu failed both paths): hint wrong %zu, results differ"
+         " %zu, return code differs %zu, tables differ after %zu batches\n",
+         batches, absent, dup_hint, fails, hint_bad, res_diff, rc_diff, tbl_diff);
+  printf("    process_frames (new) vs HEAD post loop: ret[] differs %zu,"
+         " table differs %zu\n", pf_ret_diff, pf_tbl_diff);
+  CHECK(hint_bad == 0 && res_diff == 0, "hint wrong %zu, results differ %zu",
+        hint_bad, res_diff);
+  CHECK(rc_diff == 0 && tbl_diff == 0, "rc differs %zu, tables differ %zu",
+        rc_diff, tbl_diff);
+  CHECK(pf_ret_diff == 0 && pf_tbl_diff == 0,
+        "process_frames: ret differs %zu, table differs %zu", pf_ret_diff, pf_tbl_diff);
+  CHECK(dup_hint > 100, "in-batch same-hint case exercised only %zu times", dup_hint);
+
+  /* crafted wrap: K1, K2 same home h; table full except slot h + L (lane
+     L = 0..3 of home bucket) and slot h - 1 (last slot before home, reached
+     only at count == len). K1 takes h + L; K2 must walk whole ring to h - 1
+     and succeed, on both paths. Catches any hint count off by >= 1. */
+  for (unsigned L = 0; L < 4; L++) {
+    unsigned len = 1u << 8;
+    uint64_t c2[2];
+    uint64_t h = ref_hash(4242, len);
+    collide(h, len, c2, 2);
+    dramblast_ht_t *A = make_table(len), *B = make_table(len);
+    uint64_t f = 0x77;
+    for (unsigned i = 0; i < len; i++) {
+      A->table[i].k = f + i * 0x10001ull; /* filler, never 0, never c2 */
+      A->table[i].v = 1;
+    }
+    A->table[h + L].k = A->table[h + L].v = 0;
+    A->table[(h - 1) & (len - 1)].k = A->table[(h - 1) & (len - 1)].v = 0;
+    memcpy(B->table, A->table, len * sizeof(dramblast_kv_t));
+    dramblast_arg_t a2[2] = {{c2[0], 0}, {c2[1], 1}};
+    dramblast_result_t r2[2];
+    dramblast_find_batch_sync(B, a2, 2, r2, 0);
+    int ok = 1, x[2], y[2];
+    for (int j = 0; j < 2; j++) {
+      ok &= r2[j].status == DRAMBLAST_ABSENT;
+      uint64_t k = a2[r2[j].id].k;
+      x[j] = dramblast_insert_one(A, k, 5 + j);
+      y[j] = dramblast_insert_at(B, k, 5 + j, r2[j].v);
+    }
+    int same = memcmp(A->table, B->table, len * sizeof(dramblast_kv_t)) == 0;
+    /* same batch through real post loop (hint wiring): C gets backend 0 as
+       value, so compare keys only */
+    dramblast_ht_t *C = make_table(len), *saved = dramblast_ht;
+    memcpy(C->table, A->table, len * sizeof(dramblast_kv_t));
+    for (int j = 0; j < 2; j++) /* undo A's inserts in C: pre-batch state */
+      for (unsigned i = 0; i < len; i++)
+        if (C->table[i].k == c2[j]) C->table[i].k = C->table[i].v = 0;
+    int saved_ap = dramblast_alloc_pairs;
+    uint64_t ret2[2];
+    dramblast_alloc_pairs = 0;
+    dramblast_ht = C;
+    dramblast_process_frames(a2, 2, ret2, 0);
+    dramblast_ht = saved;
+    dramblast_alloc_pairs = saved_ap;
+    int pf_same = 1;
+    for (unsigned i = 0; i < len; i++) pf_same &= C->table[i].k == A->table[i].k;
+    printf("    wrap case lane %u: ABSENT both %d, insert_one rc %d %d,"
+           " insert_at rc %d %d, tables same %d, process_frames keys same %d\n",
+           L, ok, x[0], x[1], y[0], y[1], same, pf_same);
+    CHECK(ok && x[0] == 0 && x[1] == 0 && y[0] == 0 && y[1] == 0 && same && pf_same,
+          "wrap case lane %u: rc %d %d / %d %d, same %d, pf %d", L, x[0], x[1],
+          y[0], y[1], same, pf_same);
+    free_table(A); free_table(B); free_table(C);
+  }
+}
+
+/* T15: 2 threads, overlapping key sets, find + insert_at as post loop does,
+ * racing on one table. Other thread can fill hint slot between find and
+ * insert (with other key, or with same shared key). After each round: no
+ * key twice, every key present with its value, filler intact, no insert
+ * failed. Same stress on old path (insert_one) as control. */
+#include <pthread.h>
+enum { T15_LEN = 1u << 13, T15_PER = 1500, T15_SHARED = 750, T15_ROUNDS = 300 };
+struct t15_arg {
+  dramblast_ht_t *ht;
+  const uint64_t *keys; /* T15_PER keys, this thread's order */
+  unsigned qid, round;
+  int use_at;
+  pthread_barrier_t *bar;
+  size_t fails, hint_taken_other, hint_taken_same;
+  uint64_t seed;
+};
+
+static void *t15_worker(void *p) {
+  struct t15_arg *a = p;
+  dramblast_arg_t args[64];
+  dramblast_result_t res[64];
+  pthread_barrier_wait(a->bar);
+  for (unsigned i = 0; i < T15_PER;) {
+    unsigned n = 1 + (unsigned)(xs64(&a->seed) % 64);
+    unsigned m = 0;
+    for (; m < n && i < T15_PER; m++) {
+      /* 1 in 16: repeat earlier key of this batch (in-burst duplicate) */
+      if (m && (xs64(&a->seed) & 15) == 0) args[m].k = args[xs64(&a->seed) % m].k;
+      else args[m].k = a->keys[i++];
+      args[m].id = m;
+    }
+    unsigned got = dramblast_find_batch_sync(a->ht, args, m, res, a->qid);
+    uint64_t mine[64]; /* keys this thread inserted this batch */
+    unsigned nm = 0;
+    for (unsigned j = 0; j < got; j++) {
+      if (res[j].status != DRAMBLAST_ABSENT) continue;
+      uint64_t k = args[res[j].id].k;
+      /* hint slot was empty at find. Now held by key not inserted by this
+         thread this batch -> other thread filled it in between */
+      uint64_t sk = a->ht->table[res[j].v & 0xffffffffu].k;
+      int by_me = 0;
+      for (unsigned h = 0; h < nm; h++) by_me |= mine[h] == sk;
+      if (sk && !by_me) {
+        if (sk == k) a->hint_taken_same++;
+        else a->hint_taken_other++;
+      }
+      mine[nm++] = k;
+      int rc = a->use_at ? dramblast_insert_at(a->ht, k, val_of(k, 0), res[j].v)
+                         : dramblast_insert_one(a->ht, k, val_of(k, 0));
+      a->fails += rc < 0;
+    }
+  }
+  return NULL;
+}
+
+static void t_insert_race(void) {
+  HDR("T15 2-thread insert race: no duplicate, nothing lost");
+  uint64_t s = 0x3C6EF372FE94F82Bull;
+  for (int use_at = 0; use_at < 2; use_at++) {
+    size_t dups = 0, missing = 0, badv = 0, filler_bad = 0, fails = 0,
+           taken_other = 0, taken_same = 0;
+    for (unsigned round = 0; round < T15_ROUNDS; round++) {
+      dramblast_ht_t *ht = make_table(T15_LEN);
+      uint64_t *fk = malloc(sizeof(uint64_t) * T15_LEN);
+      unsigned nf = fill_random(ht, 0.5, fk, T15_LEN, &s);
+      /* shared keys first in both orders, so both threads race on them */
+      uint64_t k0[T15_PER], k1[T15_PER];
+      for (unsigned i = 0; i < T15_PER; i++) {
+        do k0[i] = xs64(&s); while (!k0[i]);
+        k1[i] = i < T15_SHARED ? k0[i] : 0;
+        if (!k1[i]) do k1[i] = xs64(&s); while (!k1[i]);
+      }
+      for (unsigned i = T15_SHARED; i > 1; i--) { /* shuffle t1's shared */
+        unsigned j = (unsigned)(xs64(&s) % i);
+        uint64_t t = k1[i - 1]; k1[i - 1] = k1[j]; k1[j] = t;
+      }
+      pthread_barrier_t bar;
+      pthread_barrier_init(&bar, NULL, 2);
+      struct t15_arg a[2] = {
+          {ht, k0, 0, round, use_at, &bar, 0, 0, 0, xs64(&s) | 1},
+          {ht, k1, 1, round, use_at, &bar, 0, 0, 0, xs64(&s) | 1}};
+      pthread_t th[2];
+      for (int t = 0; t < 2; t++) pthread_create(&th[t], NULL, t15_worker, &a[t]);
+      for (int t = 0; t < 2; t++) pthread_join(th[t], NULL);
+      pthread_barrier_destroy(&bar);
+      for (int t = 0; t < 2; t++) {
+        fails += a[t].fails;
+        taken_other += a[t].hint_taken_other;
+        taken_same += a[t].hint_taken_same;
+      }
+      /* scan: every stored key once */
+      uint64_t *all = malloc(sizeof(uint64_t) * T15_LEN);
+      unsigned na = 0;
+      for (unsigned i = 0; i < T15_LEN; i++) if (ht->table[i].k) all[na++] = ht->table[i].k;
+      qsort(all, na, sizeof(uint64_t), cmp_u64);
+      for (unsigned i = 1; i < na; i++) dups += all[i] == all[i - 1];
+      free(all);
+      /* every key findable with right value */
+      for (int t = 0; t < 2; t++)
+        for (unsigned i = 0; i < T15_PER; i++) {
+          uint64_t k = t ? k1[i] : k0[i], out; uint32_t stt;
+          lookup_st(dramblast_find_batch_sync, ht, &k, 1, &out, &stt, 0);
+          if (stt != DRAMBLAST_FOUND) missing++;
+          else if (out != val_of(k, 0)) badv++;
+        }
+      for (unsigned i = 0; i < nf; i++) {
+        uint64_t out; uint32_t stt;
+        lookup_st(dramblast_find_batch_sync, ht, &fk[i], 1, &out, &stt, 0);
+        filler_bad += stt != DRAMBLAST_FOUND;
+      }
+      free(fk);
+      free_table(ht);
+    }
+    printf("    %s: %d rounds x 2 threads x %d keys (%d shared): duplicates %zu,"
+           " missing %zu, wrong value %zu, filler lost %zu, insert failed %zu;"
+           " hint slot filled by other thread between find and insert: other key"
+           " %zu, same key %zu\n",
+           use_at ? "insert_at (new)" : "insert_one (old)", T15_ROUNDS,
+           T15_PER, T15_SHARED, dups, missing, badv, filler_bad, fails,
+           taken_other, taken_same);
+    CHECK(dups == 0 && missing == 0 && badv == 0 && filler_bad == 0 && fails == 0,
+          "%s: dup %zu missing %zu badv %zu filler %zu fails %zu",
+          use_at ? "insert_at" : "insert_one", dups, missing, badv, filler_bad, fails);
+    if (use_at)
+      CHECK(taken_other > 0 && taken_same > 0,
+            "race not exercised: taken other %zu same %zu", taken_other, taken_same);
+  }
 }
 
 int main(void) {
@@ -859,6 +1183,8 @@ int main(void) {
   t_flowhash_equiv();
   t_flowhash4_equiv();
   t_find_equiv();
+  t_insert_at_equiv();
+  t_insert_race();
 
   printf("\n----------------------------------------------------------\n");
   printf("pass %d   fail %d\n", g_pass, g_fail);

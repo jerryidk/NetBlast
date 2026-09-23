@@ -42,7 +42,11 @@ loop version (HEAD 57bf217): all 16,777,216 pktgen tuples + 10M random frames,
 0 mismatches required, 16,777,216 distinct keys required (REFLECT_PATH §7).
 `T12`: `flowhash4` vs `flowhash` (REFLECT_PATH §8). `T13`: `dramblast_find_batch_sync`
 vs transcription of HEAD e20527e find, per id (status, v), random tables load 0-1.0,
-queue depth 4-64, batches 1-200 with in-batch repeats (REFLECT_PATH §9).
+queue depth 4-64, batches 1-200 with in-batch repeats (REFLECT_PATH §9). `T14`:
+`dramblast_insert_at` from find's ABSENT hint vs `dramblast_insert_one` from home,
+table slot for slot, incl. crafted full-table wrap and real `dramblast_process_frames`.
+`T15`: 2 threads racing find + insert on one table: no duplicate, nothing lost (needs
+`-pthread`).
 
 Every test is now a regression guard for a fixed defect in
 `docs/dramblast_analysis.md`. Before the fixes the suite reported
@@ -52,7 +56,7 @@ inserted keys were found.
 ## Status
 
 ```
-pass 46   fail 0
+pass 57   fail 0
 ```
 
 Also clean under sanitizers, which finding C5 previously made impossible:

@@ -11,8 +11,9 @@ CC   ?= gcc
 # `march` default. Not native: nix gcc wrapper strips -march=native
 # (NIX_ENFORCE_NO_NATIVE), which lost crc32 and failed the build in nix shell.
 MARCH ?= icelake-server
+# -pthread: T15 races 2 inserting threads on one table
 CFLAGS := -O2 -g -march=$(MARCH) -Wall -Wextra -Wno-unused-parameter \
-          -I$(LIB) -Ishims
+          -pthread -I$(LIB) -Ishims
 SRCS := test_dramblast.c $(LIB)/dramblast.c $(LIB)/conshash.c $(LIB)/hash.c \
         $(LIB)/backing.c
 

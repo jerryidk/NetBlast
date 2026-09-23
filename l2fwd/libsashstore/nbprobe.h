@@ -60,7 +60,7 @@ struct nbp_rec {
   uint16_t nb_rx, fn, found, absent, full, inserts;
   uint32_t pops, reprobes;        /* find loop: pops = buckets loaded */
   uint32_t occ_sum;               /* queue size summed at each pop: software MLP */
-  uint32_t ins_steps;             /* insert_one slots walked, this burst */
+  uint32_t ins_steps;             /* insert slots walked (insert_at from hint, or insert_one), this burst */
   uint16_t occ_max, lcore;
 };
 

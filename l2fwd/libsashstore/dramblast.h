@@ -19,9 +19,13 @@ typedef union {
  * stored value of 0 is not read as a miss, and so that giving up on a full
  * table is not read as "definitively absent". */
 #define DRAMBLAST_FOUND      0u /* key present; v holds the stored value     */
-#define DRAMBLAST_ABSENT     1u /* key definitively not present; v undefined */
+#define DRAMBLAST_ABSENT     1u /* key definitively not present; v = hint   */
 #define DRAMBLAST_TABLE_FULL 2u /* probe bound reached; presence unknown     */
 
+/* ABSENT v = insert hint, for dramblast_insert_at: low 32 bits first empty
+   slot find saw, high 32 slots walked from home before it. Rides in v (unused
+   on ABSENT) so result stays 16 B. Needs len <= 2^32 (checked at init). */
+#define DRAMBLAST_ABSENT_HINT 1
 typedef struct {
   uint64_t v;
   uint32_t id;

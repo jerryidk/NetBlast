@@ -71,16 +71,22 @@ static inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
   return dramblast_home(k, (ht->len - 1) & DRAMBLAST_BUCKET_IDX_MASK);
 }
 
-int dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
-
-  uint64_t idx = dramblast_hash(ht, k);
+/*
+ * Linear slot walk from slot idx, count = slots already walked from home
+ * before idx. insert_one starts at home with 0; insert_at resumes where find
+ * stopped. Slot keys never change once set (no deletes, CAS from 0 only), so
+ * every slot find saw occupied is still occupied by same non-k key: walk from
+ * hint reaches hint slot in same state as walk from home would, under any
+ * interleaving with other lcores. Placement, update, failure bound therefore
+ * identical to walk from home (tests T14, T15).
+ */
+static inline int dramblast_insert_walk(dramblast_ht_t *ht, uint64_t k,
+                                        uint64_t v, uint64_t idx,
+                                        uint64_t count) {
   dramblast_kv_t *kv;
-
-  uint64_t count = 0;
-
-  if (k == 0) {
-    return -1;
-  }
+#ifdef NB_PROBE
+  const uint64_t count0 = count; /* ins_steps = slots actually walked */
+#endif
 
 try_insert:
   kv = &ht->table[idx];
@@ -91,14 +97,16 @@ try_insert:
       swapped.pair.k = k;
       swapped.pair.v = v;
       if (__sync_bool_compare_and_swap((__int128 *)kv, (__int128)0, *(__int128 *)&swapped)) {
-          NBP_ADD(ins_steps, count);
+          NBP_ADD(ins_steps, count - count0);
           return 0;
       }
   }
 
+  /* CAS lost, or slot already held: same key (in-burst duplicate of new flow,
+     or other lcore won same key) -> update, never second copy */
   if(kv->k == k) {
     kv->v = v;
-    NBP_ADD(ins_steps, count);
+    NBP_ADD(ins_steps, count - count0);
     return 0;
   }
 
@@ -112,6 +120,36 @@ try_insert:
     return -1;
 
   goto try_insert;
+}
+
+int dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
+  if (k == 0) {
+    return -1;
+  }
+  return dramblast_insert_walk(ht, k, v, dramblast_hash(ht, k), 0);
+}
+
+/*
+ * D3 (REFLECT_PATH s9): insert from find's ABSENT hint (dramblast.h), not
+ * from home. WHY: on ABSENT, find already loaded every bucket home..terminal
+ * and saw empty lane; insert_one re-hashed and re-walked all of it slot by
+ * slot (dramblast_analysis P4): ~74.5 slots/insert at alpha 0.9.
+ */
+int dramblast_insert_at(dramblast_ht_t *ht, uint64_t k, uint64_t v,
+                        uint64_t hint) {
+  if (k == 0) {
+    return -1;
+  }
+  return dramblast_insert_walk(ht, k, v, hint & 0xffffffffu, hint >> 32);
+}
+
+/* ABSENT hint: low 32 bits = first empty slot seen (terminal bucket idx +
+   lane), high 32 = slots from home before it = insert_one's count on arrival
+   there. count = slots probed incl. terminal bucket (+4 already added). */
+static inline uint64_t dramblast_absent_hint(uint64_t idx, uint64_t count,
+                                             __mmask8 ept_cmp) {
+  uint64_t lane = (uint64_t)__builtin_ctz(ept_cmp) >> 1; /* key lanes even */
+  return (idx + lane) | ((count - 4 + lane) << 32);
 }
 
 // Note: args_len is also length of results array
@@ -226,7 +264,7 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
       } else {
         // an empty slot in this bucket proves the key is absent
         dramblast_result_t *result = &results[result_head];
-        result->v = 0;
+        result->v = dramblast_absent_hint(idx, count, ept_cmp);
         result->id = kid;
         result->status = DRAMBLAST_ABSENT;
         result_head++;
@@ -353,7 +391,9 @@ void dramblast_process_frames(dramblast_arg_t *args, unsigned int args_len,
 #endif
       uint64_t client_hash = args[result->id].k;
       backend_mac_addr = dramblast_backends[client_hash % TABLE_SIZE];
-      if (dramblast_insert_one(dramblast_ht, client_hash, backend_mac_addr) < 0)
+      /* D3: resume at slot find stopped on, not home */
+      if (dramblast_insert_at(dramblast_ht, client_hash, backend_mac_addr,
+                              result->v) < 0)
         backend_mac_addr = 0; // insertion failed
     } else if (result->status == DRAMBLAST_TABLE_FULL) {
 #ifdef NB_PROBE
@@ -426,6 +466,12 @@ void dramblast_init(void) {
   }
 
   dramblast_ht->len = CAPACITY;
+  /* ABSENT hint packs slot and count in 32 bits each (dramblast.h); home
+     hash is 32-bit crc anyway (C7), so larger table buys nothing. */
+  if (dramblast_ht->len > (1ULL << 32)) {
+    printf("dramblast: capacity %lu > 2^32 slots unsupported\n", dramblast_ht->len);
+    exit(1);
+  }
   // using hugepages 2mb or 1gb for hsahtbale base on table capacity.
   uint64_t bytes = dramblast_ht->len * sizeof(dramblast_kv_t);
   dramblast_ht->table = allocate_dramblast_table(bytes);
