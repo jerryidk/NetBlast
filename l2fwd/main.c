@@ -565,10 +565,11 @@ static void l2fwd_usage(const char *prgname) {
          "      mode's own default (as-shipped | 1g | thp2m | 4k).\n"
          "      dramblast ships on 1g and maglev on thp2m, so -B is what\n"
          "      makes the two modes comparable at equal address translation.\n"
-         "  -A N: dramblast aligned_alloc/free pairs per burst. -1 hoists the\n"
-         "      buffer to a per-lcore allocation made once at init; 0 is as\n"
-         "      shipped; N>0 adds N extra pairs, so that sweeping N measures\n"
-         "      what a pair actually costs instead of assuming it.\n"
+         "  -A N: dramblast aligned_alloc/free pairs per burst. -1 (default\n"
+         "      since REFLECT_PATH s8) = results buffer hoisted to per-lcore\n"
+         "      allocation made once at init, no pair per burst; 0 = one pair\n"
+         "      per burst (default before s8, every earlier figure); N>0 = one\n"
+         "      pair plus N extra, so sweeping N measures what a pair costs.\n"
          "  -Q DEPTH: dramblast prefetch pipeline depth (power of two, 64 as\n"
          "      shipped). Separates a pipeline-ramp cost from an allocator cost:\n"
          "      only the former responds to this.\n"
@@ -617,12 +618,10 @@ static int l2fwd_parse_args(int argc, char **argv) {
     case 'A':
       dramblast_alloc_pairs = (int)strtol(optarg, NULL, 10);
       if (dramblast_alloc_pairs < -1 || dramblast_alloc_pairs > 64) {
-        fprintf(stderr, "Error: -A %s out of range (-1 hoisted, 0 as shipped, "
-                        "up to 64 extra pairs).\n", optarg);
+        fprintf(stderr, "Error: -A %s out of range (-1 hoisted = default, "
+                        "0 one pair per burst, up to 64 extra pairs).\n", optarg);
         return -1;
       }
-      printf("dramblast alloc pairs per burst: %d%s\n", dramblast_alloc_pairs,
-             dramblast_alloc_pairs < 0 ? " (hoisted to a per-lcore buffer)" : "");
       break;
     case 'Q':
       dramblast_queue_depth = (int)strtol(optarg, NULL, 10);
@@ -911,8 +910,13 @@ int main(int argc, char **argv) {
              "-m sashstore is not wired into l2fwd_main_loop; it would "
              "silently forward with a constant MAC and report the numbers as "
              "sashstore's. Use maglev, dramblast or none.\n");
-  else if (l2fwd_dramblast_enabled)
+  else if (l2fwd_dramblast_enabled) {
+    /* Printed always, not only when -A given: default changed -1 <- 0 in
+       REFLECT_PATH s8, so a log without -A must still say which it ran. */
+    printf("dramblast alloc pairs per burst: %d%s\n", dramblast_alloc_pairs,
+           dramblast_alloc_pairs < 0 ? " (hoisted to a per-lcore buffer)" : "");
     dramblast_init();
+  }
 
   if (dramblast_prefill_alpha > 0) {
     if (!l2fwd_dramblast_enabled)

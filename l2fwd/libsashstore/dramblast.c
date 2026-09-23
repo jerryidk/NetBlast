@@ -238,9 +238,11 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
 /*
  * How many aligned_alloc/free round trips each burst pays.
  *
- *   -1  hoisted: none at all, a per-lcore buffer allocated once at init
- *    0  as shipped: exactly one pair, the aligned_alloc/free below
- *    n  as shipped plus n extra pairs, to calibrate what a pair costs here
+ *   -1  hoisted (DEFAULT since REFLECT_PATH s8): none at all, per-lcore
+ *       buffer allocated once at init
+ *    0  one pair per burst, the aligned_alloc/free below. Default before
+ *       s8: every earlier figure and every archived log without -A
+ *    n  one pair plus n extra pairs, to calibrate what a pair costs here
  *
  * This exists because the per-burst cost C is measurable (~645 cycles/burst for
  * dramblast, against ~0 for maglev) but its composition is not. A hot-tcache
@@ -250,7 +252,13 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
  * actually costs on this machine, and the intercept at n = -1 is whatever the
  * per-burst cost is that has nothing to do with the allocator.
  */
-int dramblast_alloc_pairs = 0;
+/* Default -1, WHY: pair = ~500 cycles/burst (INVESTIGATION s5.13, glibc
+   _int_memalign under arena lock, 64 B alignment), alloc+free phases ~10
+   ticks/pkt (REFLECT_PATH s3.2); buffer size known at compile time
+   (DRAMBLAST_MAX_BURST), so per-burst allocation buys nothing. Values keep
+   their meaning, only default moved: archived `-A 0` / `-A n` still mean
+   one pair / one plus n. */
+int dramblast_alloc_pairs = -1;
 
 /*
  * Depth of the software prefetch pipeline, DRAMBLAST_FIND_QUEUE_SIZE as shipped.

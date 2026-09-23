@@ -542,6 +542,10 @@ BLOCKS=("${@:-control crossover alloc depth repeat}")
 # ran after it and quietly halve those sweeps.
 run() {  # run <tag> <mode> <extra args...>
   local tag=$1 mode=$2; shift 2
+  # Matrix = archived P + C/B fit; its "as shipped" arms mean one alloc/free
+  # pair per burst. Default became -A -1 (hoisted) in REFLECT_PATH s8, so pin
+  # -A 0 first; an arm's own -A (ahoist, a2..a8) comes later, getopt last wins.
+  [ "$mode" = dramblast ] && set -- -A 0 "$@"
   echo "### $tag  mode=$mode  extra='$*'  $(date -u +%H:%M:%S)"
   # Per-MODE output file. `tee "$OUT/$tag.out"` truncates, so the control block --
   # the only one that runs two modes under one tag -- silently threw away the
@@ -1465,6 +1469,8 @@ check() {  # check <description> <expected-min> <count>
 # Disassemble just dramblast_process_frames. Its amplification loop must still
 # call both halves of the pair; one call without the other means half the round
 # trip was elided and the measured cost is wrong rather than absent.
+# Since REFLECT_PATH s8 default is -A -1 (hoisted): default run calls neither.
+# Calls must still exist for -A 0 / -A n arms, so check unchanged: >= 1 each.
 DIS=$(objdump -d --disassemble='dramblast_process_frames' "$BIN" 2>/dev/null)
 if [ -z "$DIS" ]; then
   # LTO or inlining may have renamed it; fall back to the whole binary, which is

@@ -67,7 +67,7 @@ typedef struct {
 #define DRAMBLAST_BUCKET_IDX_MASK ~0x3
 #define DRAMBLAST_SIMD_KEY_MASK 0b01010101
 extern int dramblast_queue_depth;  /* prefetch pipeline depth, power of two */
-extern int dramblast_alloc_pairs; /* -1 hoisted, 0 as shipped, n extra pairs */
+extern int dramblast_alloc_pairs; /* -1 hoisted (default), 0 one pair/burst, n extra */
 void dramblast_init(void);
 void dramblast_process_frames(dramblast_arg_t* args, unsigned int args_len, uint64_t* ret, unsigned int id);
 void dramblast_destroy(void);
