@@ -20,7 +20,7 @@ import pathlib
 import re
 import sys
 
-DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
+DOCS = pathlib.Path(__file__).resolve().parent.parent.parent / "docs"  # archive/ -> repo
 # load() rebinds DOCS, so the real location is captured once here. Without it
 # the self-test's restore step copied the scratch directory onto itself -- the
 # same shape as everything else in 5.24/5.25: a helper quietly mutating shared

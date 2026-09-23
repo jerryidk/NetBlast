@@ -5,6 +5,11 @@ intermediate reasoning removed, reversals kept where they stop a bad number
 coming back. Section numbers are stable — commit messages and code comments
 cite them.
 
+> **2026-09-22 rename.** Log below uses file names of its time. l2fwd shell scripts now
+> `l2fwd/harness.sh <sub>`, Python now `l2fwd/analysis.py <sub>`, one-off tools now
+> `l2fwd/archive/`. Old -> new table: `l2fwd/README.md`. `file:line` citations below point
+> at old files; use `git show 98ea20e:l2fwd/<file>`.
+
 ---
 
 ## 1. What the data shows

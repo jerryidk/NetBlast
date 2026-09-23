@@ -1,3 +1,7 @@
+Regenerated against l2fwd/harness.sh, which absorbed counter_groups.sh and
+saturation.sh. Latency half already landed (G_LATENCY, `latency` group); patch
+now carries coherence half only.
+
 Adds the two resources §5.27 enumerated the machine against but never listed:
 DRAM *latency* as distinct from bandwidth, and inter-core coherence traffic.
 
@@ -50,31 +54,12 @@ The 0xd2 umask assignments in particular differ across microarchitectures; they
 are written here from the Golden Cove server encoding and are the single most
 likely thing in this file to be wrong.
 
---- a/l2fwd/counter_groups.sh
-+++ b/l2fwd/counter_groups.sh
-@@ -57,6 +57,38 @@
- cpu/event=0xa3,umask=0x06,cmask=0x06,name=stalls_l3_miss/,\
- LLC-load-misses"
+--- a/l2fwd/harness.sh
++++ b/l2fwd/harness.sh
+@@ -98,6 +98,23 @@
+ cpu/event=0x20,umask=0x08,name=offcore_reqs_outstanding_data_rd/,\
+ cpu/event=0x21,umask=0x08,name=offcore_reqs_data_rd/"
  
-+# --- DRAM latency, as distinct from DRAM bandwidth ------------------------
-+# Little's law: mean outstanding data reads divided by the data-read
-+# completion rate is the mean latency of one, in core cycles. Bandwidth can
-+# sit at 4% while latency is the thing the core is waiting on, which is
-+# exactly the q=23 signature of §5.31, and no group so far can tell them
-+# apart.
-+#
-+# Kept in its own group rather than added to G_FB: FB_FULL is 0x48-family and
-+# §5.27 records that three simultaneous 0x48 events collide in the event
-+# scheduler. Two 0x2x events beside it is not worth the risk for one counter.
-+#
-+# Known answer for validate_counters.sh: bench_membw's dependent pointer
-+# chase. MLP is ~1 there by construction, so this ratio must come out at
-+# roughly one full memory latency. A reading of 0 means the encoding did not
-+# resolve; a reading near 1 means it resolved to the wrong event.
-+G_LATENCY="cycles,\
-+cpu/event=0x20,umask=0x08,name=offcore_reqs_outstanding_data_rd/,\
-+cpu/event=0x21,umask=0x08,name=offcore_reqs_data_rd/"
-+
 +# --- inter-core coherence: are the workers fighting over lines? -----------
 +# A per-core resource holds its utilisation flat as cores are added; a shared
 +# one climbs. Coherence traffic does neither -- it GROWS with core count
@@ -93,11 +78,13 @@ likely thing in this file to be wrong.
 +cpu/event=0xd2,umask=0x04,name=mem_load_l3_hit_xsnp_fwd/"
 +
  # --- DRAM bandwidth (uncore, per socket; must be collected system-wide) ----
---- a/l2fwd/saturation.sh
-+++ b/l2fwd/saturation.sh
-@@ -80,6 +80,8 @@
-     mlp)      echo "$G_MLP" ;;
+ # A separate PMU from the core counters, so this does not compete with them for
+ # general-purpose counters and may be collected alongside.
+@@ -583,6 +600,7 @@
      fb)       echo "$G_FB" ;;
      tlbmem)   echo "$G_TLBMEM" ;;
-+    latency)  echo "$G_LATENCY" ;;
+     latency)  echo "$G_LATENCY" ;;
 +    coherence) echo "$G_COHERENCE" ;;
+     bw)       echo "$G_BW" ;;
+     *) echo "FATAL: unknown group $1" >&2; exit 1 ;;
+   esac

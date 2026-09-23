@@ -17,7 +17,8 @@ import pathlib
 import statistics as st
 import sys
 
-from plotlib import DOCS, esc, wrap_caption
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))  # archive/ -> l2fwd/
+from analysis import DOCS, esc, wrap_caption
 
 SURFACE, INK, INK_2, GRID = "#fbfaf7", "#1a1a1a", "#5a5a5a", "#e0ddd6"
 BLUE, ORANGE, GREEN = "#12707f", "#bb551c", "#4a7a3a"

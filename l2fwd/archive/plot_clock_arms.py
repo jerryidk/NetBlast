@@ -20,7 +20,10 @@ import matplotlib.pyplot as plt
 
 # Design tokens, rcParams and the two drawing primitives are shared with
 # plot_sweep.py; see l2fwd/plotlib.py.
-from plotlib import (DOCS, INK, INK_2, INK_MUTED, BLUE, ORANGE, RC,  # noqa: E402
+import pathlib
+import sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))  # archive/ -> l2fwd/
+from analysis import (DOCS, INK, INK_2, INK_MUTED, BLUE, ORANGE, RC,  # noqa: E402
                      line, style)
 
 TSC_MHZ = 2100.0      # invariant TSC rate; identical in BOTH arms

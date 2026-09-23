@@ -52,6 +52,7 @@ BINDIR="${1:?usage: $0 <bindir> <outdir> [repeats]}"
 OUTDIR="${2:?usage: $0 <bindir> <outdir> [repeats]}"
 REPEATS="${3:-3}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+L2="$(dirname "$HERE")"   # archive/ -> l2fwd/
 
 for arm in shipped maskfix; do
   [ -x "$BINDIR/l2fwd.$arm" ] || { echo "FATAL: $BINDIR/l2fwd.$arm missing" >&2; exit 1; }
@@ -71,13 +72,13 @@ fi
 for r in $(seq 1 "$REPEATS"); do
   for arm in shipped maskfix; do
     echo "=== repeat $r, arm $arm ==="
-    cp "$BINDIR/l2fwd.$arm" "$HERE/build/l2fwd"
-    QUEUES="1 2 3 4 5" "$HERE/sweep.sh" "$OUTDIR" "r${r}_${arm}" dramblast \
+    cp "$BINDIR/l2fwd.$arm" "$L2/build/l2fwd"
+    QUEUES="1 2 3 4 5" "$L2/harness.sh" sweep "$OUTDIR" "r${r}_${arm}" dramblast \
       | tee -a "$OUTDIR/summary.txt"
   done
 done
 
 # Leave the shipped binary in place, so a later run that forgets to choose an
 # arm gets the as-shipped one rather than whichever ran last.
-cp "$BINDIR/l2fwd.shipped" "$HERE/build/l2fwd"
+cp "$BINDIR/l2fwd.shipped" "$L2/build/l2fwd"
 echo "ALL SWEEPS COMPLETE"

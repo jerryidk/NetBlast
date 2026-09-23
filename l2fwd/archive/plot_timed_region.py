@@ -27,7 +27,9 @@ matplotlib lives in the nix dev shell and this has to run from a plain shell.
 import csv
 import sys
 
-from plotlib import DOCS, check_extents, esc, wrap
+import pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))  # archive/ -> l2fwd/
+from analysis import DOCS, check_extents, esc, wrap
 
 SURFACE, INK, INK_2, GRID = "#fbfaf7", "#1a1a1a", "#5a5a5a", "#e0ddd6"
 MUTED, RIG = "#9a9a9a", "#b3123c"

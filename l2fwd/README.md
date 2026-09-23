@@ -37,33 +37,81 @@ argv rather than in the environment, because the sweep harness launches through
 
 ## Measurement harness
 
-Everything that produced a number lives here, not in a scratch directory.
+Everything that produced a number lives here, not in scratch dir. Two files:
+`harness.sh` runs things (shell), `analysis.py` reads results (Python).
 
 ```
-./sweep.sh <outdir> <tag> <mode>     # one ten-queue sweep; QUEUES=... for a subset
-./run_matrix.sh [block ...]          # the experiment matrix: control crossover
-                                     #   alloc depth repeat depthrep trio
-python3 extract_results.py /users/sohamb/sweeps ../docs/results_reproduced.json \
-        /users/sohamb/sweeps/*.out   # logs -> docs/results_reproduced.json
-python3 analyse_matrix.py [--plot]   # every result, with its own falsification test
-python3 plot_matrix.py               # the three-panel figure, no dependencies
-python3 make_report.py               # docs/report.html
-bash check_codegen.sh                # the alloc/free pairs and prefetches still exist
-./page_watch.sh & python3 verify_backing.py <log>   # the backing each run ACTUALLY got
+./harness.sh sweep <outdir> <tag> <mode>  # one ten-queue sweep; QUEUES=... for subset
+./harness.sh matrix [block ...]           # experiment matrix: control crossover
+                                          #   alloc depth repeat depthrep trio
+./harness.sh saturation <outdir> <tag> [mode]   # which resource runs out first
+./harness.sh validate [cpu] [bench_membw]       # prove PMU counters (clobbers .dram_ceiling!)
+./harness.sh ceiling <outdir> [--hk]            # DRAM ceiling -> .dram_ceiling
+./harness.sh clock {pinned|turbo|show}          # core clock arms
+./harness.sh codegen [binary]             # alloc/free pairs and prefetches still exist
+./harness.sh pagewatch & python3 analysis.py backing <log>   # backing each run ACTUALLY got
+
+python3 analysis.py extract /users/sohamb/sweeps ../docs/results_reproduced.json \
+        /users/sohamb/sweeps/*.out        # logs -> docs/results_reproduced.json
+python3 analysis.py fit [--plot]          # P + C/B burst model
+python3 analysis.py matrix [--plot]       # every result, with its own falsification test
+python3 analysis.py plot-matrix           # three-panel figure, no dependencies
+python3 analysis.py report                # docs/report.html
+python3 analysis.py plot-sweep            # queue-sweep PNGs (matplotlib, nix shell)
+python3 analysis.py saturation <outdir>   # docs/saturation.svg
+python3 analysis.py plot-latency <outdir> # docs/latency_vs_bandwidth.svg
+python3 analysis.py plot-ceiling <csv>    # docs/dram_ceiling.svg
+python3 analysis.py selftest [--real]     # fire perf multiplexing guard
 ```
 
-`plotlib.py` is not a command. It holds what the figure scripts share — the `docs/`
-path, XML escaping, caption wrapping, the `<text>`-extent check against the viewBox,
-and the matplotlib palette and axis helpers — so a plotter is the figure and nothing
-else. It imports no plotting library at module scope, because the SVG plotters exist
-precisely so figures can be regenerated outside the nix dev shell.
+`./harness.sh` or `python3 analysis.py` alone prints sub list. Each sub takes
+same args, env knobs, output paths as old script it replaced.
+
+`analysis.py` imports no plotting library at module scope: SVG subs must run
+from plain shell, outside nix dev shell. matplotlib subs import it lazily.
+
+`bench_membw.c` stays own file: `harness.sh ceiling`/`validate` build and run it.
+
+`archive/` holds one-off investigation tools whose question is answered (mask-fix
+sweep, dramblast arms, timed-region and flowhash benches, clock arms, report
+number checks, userspace-ice comparison). Kept runnable, not maintained. See
+`archive/README.md`.
+
+### Old name -> new name (2026-09-22)
+
+`docs/INVESTIGATION.md` and commit messages cite old names.
+
+| old | new |
+|---|---|
+| `sweep.sh` | `harness.sh sweep` |
+| `run_matrix.sh` | `harness.sh matrix` |
+| `saturation.sh` | `harness.sh saturation` |
+| `validate_counters.sh` | `harness.sh validate` |
+| `dram_ceiling.sh` | `harness.sh ceiling` |
+| `set_clock.sh` | `harness.sh clock` |
+| `page_watch.sh` | `harness.sh pagewatch` |
+| `check_codegen.sh` | `harness.sh codegen` |
+| `counter_groups.sh` | `counter_groups()` in `harness.sh` |
+| `extract_results.py` | `analysis.py extract` |
+| `fit_burst_model.py` | `analysis.py fit` |
+| `analyse_matrix.py` | `analysis.py matrix` |
+| `make_report.py` | `analysis.py report` |
+| `plot_matrix.py` | `analysis.py plot-matrix` |
+| `plot_sweep.py` | `analysis.py plot-sweep` |
+| `analyse_saturation.py` | `analysis.py saturation` |
+| `plot_latency_saturation.py` | `analysis.py plot-latency` |
+| `plot_dram_ceiling.py` | `analysis.py plot-ceiling` |
+| `verify_backing.py` | `analysis.py backing` |
+| `test_perf_guard.py` | `analysis.py selftest` |
+| `plotlib.py`, `perf_csv.py` | shared sections of `analysis.py` |
+| `run_maskfix_sweep.sh`, `analyse_maskfix_sweep.py`, `check_dramblast_arms.sh`, `bench_dramblast_path.c`, `test_dramblast_find.c`, `plot_dramblast_arms.py`, `bench_timed_region.c`, `plot_timed_region.py`, `bench_flowhash.c`, `plot_clock_arms.py`, `check_arms.py`, `check_report_numbers.py`, `compare_userspace_ice.py` | `archive/` |
 
 Two cautions learned the hard way, both written up in `docs/INVESTIGATION.md`:
 
 - Serving N queues needs **N+1** lcores — one worker each plus the main lcore.
   Giving N makes DPDK exit with "Not enough cores", and the run then reports a
   floor rather than a measurement.
-- `verify_backing.py` must be run *after* `page_watch.sh` has actually sampled
+- `analysis.py backing` must be run *after* `harness.sh pagewatch` has actually sampled
   the arms in question. It fails loudly on an arm it has no samples for, because
   it used to pass silently on one.
 

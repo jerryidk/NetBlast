@@ -18,7 +18,7 @@
 > working tree, and do not refresh their line numbers: there is nothing left to
 > point them at.
 
-Companion script: [`../l2fwd/compare_userspace_ice.py`](../l2fwd/compare_userspace_ice.py),
+Companion script: [`../l2fwd/archive/compare_userspace_ice.py`](../l2fwd/archive/compare_userspace_ice.py),
 which derives every number quoted here. Sibling tree: `/users/sohamb/userspace-ice`,
 imported onto this box at 02:01 on 2026-09-17.
 
@@ -251,7 +251,7 @@ also does and does not count.
 
 ## 5. The measurement
 
-`l2fwd/compare_userspace_ice.py` derives NetBlast's whole-loop cost from throughput and
+`l2fwd/archive/compare_userspace_ice.py` derives NetBlast's whole-loop cost from throughput and
 reads the `userspace-ice` figures out of that project's campaign CSVs. Output:
 
 ```
@@ -386,7 +386,7 @@ surprising on first reading:
 ## 8. Reproducing
 
 ```bash
-python3 l2fwd/compare_userspace_ice.py --ice-root ../userspace-ice
+python3 l2fwd/archive/compare_userspace_ice.py --ice-root ../userspace-ice
 ```
 
 The script reads `results/20260813-190253-all11-fp-off-10s-3rep` from the `userspace-ice`

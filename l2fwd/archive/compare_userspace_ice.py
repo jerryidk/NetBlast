@@ -24,7 +24,7 @@ same footing, and reads the userspace-ice figures straight out of that project's
 campaign CSVs rather than restating them.
 
 Usage:
-    python3 l2fwd/compare_userspace_ice.py [--ice-root ../userspace-ice]
+    python3 l2fwd/archive/compare_userspace_ice.py [--ice-root ../userspace-ice]
 """
 
 import argparse

@@ -7,6 +7,10 @@ repository has to be carried over, because the only untracked things are build o
 build. `l2fwd/.dram_ceiling` **is** tracked and carries the measured 184.2 GB/s — do not
 let anything overwrite it (see the trap in §0.5).*
 
+> **2026-09-22:** l2fwd scripts consolidated. Shell -> `l2fwd/harness.sh <sub>`, Python ->
+> `l2fwd/analysis.py <sub>`, one-off investigation tools -> `l2fwd/archive/`. Old-name -> new-name
+> table in `l2fwd/README.md`. Commands below already use new names.
+
 ## Why there is a runbook rather than "just re-run the sweep"
 
 Two things changed while the box was gone, and on a new pair of machines a third joins
@@ -48,14 +52,14 @@ L3, 100 GbE on PCIe Gen4 x16**. Check each row before trusting anything downstre
 
 | fact | baked in as | where | what goes wrong if it differs |
 |---|---|---|---|
-| **CPU model** family 6 / 207 | every raw PMU encoding | `counter_groups.sh` | **silent.** `perf` has no JSON event file for this part, so every interesting counter is raw-encoded. A wrong encoding reads a plausible number, or reads zero — indistinguishable from a real zero (§5.9, §5.23) |
-| **uncore IMC** encoding | `event=0x05,umask=0xcf/0xf0`, enumerated over `uncore_imc_N` | `counter_groups.sh` | silent; the DRAM bandwidth column becomes fiction |
-| **base freq = TSC rate** 2.1 GHz | `PINNED_KHZ=2100000` | `set_clock.sh` | ticks stop equalling core cycles. The §5.33 identity and every "cycles" figure lose their units |
-| **topology** sibling(k)=k+28 | bench `0-23`, housekeeping `24-27,52-55` | `sweep.sh`, `saturation.sh`, §0.3 | benchmark and housekeeping can land on the same physical core |
-| **L3** 52.5 MiB | buffer sizing "several times L3" | `bench_dramblast_path.c`, `bench_membw.c`, `dram_ceiling.sh` `MIB` | a buffer that fits in L3 measures cache, not DRAM |
+| **CPU model** family 6 / 207 | every raw PMU encoding | `harness.sh` (`counter_groups`) | **silent.** `perf` has no JSON event file for this part, so every interesting counter is raw-encoded. A wrong encoding reads a plausible number, or reads zero — indistinguishable from a real zero (§5.9, §5.23) |
+| **uncore IMC** encoding | `event=0x05,umask=0xcf/0xf0`, enumerated over `uncore_imc_N` | `harness.sh` (`counter_groups`) | silent; the DRAM bandwidth column becomes fiction |
+| **base freq = TSC rate** 2.1 GHz | `PINNED_KHZ=2100000` | `harness.sh clock` | ticks stop equalling core cycles. The §5.33 identity and every "cycles" figure lose their units |
+| **topology** sibling(k)=k+28 | bench `0-23`, housekeeping `24-27,52-55` | `harness.sh sweep`, `harness.sh saturation`, §0.3 | benchmark and housekeeping can land on the same physical core |
+| **L3** 52.5 MiB | buffer sizing "several times L3" | `archive/bench_dramblast_path.c`, `bench_membw.c`, `harness.sh ceiling` `MIB` | a buffer that fits in L3 measures cache, not DRAM |
 | **DRAM ceiling** 184.2 GB/s | `DRAM_ACHIEVED_GBS` | `.dram_ceiling` | every saturation percentage |
-| **NIC** 100 GbE, Gen4 x16 | line rate 93.28 Mpps | `plot_sweep.py`, `plot_matrix.py`, `analyse_saturation.py`, `counter_groups.sh` | every "% of line rate" and the PCIe column |
-| **PCI addresses** | l2fwd **blocks** `0000:00:05.0`; pktgen **allows** `17:00.0` | `sweep.sh`, `saturation.sh`, `run.sh`; `pktgen/run.sh` | wrong port, or two ports enumerated where `-p 1` expects one |
+| **NIC** 100 GbE, Gen4 x16 | line rate 93.28 Mpps | `analysis.py plot-sweep`, `analysis.py plot-matrix`, `analysis.py saturation`, `harness.sh` (`counter_groups`) | every "% of line rate" and the PCIe column |
+| **PCI addresses** | l2fwd **blocks** `0000:00:05.0`; pktgen **allows** `17:00.0` | `harness.sh sweep`, `harness.sh saturation`, `run.sh`; `pktgen/run.sh` | wrong port, or two ports enumerated where `-p 1` expects one |
 
 ```
 lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Socket|NUMA node\(s\)|L3'
@@ -67,13 +71,13 @@ lspci | grep -i eth                                                 # BDFs for b
 
 **If any row differs, three things must happen before §2 means anything:**
 
-1. Re-encode and **re-validate** the PMU events (§1.1). `validate_counters.sh` exists for
+1. Re-encode and **re-validate** the PMU events (§1.1). `harness.sh validate` exists for
    exactly this and each of its checks carries a prediction a wrong encoding would fail.
 2. Re-measure `.dram_ceiling` (§1.2) — it is a property of the machine, so on a new one the
    committed 184.2 is simply another machine's number.
 3. Recompute the cpuset split (§0.3) from the real sibling layout, and fix the PCI
    addresses. `-b 0000:00:05.0` is a **blocklist** entry with no environment knob — it must
-   be edited in `sweep.sh:110`, `saturation.sh:121` and `run.sh:34`, or `-p 1` will not
+   be edited in `harness.sh:245` (sweep), `harness.sh:620` (saturation) and `run.sh:34`, or `-p 1` will not
    select what you think it selects. `pktgen/run.sh` takes `PCI=`.
 
 **And one figure becomes a cross-machine comparison**, on top of the code and instrument
@@ -82,16 +86,16 @@ changes in the preamble: nothing measured on the new pair may be put in a series
 
 #### A core-selection decision to make here, not later
 
-`sweep.sh` builds its lcore list with a **stride of 2** — `seq -s, 0 2 $((q*2))` — while
-`saturation.sh` uses consecutive CPUs, `seq -s, 0 1 $q`. The stride is inherited from
+`harness.sh sweep` builds its lcore list with a **stride of 2** — `seq -s, 0 2 $((q*2))` — while
+`harness.sh saturation` uses consecutive CPUs, `seq -s, 0 1 $q`. The stride is inherited from
 `run.sh` and §2 of `INVESTIGATION.md` already records that it is pointless on this topology:
 CPUs 0-27 are all distinct physical cores, so stepping by 2 just spends twice the CPU range
 for the same core count.
 
 It has never bitten because `MAX_QUEUES` defaults to 10, which needs CPU 20. At **q=12 it
 needs CPU 24**, which is outside `BENCH_CPUS=0-23` and inside housekeeping. Decide on the
-new machine whether to keep the stride (and cap the sweep accordingly) or make `sweep.sh`
-consecutive like `saturation.sh` — but decide it deliberately and write down which, because
+new machine whether to keep the stride (and cap the sweep accordingly) or make `harness.sh sweep`
+consecutive like `harness.sh saturation` — but decide it deliberately and write down which, because
 the two harnesses currently put the same queue count on different cores.
 
 ### 0.1 Tree and build
@@ -130,7 +134,7 @@ them, so the binary faults before it reaches the forwarding loop, in every mode 
 
 ```
 ./scripts/constant_freq.sh 2.1GHz          # scaling_min=max, C-states off, no_turbo=1 (sudo's internally)
-./l2fwd/set_clock.sh show                  # read back EVERY core, not cpu0
+./l2fwd/harness.sh clock show              # read back EVERY core, not cpu0
 ```
 
 2.1 GHz is not a taste: it is this SKU's `base_frequency` *and* exactly the invariant TSC
@@ -138,10 +142,10 @@ rate, so `rte_rdtsc()` ticks equal core cycles and the tick-to-cycle correction 
 rather than an estimated ~1.74. §5.33's validation identity (ticks/packet × packets/second
 = TSC rate) only reads as core cycles at this setting.
 
-**Verify:** `set_clock.sh` prints the *distinct* `scaling_max`/`scaling_min` across all
+**Verify:** `harness.sh clock` prints the *distinct* `scaling_max`/`scaling_min` across all
 cores and warns if they disagree. A partial write leaves a subset of cores at another clock
 and perturbs the sweep without failing anything. sysfs reports the P-state *request*, never
-delivery — the delivered figure is the `freq=NNNNMHz` field `sweep.sh` prints per run, and
+delivery — the delivered figure is the `freq=NNNNMHz` field `harness.sh sweep` prints per run, and
 it should read ~2095 MHz.
 
 Also apply, per §3.4b: stop `irqbalance`, `nmi_watchdog=0`, THP `defrag` → `madvise`.
@@ -170,19 +174,19 @@ live run with `pgrep -x l2fwd` — **not** `pgrep -f 'l2fwd.*dramblast'`, which 
 sudo ./scripts/bind-dpdk-devices.sh vfio-pci <iface>
 ```
 
-**Verify:** `sweep.sh` prints `hp1g=<before>-><during>` per run. dramblast's 8 GiB table is
+**Verify:** `harness.sh sweep` prints `hp1g=<before>-><during>` per run. dramblast's 8 GiB table is
 nine 1 GiB pages, so a run that does not consume them is not backed the way it claims;
-`l2fwd/verify_backing.py` checks this directly.
+`python3 l2fwd/analysis.py backing` checks this directly.
 
 ### 0.5 The `.dram_ceiling` trap — read before running anything
 
-`validate_counters.sh` ends a block with `} > "$HERE/.dram_ceiling"` and **destroys the
+`harness.sh validate` ends a block with `} > "$HERE/.dram_ceiling"` and **destroys the
 file**. It blanked the measured 184.2 once already; the analysis then falls through to
 `PEER_READ_24=227.53`, which is a lower bound, and dividing by a lower bound *overstates*
 saturation — silently reproducing §5.30's exact defect.
 
 ```
-cp l2fwd/.dram_ceiling l2fwd/.dram_ceiling.bak     # before validate_counters.sh
+cp l2fwd/.dram_ceiling l2fwd/.dram_ceiling.bak     # before harness.sh validate
 ```
 
 `git checkout l2fwd/.dram_ceiling` also restores it, since it is tracked.
@@ -193,18 +197,18 @@ cp l2fwd/.dram_ceiling l2fwd/.dram_ceiling.bak     # before validate_counters.sh
 old host, is not in git, and does not survive a fresh allocation. On machines dedicated to
 NetBlast there is nobody to coordinate with and none of it applies.
 
-Nothing in the harness requires it. `sweep.sh` and `saturation.sh` place themselves — the
+Nothing in the harness requires it. `harness.sh sweep` and `harness.sh saturation` place themselves — the
 first through `systemd-run --scope --slice=bench.slice`, the second by writing its own pid
-to `/sys/fs/cgroup/bench.slice/cgroup.procs` and `exec`ing. Only `dram_ceiling.sh`
+to `/sys/fs/cgroup/bench.slice/cgroup.procs` and `exec`ing. Only `harness.sh ceiling`
 *documents* a `benchctl run` launch line, and what it actually needs is simply to be on
 bench cores; §1.2 gives the direct form.
 
 What does **not** go away with the shared box is the reason the tool existed: a probe
 confined to the wrong cpuset does not fail, it returns a plausible wrong number. Keep
 `bench.slice` and the §0.3 split even though nothing else is competing for the machine —
-housekeeping, kernel threads and the stats lcore are still there, and `dram_ceiling.sh`
+housekeeping, kernel threads and the stats lcore are still there, and `harness.sh ceiling`
 still guards itself by reading its own `Cpus_allowed_list`. That guard pattern-matches the
-**literal** old housekeeping set (`*24-27*|*52-55*`, `dram_ceiling.sh:82`), so if §0.0
+**literal** old housekeeping set (`*24-27*|*52-55*`, `harness.sh:1093`), so if §0.0
 changed the split, change the guard with it or it will wave through exactly the case it
 exists to catch.
 
@@ -220,7 +224,7 @@ time" — the last time was a different host allocation.
 
 ```
 cp l2fwd/.dram_ceiling l2fwd/.dram_ceiling.bak
-sudo ./l2fwd/validate_counters.sh 24 ./l2fwd/bench_membw
+sudo ./l2fwd/harness.sh validate 24 ./l2fwd/bench_membw
 cp l2fwd/.dram_ceiling.bak l2fwd/.dram_ceiling
 ```
 
@@ -229,7 +233,7 @@ catch: an encoding that is wrong and reads a plausible number, and one that is n
 on this part and reads zero, which is indistinguishable from a real zero.
 
 **On a different SKU this is not a re-validation, it is a re-derivation.** Every encoding in
-`counter_groups.sh` is raw because this part has no `perf` JSON event file, so the numbers
+`harness.sh` (`counter_groups`) is raw because this part has no `perf` JSON event file, so the numbers
 in it are meaningful only for family 6 model 207. Re-derive each from the new part's SDM
 tables first, then run this script — validating the old encodings on a new part tells you
 nothing except that they happened to decode to something. The uncore IMC events
@@ -252,11 +256,11 @@ No `benchctl` needed — it only has to run on bench cores:
 
 ```
 sudo bash -c 'printf "%s" $$ > /sys/fs/cgroup/bench.slice/cgroup.procs
-              exec taskset -c 0-23 l2fwd/dram_ceiling.sh l2fwd/dram_ceiling_out'
+              exec taskset -c 0-23 l2fwd/harness.sh ceiling l2fwd/dram_ceiling_out'
 ```
 
 Run it from the repository root, and substitute the real bench set for `0-23` if §0.0
-changed it — including in `dram_ceiling.sh`'s own housekeeping guard.
+changed it — including in `harness.sh ceiling`'s own housekeeping guard.
 
 It **must** reach the bench cores; from an agent or user shell the cpuset confines it to
 housekeeping, and four cores is a limit, not a choice — that is where the withdrawn 360.0 came from. The
@@ -304,10 +308,10 @@ only loads the generator host.
 ### Q1 — Re-baseline the trio at the new instrument **(blocking; everything else waits on it)**
 
 ```
-OUT=/users/sohamb/sweeps ./l2fwd/run_matrix.sh trio
+OUT=/users/sohamb/sweeps ./l2fwd/harness.sh matrix trio
 ```
 
-`trio` is **not** in `run_matrix.sh`'s default block list, so it must be named. It runs
+`trio` is **not** in `harness.sh matrix`'s default block list, so it must be named. It runs
 `none` first, then dramblast, then maglev, in one sitting and under one tag — the floor and
 the two engines measured by the same harness within the same hour, which is what makes the
 subtraction that isolates the lookup legitimate. The `none` arm allocates no table at all;
@@ -326,18 +330,18 @@ fit is most sensitive — the high-queue end, which sets the slope.
 
 **Refutes:** if the two batch lines agree across the whole queue range, then empty polls are
 negligible, the published `C = 645 cyc/burst` and the 9.5-packet crossover stand as taken,
-and `fit_burst_model.py` needs no change. If they diverge at high `q`, both figures are
+and `analysis.py fit` needs no change. If they diverge at high `q`, both figures are
 wrong by a measurable amount and must be refitted against `rx_batch_nonempty`.
 
-**Do not repoint `fit_burst_model.py`, `make_report.py` or the `rx_batch == 64` matching
+**Do not repoint `analysis.py fit`, `analysis.py report` or the `rx_batch == 64` matching
 keys before this run.** Repointing them changes published figures by editing a divisor
 rather than by measuring. That is the whole reason they were left alone.
 
 ### Q2 — Saturation, on the fixed find path
 
 ```
-./l2fwd/saturation.sh l2fwd/saturation_out sat3 dramblast
-python3 l2fwd/analyse_saturation.py l2fwd/saturation_out
+./l2fwd/harness.sh saturation l2fwd/saturation_out sat3 dramblast
+python3 l2fwd/analysis.py saturation l2fwd/saturation_out
 ```
 
 No outer `sudo`: the script `sudo`s per run and joins `bench.slice` itself. Tag it `sat3` —
@@ -353,7 +357,7 @@ whose memory behaviour the fix changes.
 broken find and §5.32's headline goes with it. If it rises as before, the finding is
 independent of the defect and is stronger for having survived it.
 
-`analyse_saturation.py` will **refuse** a `summary.txt` written before the timer change
+`analysis.py saturation` will **refuse** a `summary.txt` written before the timer change
 rather than plot an empty axis — if it exits with that message, the summary is from the old
 binary and the run must be redone, not reinterpreted.
 
@@ -373,7 +377,7 @@ unvalidated.
 ### Q4 — The matrix, if Q1 moved anything
 
 ```
-OUT=/users/sohamb/sweeps ./l2fwd/run_matrix.sh          # control crossover alloc depth repeat
+OUT=/users/sohamb/sweeps ./l2fwd/harness.sh matrix   # control crossover alloc depth repeat
 ```
 
 Named with no arguments it runs `control crossover alloc depth repeat` — `trio`, `depthrep`
@@ -383,7 +387,7 @@ experiment. Nothing else in the matrix means anything until that reads flat.
 
 ### Q5 — Regenerate the figures, and eyeball them
 
-The six plotters were refactored onto `l2fwd/plotlib.py` and **have not been re-run since**
+The plotters were refactored onto shared helpers (now the plotlib section of `l2fwd/analysis.py`) and **have not been re-run since**
 — the box went away first. The first regeneration of each committed figure must be compared
 against the version in `docs/`, not trusted.
 
@@ -394,11 +398,11 @@ against the version in `docs/`, not trusted.
 | figure | where | why it is stale |
 |---|---|---|
 | every `cycles_per_pkt` | §5.19, §5.20, `results_reproduced.json` | bracketed the mode branch; new runs print a different region under a different key |
-| `C = 645 cyc/burst` | §5.5-§5.13, `fit_burst_model.py` | fitted against `B` = packets per *poll*, which is deflated at high `q` |
+| `C = 645 cyc/burst` | §5.5-§5.13, `analysis.py fit` | fitted against `B` = packets per *poll*, which is deflated at high `q` |
 | the burst crossover (`B > 9.4`, 9.5 on §5.10's refactored coefficients) | §5.5 | same divisor |
 | the dramblast/maglev tables | §5.5-§5.20 | taken on the pre-mask-fix find path |
 | §5.32's latency curve | §5.32 | same |
-| `compare_userspace_ice.py`'s constants | that script | measured under the old instrument; left as-is deliberately, re-measure rather than edit |
+| `archive/compare_userspace_ice.py`'s constants | that script | measured under the old instrument; left as-is deliberately, re-measure rather than edit |
 | **everything, if §0.0 found a different part** | all of `docs/` | a cross-machine comparison on top of the other two. Ceilings (184.2 GB/s, 93.28 Mpps, Gen4 x16, 52.5 MiB L3) are properties of the old host |
 
 **Nothing above is withdrawn.** Each is correct for the code and the region it was taken
@@ -408,18 +412,18 @@ with. What is forbidden is putting an old and a new figure in one series.
 
 ## §4 Traps that have already cost a dataset
 
-1. **`validate_counters.sh` destroys `.dram_ceiling`.** §0.5. Back it up.
+1. **`harness.sh validate` destroys `.dram_ceiling`.** §0.5. Back it up.
 2. **Env vars do not reach `l2fwd`.** Runs launch through `sudo systemd-run`, which strips
    the environment, so an env-var knob falls back to its default and reports a plausible
    wrong number. Every measurement knob (`-B`, `-A`, `-Q`, `-m`) goes in **argv**, which
    also lands in the run's log so each log says what produced it.
 3. **`pgrep -f` matches the wrapper.** Use `pgrep -x l2fwd` to check isolation.
-4. **`sweep.sh`, not `run.sh`.** `run.sh` supplies N lcores for N queues; the assignment
+4. **`harness.sh sweep`, not `run.sh`.** `run.sh` supplies N lcores for N queues; the assignment
    loop skips the main lcore, so it needs N+1 and `rte_exit("Not enough cores")` fires at
    every queue count. §2 of `INVESTIGATION.md`.
 5. **A denied `bench.slice` join used to pass silently.** 35 runs of an idle core read as
-   low, plausible utilisations. `saturation.sh` now captures the launch status and aborts —
+   low, plausible utilisations. `harness.sh saturation` now captures the launch status and aborts —
    confirm it still does if that script is touched.
 6. **`.dram_ceiling` is a derived constant stored away from the thing that derived it.**
-   The project has been bitten by this repeatedly. If `dram_ceiling.sh` is re-run, check the
+   The project has been bitten by this repeatedly. If `harness.sh ceiling` is re-run, check the
    file changed; if it is not re-run, check the file did not.

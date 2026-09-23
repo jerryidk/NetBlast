@@ -40,9 +40,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+L2="$(dirname "$HERE")"   # archive/ -> l2fwd/
 OUT="${1:-${TMPDIR:-/tmp}/dramblast_arms}"
 DPDK_INC="$(sed -n 's/.*-I\(\/nix\/store\/[^ ]*dpdk[^ ]*\/include\).*/\1/p' \
-             "$HERE/build/compile_commands.json" | head -1)"
+             "$L2/build/compile_commands.json" | head -1)"
 CFLAGS="-O3 -g -mavx512f -mavx512dq -march=native -msse4.2
         -DALLOW_EXPERIMENTAL_API -D_GNU_SOURCE -include rte_config.h
         -I$DPDK_INC"
@@ -51,7 +52,7 @@ SRCS="dramblast.c backing.c conshash.c hash.c packettool.c"
 build_arm() {                      # $1 arm name, $2 sed program for the header
   local arm="${1}" edit="${2:-}" d="$OUT/${1}"
   rm -rf "$d"; mkdir -p "$d"
-  cp -r "$HERE/libsashstore" "$d/"
+  cp -r "$L2/libsashstore" "$d/"
   # The drivers are copied in too, not compiled out of the tree. A `#include
   # "libsashstore/dramblast.h"` is resolved relative to the *including file*
   # first, so a driver left in $HERE would read the unpatched header while the
@@ -87,7 +88,7 @@ build_arm prefetchT0 ""
 sed -i 's/#define PREFETCH_T1 1/#define PREFETCH_T1 3/' "$OUT/prefetchT0/libsashstore/dramblast.c"
 
 build_arm hoistloop ""
-patch -s -p3 -d "$OUT/hoistloop/libsashstore" < "$HERE/opt/dramblast-hoist.patch"
+patch -s -p3 -d "$OUT/hoistloop/libsashstore" < "$L2/opt/dramblast-hoist.patch"
 
 build_arm vecspill ""
 # Inverted: the tree now reads the value from the table line, so this puts the

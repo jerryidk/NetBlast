@@ -274,7 +274,7 @@ static void print_stats(void) {
      before the change while meaning something different. Every archived figure
      taken against that phrase stays interpretable precisely because no new log
      carries it: consumers that want the old number find the key absent rather
-     than silently rebound (extract_results.py keeps absent meaning absent). */
+     than silently rebound (analysis.py extract keeps absent meaning absent). */
   if (total_packets_fwded > 0) {
     printf("\nFull-loop cyc per fwd packet: %lu",
            total_loop_duration / total_packets_fwded);

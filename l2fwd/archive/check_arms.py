@@ -11,7 +11,7 @@ Run:  python3 check_arms.py
 import json
 import pathlib
 
-DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
+DOCS = pathlib.Path(__file__).resolve().parent.parent.parent / "docs"  # archive/ -> repo
 TSC_MHZ = 2100.0   # invariant TSC rate, identical in both arms
 
 allc = json.loads((DOCS / "results_reproduced.json").read_text())
