@@ -4,3 +4,8 @@ option('nbprobe', type: 'boolean', value: false,
        description: 'per-burst phase timer (-S/-D flags)')
 option('nbptw', type: 'boolean', value: false,
        description: 'per-packet ptwrite marks for Intel PT')
+# gcc 10.3 (mars-std) knows no sapphirerapids/emeraldrapids; icelake-server =
+# newest server target it has, ISA subset of Xeon Gold 5512U. 'dpdk' = old
+# build: DPDK's -march=nehalem wins. See meson.build arch_args.
+option('march', type: 'string', value: 'icelake-server',
+       description: '-march appended after dependency cflags; dpdk = none (old)')

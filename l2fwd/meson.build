@@ -52,11 +52,20 @@ sources = files(
 	'main.c'
 )
 
+# -march that actually wins. Before 2026-09-23 project `-march=native` lost
+# twice: nix cc-wrapper (NIX_ENFORCE_NO_NATIVE=1) strips it, and DPDK 21.11
+# pkg-config Cflags end `-march=nehalem`, which meson places AFTER project
+# args. Net: nehalem ISA + tune, plus explicit -mavx512f/-mavx512dq only (no
+# BMI2, FMA, LZCNT, MOVBE, AVX-512 BW/VL). Target c_args land after dependency
+# args, so arch_args wins. -Dmarch=dpdk = old behaviour, no -march appended.
+# docs/REFLECT_PATH.md s6.
+arch_args = get_option('march') == 'dpdk' ? [] : ['-march=' + get_option('march')]
+
 subdir('libsashstore')
 
 l2fwd = executable('l2fwd',
 		sources,
-		c_args: [ '-Wno-error=unused-parameter' ],
+		c_args: [ '-Wno-error=unused-parameter' ] + arch_args,
 		install: true,
 		include_directories: libsashstore_inc,
 		link_with: libsashstore,
