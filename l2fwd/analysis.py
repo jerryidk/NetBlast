@@ -5540,8 +5540,22 @@ def nbp_rec_struct(nev_slots):
     return _struct.Struct(f"<Q8I{8 * nev_slots}I6H4I2H")
 
 
+def nbp_resolve(p):
+    """dump path, or its .gz: ring dumps are gzipped after analysis to save disk."""
+    p = pathlib.Path(p)
+    if p.exists():
+        return p
+    gz = p.with_name(p.name + ".gz")
+    return gz if gz.exists() else None
+
+
 def nbp_load(path):
-    b = pathlib.Path(path).read_bytes()
+    path = pathlib.Path(path)
+    if path.suffix == ".gz":
+        import gzip
+        b = gzip.decompress(path.read_bytes())
+    else:
+        b = path.read_bytes()
     hdr = _struct.unpack_from("<8Q", b, 0)
     ver = hdr[1]
     if ver not in NBP_VER or hdr[0] != NBP_VER[ver][0]:
@@ -5670,8 +5684,8 @@ def cmd_probe():
         # dump next to its log wins over the recorded absolute path: logs moved
         # to an archive dir must not read a later run's dump at the old path
         here = [pathlib.Path(lg).parent / pathlib.Path(p).name for p in rec["dumps"]]
-        paths = [str(h) if h.exists() else p for h, p in zip(here, rec["dumps"])]
-        dumps = [nbp_load(p) for p in paths if pathlib.Path(p).exists()]
+        paths = [nbp_resolve(h) or nbp_resolve(p) for h, p in zip(here, rec["dumps"])]
+        dumps = [nbp_load(p) for p in paths if p]
         if rec["dumps"] and len(dumps) != len(rec["dumps"]):
             rec["errors"].append("missing ring dump(s)")
         if dumps:
