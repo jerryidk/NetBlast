@@ -36,7 +36,10 @@ scenarios twice: once through the shipped `dramblast_find_batch_sync`, once
 through `find_batch_fixed` — a transcription of that kernel in this file with
 the SIMD key mask corrected to `0b01010101`. `T6` builds a bucket by hand from
 colliding keys to show the shipped mask returning a wrong value rather than
-merely missing. `T7`–`T9` cover the result-id contract and two sentinel limits.
+merely missing. `T7`–`T9` cover the result-id contract and two sentinel limits. `T11`:
+`flowhash` (static inline in `packettool.h`, unrolled) vs transcription of old
+loop version (HEAD 57bf217): all 16,777,216 pktgen tuples + 10M random frames,
+0 mismatches required, 16,777,216 distinct keys required (REFLECT_PATH §7).
 
 Every test is now a regression guard for a fixed defect in
 `docs/dramblast_analysis.md`. Before the fixes the suite reported
@@ -46,7 +49,7 @@ inserted keys were found.
 ## Status
 
 ```
-pass 27   fail 0
+pass 32   fail 0
 ```
 
 Also clean under sanitizers, which finding C5 previously made impossible:

@@ -46,36 +46,4 @@ void *get_udp_payload(char *frame) {
 	return &frame[ETH_HEADER_LEN + v4len + UDP_HEADER_LEN];
 }
 
-__inline__ uint64_t flowhash(void *frame) {
-	// Warning: This implementation returns 0 for invalid inputs
-	char *f = (char*)frame;
-
-	// Fail early
-	if (f[ETH_HEADER_LEN] >> 4 != 4) {
-        // This shitty implementation can only handle IPv4 :(
-		// printf("unhandled! not ipv4?\n");
-		return 0;
-	}
-
-	char proto = f[ETH_HEADER_LEN + IPV4_PROTO_OFFSET];
-	if (proto != 6 && proto != 17) {
-        // This shitty implementation can only handle TCP and UDP
-		// printf("Unhandled proto %x\n", proto);
-		return 0;
-	}
-
-	size_t v4len = 4 * (f[ETH_HEADER_LEN] & 0b1111);
-
-	uint64_t hash = FNV_BASIS;
-
-    // Hash source/destination IP addresses
-	hash = fnv_1_multi(f + ETH_HEADER_LEN + IPV4_SRCDST_OFFSET, IPV4_SRCDST_LEN, hash);
-
-	// Hash IP protocol number
-	hash = fnv_1_multi(f + ETH_HEADER_LEN + IPV4_PROTO_OFFSET, 1, hash);
-
-    // Hash source/destination port
-	hash = fnv_1_multi(f + ETH_HEADER_LEN + v4len, 4, hash);
-
-	return hash;
-}
+/* flowhash moved to packettool.h as static inline (see there). */

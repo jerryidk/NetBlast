@@ -19,7 +19,7 @@ SRCS := test_dramblast.c $(LIB)/dramblast.c $(LIB)/conshash.c $(LIB)/hash.c \
 .PHONY: all run clean check-c5
 all: run
 
-test_dramblast: $(SRCS) $(LIB)/dramblast.h Makefile
+test_dramblast: $(SRCS) $(LIB)/dramblast.h $(LIB)/packettool.h Makefile
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
 
 run: test_dramblast

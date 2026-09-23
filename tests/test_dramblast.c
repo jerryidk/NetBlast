@@ -21,6 +21,7 @@
 
 #include "dramblast.h"
 #include "conshash.h"
+#include "packettool.h"
 
 /* dramblast.c declares this extern and main.c defines it. */
 uint64_t CAPACITY = 0;
@@ -438,6 +439,110 @@ static void t_zero_key(void) {
   free_table(ht);
 }
 
+/* T11: flowhash rewrite (packettool.h, static inline, unrolled) must give
+ * bit-identical keys to the old one. ref_flowhash = transcription of HEAD
+ * 57bf217 packettool.c flowhash + hash.c fnv_1_multi: signed `char`, 3 calls,
+ * byte loops. Kept here, not in library: it is the spec the new code must hit.
+ * (a) every pktgen tuple: 4 TX lcores 48..51, src 10.<lcore>.0.0 +
+ *     (ctr & (2^22-1)), ctr 1..2^22, src port 1025+lcore*100, dst
+ *     192.168.1.1:80, UDP. Also distinct-key count = 16777216 (s5.1).
+ * (b) 10M random frames: random bytes, version nibble 4 or random, IHL
+ *     0..15, proto 6 / 17 / random. */
+static uint64_t ref_fnv_1_multi(char *data, size_t len, uint64_t state) {
+  for (size_t i = 0; i < len; ++i) {
+    state *= 0x100000001b3ull;
+    state ^= (unsigned char)data[i];
+  }
+  return state;
+}
+
+static uint64_t ref_flowhash(void *frame) {
+  char *f = (char *)frame;
+  if (f[14] >> 4 != 4) return 0;
+  char proto = f[14 + 9];
+  if (proto != 6 && proto != 17) return 0;
+  size_t v4len = 4 * (f[14] & 0b1111);
+  uint64_t hash = 0xcbf29ce484222325ull;
+  hash = ref_fnv_1_multi(f + 14 + 12, 8, hash);
+  hash = ref_fnv_1_multi(f + 14 + 9, 1, hash);
+  hash = ref_fnv_1_multi(f + 14 + v4len, 4, hash);
+  return hash;
+}
+
+static int cmp_u64(const void *a, const void *b) {
+  uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+  return x < y ? -1 : x > y;
+}
+
+static uint64_t xs64(uint64_t *s) { /* xorshift64*, fixed seed: repeatable */
+  *s ^= *s >> 12; *s ^= *s << 25; *s ^= *s >> 27;
+  return *s * 0x2545F4914F6CDD1Dull;
+}
+
+static void t_flowhash_equiv(void) {
+  HDR("T11 flowhash rewrite = old flowhash, bit for bit");
+  const uint32_t mask = (1u << 22) - 1;
+  const size_t n = 4 * ((size_t)mask + 1);
+  uint64_t *keys = malloc(n * sizeof(uint64_t));
+  unsigned char f[128];
+  size_t j = 0, mism = 0, zero = 0;
+  uint64_t dig = 0xcbf29ce484222325ull;
+  for (uint32_t c = 48; c < 52; c++) {
+    uint32_t base = (10u << 24) | (c << 16);
+    uint16_t sport = 1025 + c * 100;
+    for (uint32_t ctr = 1; ctr <= mask + 1; ctr++) {
+      memset(f, 0, sizeof f);
+      f[14] = 0x45; f[14 + 9] = 17;
+      uint32_t src = base + (ctr & mask), dst = 0xc0a80101u; /* big-endian out */
+      for (int b = 0; b < 4; b++) {
+        f[26 + b] = src >> (24 - 8 * b);
+        f[30 + b] = dst >> (24 - 8 * b);
+      }
+      f[34] = sport >> 8; f[35] = sport & 0xff; f[36] = 0; f[37] = 80;
+      uint64_t h = flowhash(f), r = ref_flowhash(f);
+      if (h != r) mism++;
+      if (!h) zero++;
+      dig = (dig ^ h) * 0x100000001b3ull;
+      keys[j++] = h;
+    }
+  }
+  qsort(keys, n, sizeof(uint64_t), cmp_u64);
+  size_t distinct = 0;
+  for (size_t i = 0; i < n; i++) distinct += (!i || keys[i] != keys[i - 1]);
+  free(keys);
+  printf("    generator tuples %zu: mismatches %zu, zero keys %zu, distinct %zu,"
+         " key-sequence digest %016lx\n", n, mism, zero, distinct, dig);
+  CHECK(mism == 0, "%zu generator tuples hash differently", mism);
+  CHECK(zero == 0, "%zu generator tuples hashed to 0", zero);
+  CHECK(distinct == 16777216, "distinct keys %zu, want 16777216", distinct);
+
+  enum { NRAND = 10000000 };
+  uint64_t s = 0x9E3779B97F4A7C15ull;
+  size_t rm = 0, valid = 0, nz_ihl_lt5 = 0;
+  for (size_t i = 0; i < NRAND; i++) {
+    for (size_t b = 0; b < sizeof f; b += 8) {
+      uint64_t w = xs64(&s);
+      memcpy(f + b, &w, 8);
+    }
+    uint64_t r = xs64(&s);
+    /* version: half forced 4 (so most frames reach hashing), half raw byte */
+    if (r & 1) f[14] = (unsigned char)(0x40 | ((r >> 8) & 0xf));
+    /* proto: 1/3 TCP, 1/3 UDP, 1/3 raw byte (incl. >= 0x80) */
+    switch ((r >> 16) % 3) {
+    case 0: f[23] = 6; break;
+    case 1: f[23] = 17; break;
+    default: break;
+    }
+    uint64_t h = flowhash(f), rh = ref_flowhash(f);
+    if (h != rh) rm++;
+    if (rh) { valid++; if ((f[14] & 0xf) < 5) nz_ihl_lt5++; }
+  }
+  printf("    random frames %d: mismatches %zu, hashed (nonzero) %zu,"
+         " of which IHL<5 %zu\n", NRAND, rm, valid, nz_ihl_lt5);
+  CHECK(rm == 0, "%zu random frames hash differently", rm);
+  CHECK(valid > NRAND / 4, "only %zu random frames reached hashing", valid);
+}
+
 int main(void) {
   printf("dramblast functional tests (no timing, no DPDK, no hugepages)\n");
   printf("table: %llu slots x %zu B = %llu KiB\n",
@@ -464,6 +569,7 @@ int main(void) {
   t_zero_value();
   t_zero_key();
   t_backend_lut();
+  t_flowhash_equiv();
 
   printf("\n----------------------------------------------------------\n");
   printf("pass %d   fail %d\n", g_pass, g_fail);
