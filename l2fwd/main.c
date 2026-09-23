@@ -53,6 +53,11 @@
 _Static_assert(MAX_PKT_BURST == DRAMBLAST_MAX_BURST,
                "dramblast's hoisted result buffer is sized from "
                "DRAMBLAST_MAX_BURST and must match MAX_PKT_BURST");
+/* dramblast hash loop: prefetch distance in packets (see loop). Chosen by
+   rig pilot, REFLECT_PATH s8. #ifndef: pilot builds set it by -Dc_args. */
+#ifndef HASH_PF_DIST
+#define HASH_PF_DIST 4
+#endif
 #define BURST_TX_DRAIN_US 100
 #define MEMPOOL_CACHE_SIZE 256
 
@@ -419,10 +424,23 @@ static void l2fwd_main_loop(void) {
           uint64_t hash;
           unsigned int j = 0;
 
+          /* Prefetch packet j+HASH_PF_DIST's header line while hashing j.
+             WHY: hash phase carries ~5-6 ticks/pkt mem_wait (REFLECT_PATH
+             s7.5) = first touch of header line, which NIC DMA left in L3
+             (DDIO), not L1. mbuf line 0 not prefetched: PMD rx just wrote
+             it (rearm/descriptor fields), already in L1. Prologue covers
+             first HASH_PF_DIST packets. No effect on keys or forwarding. */
+          for (unsigned int p = 0; p < HASH_PF_DIST && p < nb_rx; p++)
+            rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[p], void *));
+
           /* 4 frames per flowhash4: 4 independent FNV chains in one block
              (packettool.h says why). Same keys, same order, same
              compaction as loop below; tail (nb_rx % 4) takes loop below. */
           for (; j + 4 <= nb_rx; j += 4) {
+            for (unsigned int u = 0; u < 4; u++)
+              if (j + u + HASH_PF_DIST < nb_rx)
+                rte_prefetch0(rte_pktmbuf_mtod(
+                    pkts_burst[j + u + HASH_PF_DIST], void *));
             uint64_t k4[4];
             flowhash4(rte_pktmbuf_mtod(pkts_burst[j], void *),
                       rte_pktmbuf_mtod(pkts_burst[j + 1], void *),
@@ -439,6 +457,9 @@ static void l2fwd_main_loop(void) {
           }
 
           for (; j < nb_rx; j++) {
+            if (j + HASH_PF_DIST < nb_rx)
+              rte_prefetch0(
+                  rte_pktmbuf_mtod(pkts_burst[j + HASH_PF_DIST], void *));
             m = pkts_burst[j];
             hash = flowhash(rte_pktmbuf_mtod(m, void *));
             if (hash > 0) {
