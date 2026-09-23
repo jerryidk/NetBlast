@@ -172,6 +172,7 @@ polls.
 
 - 1 `aligned_alloc(64, 16·fn rounded to 64)` + 1 `free` (glibc tcache) with `-A 0`.
   `-A -1` hoists to per-lcore buffer, `-A n` adds n pairs.
+  (Since §8: default `-A -1`, so shipped path now allocates nothing per burst.)
 - mbufs: PMD RX refill takes nb_rx from mempool; TX completion returns completed mbufs.
 - Nothing else. insert_one allocates nothing.
 
@@ -808,3 +809,264 @@ Corrections to §7.1-7.7: §7.7 "24 uncapped pairs" → 22 nonzero-Δ pairs (fix
 §7.5 "13th step folds" → 1st step's imul folds (fixed). §7.7 "maglev −43 to −59" → −43 to −47 (fixed there;
 q6 −59 artifact). Rest of §7.4-7.5 numbers re-derived from raw logs and ring dumps
 (`analysis.py ab`, `analysis.py probe`): match. Verdict: **keep**, two passes.
+
+---
+
+## 8. Step 2a: hash interleave (C1), hash prefetch (C2), hoisted results[] (C3)
+
+Data: `/users/sohamb/sweeps/reflect/step2a/` (`rows.txt`, `launch_order.txt`,
+`arms.txt`, `bin/` + `SHA256SUMS`, logs, `*.nbp`); pilot in `step2a/pilot/`. Three
+changes, each own diff, own binary, own arm; `all` = kept ones together.
+
+### 8.1 What changed
+
+- **C1** `packettool.h` `flowhash4(f0..f3, out)`: 4 FNV chains side by side, out[i] ==
+  `flowhash(fi)`. Fast path only when all 4 IPv4 TCP/UDP; else `flowhash4_slow` (cold,
+  out of line) = `flowhash` per frame. main.c dramblast hash loop: groups of 4, then
+  scalar tail `nb_rx % 4`, same compaction. maglev untouched: `maglev_process_frame`
+  = hash then dependent hashmap lookup per packet; batching it = restructure maglev
+  loop, not a hash change. Left for own step.
+- **C2** main.c dramblast hash loop: `rte_prefetch0` header line of packet
+  `j + HASH_PF_DIST` while hashing j, prologue for first `HASH_PF_DIST`. mbuf line 0
+  not prefetched: PMD rx wrote it just before (rearm, descriptor fields). Distance by
+  pilot (8.4).
+- **C3** `dramblast_alloc_pairs` default 0 → −1: results[] hoisted to per-lcore buffer
+  (existed since INVESTIGATION §5.13 as `-A -1`). Flag values keep meaning: `-A 0` =
+  one pair per burst (old default; every earlier figure, every archived log without
+  `-A`), `-A n` = one plus n. `dramblast alloc pairs per burst:` line printed always
+  (was only with `-A`). `harness.sh matrix` pins `-A 0` for dramblast arms (archived
+  fit; arm's own `-A` wins, later in argv). `harness.sh codegen` unchanged (calls must
+  still exist for `-A ≥ 0`), comment says default calls neither.
+
+### 8.2 Before rig: equivalence, microbench
+
+`tests/` T12 (`flowhash4` vs `flowhash`), nix gcc 10.3.0 and system gcc 11.4.0, 41/41:
+
+| input | count | mismatches | other |
+|---|---|---|---|
+| pktgen tuples, groups of 4 consecutive | 16777216 | **0** | all fast path |
+| random frames (T11 generator, 3/4 version 4, proto 6/17/raw), groups of 4 | 11000000 | **0** | 303037 groups all-valid (fast), 2357844 mixed (fallback) |
+| main.c loop copy (x4 + tail + compaction) vs HEAD loop, bursts 1..64 | 200000 bursts | **0** | fn, frames[], args[] k and id |
+| frames 78 B before PROT_NONE page | 4000000 | **0** | no fault: reads ≤ byte 77, as flowhash |
+
+Teeth (mutants, T12 fails 3 checks each): byte 33 → 32; drop 4th frame's validity;
+4th chain reads 3rd frame's L4 byte. All three pass generator tuples (dst ip bytes
+equal, dport constant): random block is what catches them.
+
+Microbench (scratch, not repo; L1-resident headers, mbuf-like indirection, main.c
+compaction, gcc -O3 icelake-server, TSC = core clock 2.09 GHz here): straight-line
+22.3, `flowhash4` 20.5 ticks/pkt (43-pkt burst: 22.9 → 22.1); 2 chains 21.3. §7.5's
+23.3 → 15.6 bench had no validity test and no compaction: validity test for 4 frames
+costs ~3, compaction ~3. Reason gain small: **port-bound, not latency-bound.** 12
+`imul`/pkt, all port 1 → 12 cycle floor; plus ~40 other uops/pkt sharing ALU ports.
+§7.5 "latency-bound" reading of IPC 2.2 corrected: 4 chains fix latency, port 1 stays.
+AVX-512 8-lane (`vpmullq`, `vpermt2b` transpose): 36 (1 group), 17-18 (8 groups = 64
+pkts at once); not taken: full bursts only, gain ~4.
+
+`net_null` (`-l 24,25 --vdev=net_null0 --no-pci -m dramblast -c 1048576`, 70 s): base,
+c1, c2, c3, all start, poll, exit clean (`Bye...`); 0.99-1.07 G packets each,
+all unmapped (net_null frames all zero → key 0: C1 takes cold fallback every group
+here). c3, all print `alloc pairs per burst: -1 (hoisted ...)`. `harness.sh codegen`
+OK all 12 binaries (shipped, probe, pilot).
+
+### 8.3 Predictions, written before rig data
+
+Ticks/pkt, α≈0 unless said. Cap 93.28 Mpps = 4 × 2.1e9 / 90 ticks at q=4: `all`
+(~−12) and maybe c3 cap at q=4; q ≤ 3 discriminates everything; q ≥ 5 capped.
+
+| change | probe phase | loop (q ≤ 3, and q=4 if uncapped) | α 0.9 |
+|---|---|---|---|
+| C1 | hash 31 → 28-30 (not ≤ 22: microbench −1.8, port-bound) | −1 to −3 | same |
+| C2 | hash mem_wait 5.4 → ≤ 3 (burst-start stall, 1-2 L3 latencies per burst, stays) | −1 to −3 | same |
+| C3 | alloc + free ~10 → ≤ 1.5 | −7 to −9 | −7 to −9 (per burst, bursts full) |
+| all | hash −2 to −6, alloc+free ≤ 1.5 | sum of parts ±3: −9 to −15 | −9 to −15 |
+
+Keep rule: better than noise (pass-to-pass ≤ 1, run-to-run ±1-2 at q ≤ 4) with same
+sign at every uncapped q, and forwarding identical (0 unmapped, α 0.9 exit occupancy
+equal).
+
+### 8.4 Pilot: C2 prefetch distance (after 8.3 written, before main block)
+
+`step2a/pilot/`, q=4, α≈0, one launch each, 05:05-05:11Z. Loop ticks/pkt (Mpps);
+probe hash phase ticks, work / mem_wait / other, insns:
+
+| D | shipped loop | probe loop | hash | work / mem_w / other | insns |
+|---|---|---|---|---|---|
+| none (base) | 101 (82.78) | 108 | 31.0 | 25.3 / 5.4 / 0.2 | 69.5 |
+| 2 | 97 (85.83) | 104 | 27.8 | 25.0 / 1.5 / 1.1 | 73.7 |
+| 4 | **95 (88.16)** | 102 | 25.4 | 23.6 / 0.4 / 1.3 | 73.9 |
+| 8 | 95 (88.22) | 102 | 25.3 | 23.5 / 0.4 / 1.3 | 74.3 |
+
+Other phases ±0.5. D=4 = D=8, D=2 short: **D=4 kept** (fewer lines in flight for same
+result). mem_wait gone, not only reduced: 8.3's "burst-start stall stays" wrong, prologue
+covers it. Work also −1.7 (loads no longer wait in scheduler?; not separated). Already
+exceeds 8.3 C2 loop prediction (−6 vs −1 to −3): main block decides, pilot is one launch.
+
+### 8.5 A/B
+
+One `harness.sh ab` block, mode dramblast, q 6→1, per q: base, c1, c2, c3, all, base_p9,
+all_p9 (`-P 0.9`), baseprb, allprb (`-S 16p`). 54 launches, 05:12-05:50Z, 0 failed, 0
+unmapped in all 54 (and in 8 pilot). α 0.9 exit occupancy base = all at q≥4
+(499961036 both); q 3/2/1 ±14 / ±260 / ±18000 (prefill race, §6.2). Build: nix gcc
+10.3, default flags (`march` icelake-server); `base` `.text` byte-identical to
+`step1/bin/l2fwd-new` and `-prb` to `l2fwd-new-prb`. sha256 (first 16): base 2496ebbf31231eea,
+c1 533a998f698a22cb, c2 9277a63a60da1a6a, c3 e9b4c95b81bb0522, all 6fed62850cb257cb,
+base-prb b232fee393ace1c6, all-prb 829728e182488ed6; pilot bins and full hashes in
+`bin/SHA256SUMS`, source patches in `bin/*.patch`.
+
+Steady Mpps / loop ticks per pkt (All-poll = loop in every run); Δ = arm − base:
+
+| q | base | c1 | Δ | c2 | Δ | c3 | Δ | all | Δ |
+|---|---|---|---|---|---|---|---|---|---|
+| 6 | 93.28 / 135 | 93.28 / 135 | 0 cap | 93.28 / 135 | 0 cap | 93.28 / 135 | 0 cap | 93.28 / 135 | 0 cap |
+| 5 | 93.28 / 112 | 93.28 / 112 | 0 cap | 93.28 / 112 | 0 cap | 93.28 / 112 | 0 cap | 93.28 / 112 | 0 cap |
+| 4 | 83.38 / 101 | 89.62 / 94 | **−7** | 88.51 / 95 | **−6** | 90.69 / 93 | **−8** | 93.28 / 90 | −11 cap |
+| 3 | 62.09 / 102 | 66.79 / 95 | **−7** | 65.87 / 96 | **−6** | 67.64 / 93 | **−9** | 75.48 / 84 | **−18** |
+| 2 | 41.30 / 102 | 44.37 / 95 | **−7** | 43.94 / 96 | **−6** | 44.98 / 94 | **−8** | 50.50 / 83 | **−19** |
+| 1 | 20.79 / 102 | 22.09 / 96 | **−6** | 22.01 / 97 | **−5** | 22.49 / 95 | **−7** | 25.68 / 83 | **−19** |
+
+At cap, slack goes to smaller bursts (B at q=6: base 21, all 11), not ticks (§0.1).
+
+α 0.9 (loop ticks/pkt, Mpps): base_p9 433 / 433 / 434 / 435 / 442 / 463, all_p9 419 /
+417 / 418 / 418 / 426 / 446 (q 6→1): **Δ −14, −16, −16, −17, −16, −17**; Mpps +0.18
+to +1.00 (+3.3-4.1%).
+
+Probe (`-S 16p`): loop 108-110 → 90-93 at q≤4 (Δ −15, −17, −19, −19 q 4→1; q=5 −1 cap,
+q=6 0 cap). Ring, mark cost subtracted, q ≤ 4 (q 4-1 within ±0.4 of each other):
+
+| phase | baseprb | allprb | Δ |
+|---|---|---|---|
+| hash | 31.1-31.5 (work 25.3-25.5, mem_w 5.4-5.6, other 0.2-0.4, insns 69.5) | 22.6-22.7 (21.2-21.3 / 0.4-0.5 / 0.8, insns 79.9) | **−8.6** |
+| alloc | 9.0-9.2 (insns 13.2) | 0.6-0.7 (1.5) | −8.4 |
+| free | 1.8 (3.7) | 0.5-0.8 (1.2) | −1.2 |
+| find | 26.6-27.2 | 27.1-28.5 | +0.5-1.8 |
+| post, mac, rx, tx | 3.3, 4.8, 13.1, 18.8 | 3.4-4.1, 5.0-5.8, 13.0, 18.5 | ±1 |
+| sum | 108.8-109.5 | 91.1-93.5 | −16 to −18 |
+
+Residual alloc/free 0.6 + 0.5 = mark-subtraction residue (phase still opened by a mark),
+no call left. Hash split, from pilot (8.4, other block): C2 alone 25.4 (mem_w 0.4), C1 on
+top −2.8 (work 23.6 → 21.2) — matches microbench −1.8 size. C1 shipped loop −7 alone
+needs more than −2.8 work: C1 alone probably also overlaps header misses (4 frames'
+f[14]/f[23] loads issued together); no c1 probe build, **not measured**.
+
+### 8.6 Predictions vs result
+
+| prediction (8.3) | result | verdict |
+|---|---|---|
+| C1 hash 28-30 | not probed alone; on top of C2: −2.8 | n/a (no c1-prb arm) |
+| C1 loop −1 to −3 | −7, −7, −7, −6 (q 4→1) | **FAIL**, 2-3x bigger |
+| C2 hash mem_wait ≤ 3 | 0.4 (pilot), 0.4-0.5 in all | PASS |
+| C2 loop −1 to −3 | −6, −6, −6, −5 | **FAIL**, 2x bigger: prologue removes burst-start stall too |
+| C3 alloc+free ≤ 1.5 | 1.1-1.4 | PASS |
+| C3 loop −7 to −9 | −8, −9, −8, −7 | PASS |
+| all loop −9 to −15 | −18, −19, −19 (q 3→1; q4 cap −11) | **FAIL**, bigger (parts bigger) |
+| all = sum of parts ±3 | q3 −18 vs −22 (4 off), q2 −19 vs −21, q1 −19 vs −18 | PASS q2, q1; FAIL q3 (C1, C2 overlap: both cut hash-phase miss wait) |
+| all α 0.9 −9 to −15 | −14 to −17 | FAIL at q ≤ 5 (bigger), PASS q6 |
+
+Misses one way: every loop prediction for C1/C2 too small. Why: 8.3 read hash
+mem_wait (5.4) as irreducible burst-start stall and C1 as port-bound only; rig says
+~0 mem_wait reachable and C1 cuts more than its L1 bench.
+
+### 8.7 Verdict
+
+**Keep C1, C2, C3.** Each: better than noise (≥5 ticks vs ≤1 pass-to-pass, ±1-2
+run-to-run) at every uncapped q, same sign all 12 uncapped (change, q) pairs, 0
+unmapped, α 0.9 exit occupancy equal. `all`: α≈0 −18/−19 at q ≤ 3 (+21-24% Mpps), q=4
+now at 93.28 cap; α 0.9 −14 to −17 every q. Two passes: §8.8 replicate (arm order reversed) agrees ±1 at α≈0. Generator (pktgen-monitor, own RX-transition
+spans): 62 = 62 launches + 0 failures (pilot 8, main 54); 2031 / 2038 in-span samples
+93.28, 7 = above-line-rate artifact, RX undisturbed, nothing quarantined; No-Mbufs 0.
+`HASH_PF_DIST` 4 (pilot). Revert, each one commit: C1 = `packettool.h` flowhash4 +
+main.c group loop + tests T12; C2 = main.c `HASH_PF_DIST` + prefetch lines; C3 =
+`dramblast_alloc_pairs = -1` + usage/print, matrix `-A 0`, README.
+
+Next in hash (not done): C1 alone probe to split its −7; hash now 22.6 = ~21 work at 80
+insns/pkt: port 1 (12 imul) floor ~12.
+
+### 8.8 Verification (independent verifier, 2026-09-23)
+
+Data: `/users/sohamb/sweeps/reflect/step2a_rep/` (`rows.txt`, `launch_order.txt`,
+`arms.spec`, `arms.txt`, logs, `ab.json`). Same `step2a/bin/` binaries (SHA256SUMS OK).
+
+Source + binaries: `commit1_c1.patch`, `c2_on_c1.patch`, `c3.patch` on `git archive
+HEAD` = working tree byte for byte (main.c, packettool.h, dramblast.{c,h}, harness.sh,
+README, tests). `c2.patch`, `c3.patch` each apply alone on HEAD. Own rebuild (nix, meson
+defaults, CPUs 30-55) base, base-prb, c1, c2, c3, all, all-prb: `.text`, `.rodata`,
+`.data` identical to `step2a/bin/` all 7. base `.text` = `step1/bin/l2fwd-new` (and -prb).
+
+Keys + forwarding, own harness (not T12): HEAD main.c hash loop and new one cut out of
+`git show HEAD:l2fwd/main.c` / working main.c by awk (text between `fn = 0;` and
+`NBP_MARK(NBP_B_HASH)`, not retyped), HEAD `packettool.h` vs new, separate TUs, mbuf
+shim. Per burst: nb_rx 0..64 (each size ≥15111 times), mbufs shuffled, `pkts_burst[≥
+nb_rx]` = NULL (any deref past nb_rx faults), pointer array ends at PROT_NONE page, each
+frame's byte 77 last before PROT_NONE page. Frames: IHL 0/1/4/5/6/15 and random, proto
+6/17/0x86/0x91/raw, version ≠ 4, all-0, all-0xff, high bytes ≥ 0x80; burst mode mixed /
+all valid / mostly valid / mostly invalid. Compared fn, all 64 frames[], args[].k, .id
+(arrays pre-poisoned same):
+
+| build | bursts | mismatches | other |
+|---|---|---|---|
+| gcc 11.4 -O0/-O2/-O3 × HASH_PF_DIST 1/4/8 | 1000000 each (9 runs) | **0** | 19578532 keys, 3300530 all-valid groups |
+| nix gcc 10.3 -O3 icelake-server | 2000000 | **0** | 39139026 keys, 6600764 all-valid groups |
+| ASan + UBSan -O1 | 300000 | **0** | no report |
+| c1-only, c2-only, c3 loops (measured arms) | 1000000 each | **0** | |
+
+Teeth: `args[fn].id = j+u` 127552 bad bursts / 200k; keep zero keys 132934; byte 33 → 32
+98341; drop 4th validity 29232; 4th chain reads 3rd L4 98295; `j+3 <= nb_rx` bound →
+SIGSEGV; prefetch `<= nb_rx` → SIGSEGV. Prefetch index < nb_rx in all 3 places
+(prologue, x4 loop, tail); prefetches = nb_rx per burst for any D.
+
+C3 read: `dramblast_hoisted[i]` = own `aligned_alloc(64, 16·64)` per lcore (MAX_CPU
+128), 1 KiB, 64-aligned, size multiple of 64: no shared line. Only caller main.c,
+args_len = fn ≤ 64 = DRAMBLAST_MAX_BURST (`_Static_assert`). maglev untouched:
+`maglev_process_frame` disassembly same all 5 bins.
+
+`tests/` 41/41, nix gcc 10.3.0 (0 warnings) and system gcc 11.4.0. `harness.sh codegen`
+OK base, c1, c2, c3, all, base-prb, all-prb. `flowhash4_slow` reached only from
+`l2fwd_main_loop.cold` (1 call site c1, 2 in all), 48 imul inside.
+
+net_null (`-l 24,25 --vdev=net_null0 --no-pci -m dramblast -c 1048576`, 45 s, after rig
+block): all 5 exit clean (`Bye...`), unmapped = received (±64 in flight), c3, all print
+`-1 (hoisted ...)`, base/c1/c2 print nothing (HEAD prints only with `-A`). Received:
+base 1896611072, c1 1623535232, c2 1834348416, c3 1900160128, all 1554494720. net_null
+frames all zero → every C1 group takes cold fallback: c1 −14% vs base, all −18% vs c3.
+Not rig traffic (every generator frame IPv4 UDP), but real: non-IPv4/TCP/UDP-heavy
+traffic pays for C1's fallback (call + 4 group checks). Not measured on rig.
+
+Replicate: arm order REVERSED per q: all, c3, c2, c1, base, all_p9, base_p9; q 6→1,
+`harness.sh ab` one block, 05:58:46-06:29Z. 42 launches, 0 failed, 0 unmapped all 42.
+pktgen-monitor: 42 = 42 + 0, 1370 / 1383 in-span samples 93.28 (7 above-line-rate
+artifact, 6 at 93.27 in runs 6-7), No-Mbufs 0, nothing quarantined. Init per arm within
+0.4 s of main block.
+
+Δloop ticks/pkt (arm − base), p1 = §8.5, p2 = replicate; ΔMpps in parens:
+
+| q | c1 p1 | c1 p2 | c2 p1 | c2 p2 | c3 p1 | c3 p2 | all p1 | all p2 | all_p9 p1 | all_p9 p2 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 6 | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | −14 (+0.98) | −17 (+1.24) |
+| 5 | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | 0 cap | −16 (+1.00) | −17 (+0.98) |
+| 4 | −7 (+6.24) | −7 (+6.20) | −6 (+5.13) | −6 (+5.23) | −8 (+7.31) | −9 (+7.65) | −11 cap (+9.90) | −11 cap (+9.95) | −16 (+0.78) | −16 (+0.77) |
+| 3 | −7 (+4.70) | −7 (+4.64) | −6 (+3.78) | −6 (+3.97) | −9 (+5.55) | −9 (+5.53) | −18 (+13.39) | −19 (+13.92) | −17 (+0.61) | −16 (+0.59) |
+| 2 | −7 (+3.07) | −7 (+3.03) | −6 (+2.64) | −6 (+2.52) | −8 (+3.68) | −8 (+3.76) | −19 (+9.20) | −19 (+9.18) | −16 (+0.38) | −18 (+0.42) |
+| 1 | −6 (+1.30) | −6 (+1.50) | −5 (+1.22) | −5 (+1.25) | −7 (+1.70) | −8 (+1.88) | −19 (+4.89) | −19 (+4.92) | −17 (+0.18) | −17 (+0.21) |
+
+Means (q 4→1): c1 −7, −7, −7, −6; c2 −6, −6, −6, −5; c3 −8.5, −9, −8, −7.5; all −11
+cap, −18.5, −19, −19; all_p9 (q 6→1) −15.5, −16.5, −16, −16.5, −17, −17. Sign: 44 / 44
+nonzero per-pass Δ negative (22 pairs × 2); capped α≈0 q 5-6 0 both passes. Pass
+agreement α≈0 ±1 everywhere (c3 q4/q1, all q3 differ by 1); α 0.9 ±3 (q6), ±2 (q2).
+Per-arm absolute p1 / p2: base loop 101-102 both, Mpps q4 83.38 / 83.33; all q3 75.48 /
+75.98. Order reversal moved nothing: no position bias. α 0.9 exit occupancy (rep) base =
+all = 499961036 at q ≥ 4; q 3/2/1 499961027 / 499961020, 499960209 / 499959964,
+499852891 / 499871530 (prefill race, §6.2).
+
+Findings / corrections:
+- §8.1 "Distance by pilot (8.3)" → 8.4 (fixed). §8.7 "replicate pending" → two passes
+  (fixed).
+- `packettool.h` flowhash4 comment says bench "22 -> 19.5 ticks/pkt"; §8.2 says 22.3 →
+  20.5. One of them wrong (scratch bench not archived, not re-run here). Not fixed.
+- §8.2 net_null "0.99-1.07 G packets" (70 s) not reproduced as number (other duration);
+  C1 fallback cost on all-invalid traffic (above) not in §8.2.
+- Rest of §8.5 (A/B table, α 0.9 row, probe loop and phase table, exit occupancy)
+  re-derived from raw rows / logs / `probe.json`: match.
+
+Verdict: **keep C1, C2, C3**, two passes. Caveat for C1: fallback path costs on
+non-IPv4/TCP/UDP traffic (net_null −14%); fine for this rig, note if traffic mix changes.
