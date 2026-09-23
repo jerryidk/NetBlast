@@ -40,7 +40,12 @@ typedef struct {
   uint32_t id;
 } dramblast_queue_item_t;
 
-typedef struct{
+/* One cache line per lcore. Unpadded (24 B, indexed by lcore_id) lcores 8 and 10
+   shared a line of head/tail stores: +13 ticks/pkt in find at alpha~0, ~+100 at
+   alpha 0.9, since every push/pop writes head/tail (docs/REFLECT_PATH.md 3.3).
+   aligned(64) makes sizeof 64, so queues[MAX_CPU] from dramblast_alloc64 has one
+   line per entry. */
+typedef struct __attribute__((aligned(64))) {
     dramblast_queue_item_t *find_queue;
     uint32_t find_queue_head;
     uint32_t find_queue_tail;
