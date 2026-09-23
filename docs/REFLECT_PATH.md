@@ -48,6 +48,8 @@ sampling = per instruction. Neither splits one burst into its phases.
   functions (`l2fwd_main_loop`, `dramblast_find_batch_sync`, `dramblast_process_frames`,
   `dramblast_insert_one`, `flowhash`) instruction-identical to pre-change binary, modulo
   RIP-relative data offsets. Shipped binary refuses `-S`/`-D` (error, not ignore).
+  (Since §7: `flowhash` no longer own symbol, `static inline` in `packettool.h`, inlined
+  into `l2fwd_main_loop` / `maglev_process_frame`.)
 - Nine boundaries → eight phases partitioning one burst: `rx` (rte_eth_rx_burst), `hash`
   (flowhash loop), `alloc` (aligned_alloc + `-A` pairs), `find`
   (dramblast_find_batch_sync), `post` (result loop: inserts, ret[] scatter), `free`,
@@ -620,3 +622,189 @@ Verdict: α 0.9 gain holds, −2 to −5 every q both passes, mean −3.7, above
 −0 to −2, no sign flip in 24 pairs but 3 zeros; q6 α≈0 at generator cap (93.28 both).
 §6.3 "sign agrees in all 12 pairs" overstated: pass 1 has 1 zero Δloop, 1 zero ΔMpps.
 Layout vs ISA/tune still not separated (same caveat). Keep new build.
+
+---
+
+## 7. Step 1: flowhash rewrite
+
+Data: `/users/sohamb/sweeps/reflect/step1/` (`rows.txt`, `launch_order.txt`, `arms.txt`,
+`bin/` + `SHA256SUMS`, logs, `*.nbp`).
+
+### 7.1 What changed
+
+- `flowhash` out of `libsashstore/packettool.c` into `packettool.h`, `static inline`
+  `always_inline`. FNV-1 over fixed 13 bytes, fully unrolled, byte loads, literal offsets
+  (no `extern const` loads). Why: lib built `b_lto=false`, so old flowhash never inlined
+  into main.c; 3 calls to `fnv_1_multi` per packet, variable-trip loops (§4.1).
+- Keys bit-identical by construction: same byte order, unsigned XOR (§5.1 fix), version
+  test `byte>>4 == 4` and proto test 6/17 same answer signed or unsigned, L4 offset
+  `14 + 4*IHL` for IHL 0..15 as before.
+- `hash.c` untouched: `fnv_1`, `fnv_1_multi`, `fnv_1a*` still used by `hashmap.c`,
+  `conshash.c`. Revert = restore `packettool.{c,h}`.
+- Codegen: new main loop 16 imul (12 FNV + 4 old; first step folds to constant), 0 calls
+  to flowhash/fnv; `maglev_process_frame` 12 imul inline. Old: `flowhash` symbol, 2 call
+  sites (main loop, maglev). `harness.sh codegen` OK new, new probe.
+- `tests/test_dramblast.c` T11: new vs transcription of HEAD 57bf217 flowhash +
+  fnv_1_multi. Makefile dep on `packettool.h`.
+
+### 7.2 Equivalence (before any rig time)
+
+| input | count | mismatches | other |
+|---|---|---|---|
+| pktgen tuples (lcores 48-51, ctr 1..2^22) | 16777216 | **0** | 0 zero keys, 16777216 distinct, digest 439c6931f083e325 |
+| random frames (random bytes, version 4 or raw, IHL 0..15, proto 6/17/raw) | 10000000 | **0** | 3555174 hashed nonzero, 1111165 of those IHL<5 |
+
+`tests/` 32/32: nix gcc 10.3 (`nix develop`) and system gcc 11.4. Teeth: mutant with
+signed XOR → 16773118 tuple mismatches, 8454144 distinct (= §5.1 exactly); mutant
+masking last byte → 1775915 random mismatches, tuples 0 (why random block needed).
+
+### 7.3 Predictions, written before rig data
+
+- probe hash phase ≤ 20 ticks/pkt (from 49, §3.2).
+- loop α≈0: −25 to −31 ticks/pkt where not generator-capped. Cap 93.28 Mpps: q≥5 may
+  cap after change; q≤4 discriminate.
+- α 0.9: loop drops by about same absolute ticks (hash flat in α, §3.4).
+- maglev loop drops too.
+- forwarded/unmapped consistent: no new unmapped packets.
+
+### 7.4 A/B
+
+Block 1 (`harness.sh ab`, mode dramblast, 36 launches, 03:13-03:40Z): q 6→1, per q
+`old`, `new`, `old_p9`, `new_p9` (`-P 0.9`), `oldprb`, `newprb` (`-S 16p`). Block 2
+right after (`MODE=maglev harness.sh ab`, same out dir, 12 launches, 03:40-03:49Z):
+`mag_old`, `mag_new`. `ab` takes mode per block, not per arm: hence 2 blocks. 48
+launches, 0 failed, 0 unmapped in all 48. Bins (sha256 first 16): old 766e8f08013c0aff,
+new 69306a2dfcd91d53, old-prb 9e559ea2b979d857, new-prb b049a917d717d568; built
+`nix develop`, default flags (`march` icelake-server); old = worktree of 57bf217.
+
+Steady Mpps / loop ticks per pkt (All-poll = loop in every run):
+
+| q | old α≈0 | new α≈0 | Δ | old α 0.9 | new α 0.9 | Δ | mag_old | mag_new | Δ |
+|---|---|---|---|---|---|---|---|---|---|
+| 6 | 93.28 / 135 | 93.28 / 135 | 0 (cap) | 28.57 / 448 | 29.41 / 435 | −13 | 55.95 / 226 | 75.81 / 167 | −59 |
+| 5 | 89.61 / 117 | 93.28 / 112 | −5 (cap) | 23.95 / 447 | 24.70 / 433 | −14 | 50.76 / 208 | 64.34 / 164 | −44 |
+| 4 | 71.52 / 118 | 83.27 / 101 | **−17** | 19.23 / 447 | 19.79 / 435 | −12 | 40.83 / 207 | 51.65 / 163 | −44 |
+| 3 | 53.60 / 118 | 61.98 / 102 | **−16** | 14.52 / 448 | 14.96 / 435 | −13 | 30.77 / 207 | 38.65 / 164 | −43 |
+| 2 | 35.79 / 118 | 41.27 / 102 | **−16** | 9.66 / 454 | 9.93 / 442 | −12 | 20.48 / 209 | 25.79 / 165 | −44 |
+| 1 | 18.06 / 118 | 20.77 / 102 | **−16** | 4.67 / 477 | 4.82 / 463 | −14 | 10.28 / 212 | 12.96 / 166 | −46 |
+
+α≈0 Mpps +14-16% at q≤4. q=5 new at 93.28 cap, q=6 both capped (new B 21 vs 33:
+slack goes to smaller bursts, not ticks, §0.1). Probe arms: Δloop 0, −11, −19, −17, −17,
+−15 (q 6→1). α 0.9 exit occupancy old = new at q≥4 (499961036 both), ±2/±1150/±18000
+at q 3/2/1 (prefill race, §6.2): same key set.
+
+### 7.5 Probe, hash phase (ring, mark cost subtracted)
+
+| q | old ticks | new ticks | old work / mem_w / other | new work / mem_w / other | insns old → new | IPC old → new |
+|---|---|---|---|---|---|---|
+| 6 | 46.7 | 34.6 | 39.6 / 4.8 / 2.3 | 26.9 / 6.7 / 0.9 | 147.8 → 71.5 | 3.17 → 2.07 |
+| 5 | 44.9 | 31.7 | 38.6 / 4.6 / 1.6 | 25.6 / 5.4 / 0.5 | 146.6 → 69.7 | 3.27 → 2.21 |
+| 4 | 45.1 | 31.2 | 38.6 / 4.7 / 1.6 | 25.4 / 5.4 / 0.3 | 146.7 → 69.5 | 3.27 → 2.24 |
+| 3 | 45.3 | 31.2 | 38.7 / 4.7 / 1.6 | 25.4 / 5.4 / 0.2 | 146.5 → 69.5 | 3.26 → 2.24 |
+| 2 | 45.4 | 31.2 | 38.7 / 4.8 / 1.6 | 25.4 / 5.5 / 0.2 | 146.6 → 69.5 | 3.25 → 2.24 |
+| 1 | 45.7 | 31.4 | 38.9 / 5.0 / 1.6 | 25.4 / 5.6 / 0.2 | 146.6 → 69.5 | 3.22 → 2.23 |
+
+Hash p99 50 → 35. Other phases ±2 (rx −1.5, tx −2, find ±0.5 at q≤4). Phase sum
+−17 to −19 at q≤4 = hash −14 plus rx/tx −3-4 (layout or less cache pressure; not
+separated).
+
+- **Instructions halved (−77/pkt), time −30%.** New loop latency-bound: IPC 3.3 → 2.2.
+  Per packet 12 dependent `imul` (3 cyc) + `xor` = ~48 cyc chain; 1st step's `imul`
+  folds into constant (basis × prime), so 13 steps, 12 `imul`. Overlap across packets
+  only by OOO; scheduler holds dependent chain of ~4 packets.
+- Scratch microbench (not in repo; L1-resident headers, 64-pkt bursts, rdtsc): this
+  loop 23.3 ticks/pkt; 4-packet interleaved chains (same 13-byte FNV-1, same keys)
+  15.6. §4.1's 15.3 matches interleaved shape, not straight-line inline. Rig adds ~6
+  mem_wait (first touch of mbuf + header line) and ~2 on top.
+- maglev −43 to −47 (q6 −59 artifact, §7.8), ~3x dramblast's −16: old maglev also
+  called out-of-line flowhash → 3 fnv calls per packet, then dependent hashmap lookup per packet. Guess
+  (no maglev probe): shorter per-packet instruction stream lets OOO overlap more
+  lookup misses. Not measured.
+
+### 7.6 Predictions vs result
+
+| prediction | result | verdict |
+|---|---|---|
+| hash ≤ 20 ticks/pkt | 31.2-31.7 (q≤5), 34.6 q=6 | **FAIL** (−14, not −29) |
+| loop α≈0 −25 to −31 where not capped | −16/−17 at q≤4 (probe −15 to −19) | **FAIL**, ~55-60% of predicted |
+| α 0.9 same absolute drop | −12 to −14 (vs −16 α≈0) | PASS roughly (80%) |
+| maglev loop drops | −43 to −47 (q6 −59, artifact §7.8) | PASS (bigger than dramblast) |
+| no new unmapped | 0 unmapped all 48 runs; same α 0.9 exit occupancy | PASS |
+
+Why predictions missed: prediction took §4.1 microbench ratio (15.3/46.2) onto rig
+hash (49). Ratio came from interleaved-shape bench on L1 headers; rig hash = chain
+latency + ~5-6 mem_wait that code shape cannot remove.
+
+### 7.7 Verdict
+
+**Keep.** Bit-identical keys (0 / 26.8M mismatches), −16/−17 loop ticks α≈0 at every
+uncapped q (+14-16% Mpps), −12 to −14 at α 0.9, −43 to −47 maglev (q6 −59 = position
+artifact, §7.8), no regression anywhere, sign same in all 22 nonzero-Δ pairs (α≈0 q≤5,
+α 0.9, maglev, probe q≤5). One pass here; replicate with reversed order in §7.8 agrees
+±2. Effect 5-15x §6.4 pass-to-pass drift (≤1). Revert = restore `packettool.{c,h}` (tests T11 then fails to compile:
+revert `tests/` hunks too).
+
+Next lever inside hash (not done here): interleave 2-4 packets' FNV chains (bench 23.3
+→ 15.6 on L1). Keys unchanged; T11 guards it.
+
+### 7.8 Verification (independent verifier, 2026-09-23)
+
+Data: `/users/sohamb/sweeps/reflect/step1_rep/`. Same `step1/bin/` binaries (SHA256SUMS
+OK). Own rebuild: new from working tree, old from `git archive 57bf217`; `.text`,
+`.rodata`, `.data` identical to `step1/bin/` all 4 bins. Whole-file sha differs (debug
+paths only).
+
+Keys, own reference (not T11's): HEAD `packettool.c` + `hash.c` compiled as-is,
+`objcopy --redefine-sym flowhash=old_flowhash`, linked vs new inline; old -O0/-O2 × new
+-O0/-O2/-O3:
+
+| input | count | mismatches |
+|---|---|---|
+| pktgen tuples | 16777216 | 0 |
+| random frames (half all bytes ≥ 0x80; version 0x4X any IHL or raw; proto 6/17/0/255/raw) | 25000000 | 0 |
+| grid: byte 14 all 256 × byte 23 all 256 × fill 00/7f/80/ff/5a/random | 393216 | 0 (192 nonzero = 16 IHL × 2 proto × 6) |
+
+Bytes read (guard page after frame): max offset 77 both (IHL 15), 37 at IHL 5, 33 at
+IHL 0; no growth. Only change: non-IPv4 frame reads byte 23 (old: byte 14 only);
+inside 60 B Ethernet minimum, harmless. Mutants (signed XOR, fixed IHL 5, proto
+constant 17): T11 fails 3/1/1 checks. `tests/` 32/32 nix gcc 10.3.0, system gcc 11.4.0.
+Rig: α 0.9 exit occupancy − prefill = 499961036 − 483183820 = 16777216 at q≥4, both
+arms, both passes: every generator flow a distinct key on real traffic.
+
+Codegen: new `flowhash` symbol gone, 0 `call` to flowhash/fnv in `l2fwd_main_loop`,
+`maglev_process_frame`; imul 16 / 12 (old 4 / 0). `harness.sh codegen` OK, both builds.
+
+Replicate: arm order REVERSED (new before old), `harness.sh ab` dramblast block (new,
+old, new_p9, old_p9; 24) then `MODE=maglev` block (mag_new, mag_old; 12), q 6→1,
+04:01-04:28Z. 36 launches, 0 failed, 0 unmapped all 36. pktgen-monitor: 36 = 36 + 0,
+1177 / 1183 in-span samples 93.28, rest above-line-rate artifact, nothing quarantined.
+
+Δloop ticks/pkt (new − old), pass 1 = §7.4, pass 2 = replicate; ΔMpps in parens:
+
+| q | α≈0 p1 | α≈0 p2 | mean | α 0.9 p1 | α 0.9 p2 | mean | maglev p1 | maglev p2 | mean |
+|---|---|---|---|---|---|---|---|---|---|
+| 6 | 0 (0.00) | 0 (0.00) | 0 cap | −13 (+0.84) | −13 (+0.90) | −13 | −59 (+19.86) | −24 (+8.29) | −41.5 * |
+| 5 | −5 (+3.67) | −5 (+3.66) | −5 cap | −14 (+0.75) | −15 (+0.76) | −14.5 | −44 (+13.58) | −44 (+13.45) | −44 |
+| 4 | −17 (+11.75) | −16 (+11.77) | −16.5 | −12 (+0.56) | −14 (+0.62) | −13 | −44 (+10.82) | −44 (+10.78) | −44 |
+| 3 | −16 (+8.38) | −17 (+8.57) | −16.5 | −13 (+0.44) | −14 (+0.44) | −13.5 | −43 (+7.88) | −44 (+8.01) | −43.5 |
+| 2 | −16 (+5.48) | −16 (+5.50) | −16 | −12 (+0.27) | −13 (+0.27) | −12.5 | −44 (+5.31) | −44 (+5.22) | −44 |
+| 1 | −16 (+2.71) | −16 (+2.72) | −16 | −14 (+0.15) | −14 (+0.14) | −14 | −46 (+2.68) | −47 (+2.69) | −46.5 |
+
+Sign: 34 / 34 nonzero per-pass Δ negative (17 q-pairs, 2 passes); α≈0 q6 0 both. Pass
+agreement ±2 ticks everywhere except maglev q6. Per-arm absolute: old α≈0 q4 71.52 /
+71.57 Mpps, new 83.27 / 83.34, loop ±1 across passes. Order reversal moved nothing:
+no position bias in dramblast block.
+
+\* maglev q6 = position artifact, not code. First launch of each maglev block (after
+dramblast block) slow in both passes, whichever arm: step1 mag_old_q6 init 19 s, loop
+226 (rep 208); rep mag_new_q6 init 42 s, loop 184 (step1 167). Same 2 runs: perf IPC
+0.12 / 0.13 vs 1.29 / 1.38 for other arm. Opposite arms first → per-pass Δ −59 / −24,
+mean −41.5 ≈ q≤5's −44. Cause not measured (guess: 8 GiB THP allocation right after 1G
+hugetlb block, compaction / partial THP). pktgen-monitor's "mag_new inits tighter" lead
+= this artifact, retracted by it. Fix for later blocks: 1 discarded maglev warm-up
+launch before first measured one.
+
+Corrections to §7.1-7.7: §7.7 "24 uncapped pairs" → 22 nonzero-Δ pairs (fixed there).
+§7.5 "13th step folds" → 1st step's imul folds (fixed). §7.7 "maglev −43 to −59" → −43 to −47 (fixed there;
+q6 −59 artifact). Rest of §7.4-7.5 numbers re-derived from raw logs and ring dumps
+(`analysis.py ab`, `analysis.py probe`): match. Verdict: **keep**, two passes.
