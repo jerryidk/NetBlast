@@ -679,6 +679,157 @@ static void t_flowhash4_equiv(void) {
   for (int u = 0; u < 4; u++) munmap(gf[u] - (pg - 78), 2 * pg);
 }
 
+/* T13: dramblast_find_batch_sync = HEAD e20527e find, per id. Spec copy
+ * below (ref_find_head) = HEAD loop with push/pop/get_queue_sz helpers
+ * inlined, queue depth read from queue as HEAD does. Random scenarios: table
+ * len 2^8..2^12 at load 0..1.0 (1.0 = full: TABLE_FULL path), queue depth
+ * 4..64, start head/tail anywhere, batch 1..64 (some 65..200: longer than
+ * any queue), keys present / absent / repeated inside batch, stored values
+ * incl. 0. Compared: count, id permutation, per id (status, v), and result
+ * SEQUENCE. Post loop scatters by id, so any order is correct; sequence
+ * checked anyway: it = bucket compare order = prefetch schedule, and D1/D3
+ * (REFLECT_PATH s9) claim to leave it unchanged. A change that reorders
+ * must say so and relax this. Library queue must be empty at return
+ * (head == tail). */
+static uint32_t ref_find_head(dramblast_ht_t *ht, dramblast_arg_t *args,
+                              unsigned int args_len,
+                              dramblast_result_t *results, unsigned int id) {
+  dramblast_queue_t *q = &ht->queues[id];
+  unsigned int args_head = 0, result_head = 0;
+  uint64_t idx, count;
+  while (result_head < args_len) {
+    while (args_head < args_len &&
+           ((q->find_queue_head - q->find_queue_tail) &
+            (q->find_queue_size - 1)) < q->find_queue_size - 1) {
+      dramblast_arg_t *a = &args[args_head++];
+      idx = ref_hash(a->k, ht->len);
+      dramblast_queue_item_t *s = &q->find_queue[q->find_queue_head];
+      s->idx = idx; s->k = a->k; s->id = a->id; s->visit_count = 0;
+      q->find_queue_head = (q->find_queue_head + 1) & (q->find_queue_size - 1);
+    }
+    dramblast_queue_item_t *t = &q->find_queue[q->find_queue_tail];
+    q->find_queue_tail = (q->find_queue_tail + 1) & (q->find_queue_size - 1);
+    idx = t->idx;
+    count = t->visit_count;
+    uint64_t *bucket = (uint64_t *)&ht->table[idx];
+    __m512i cl = _mm512_load_si512(bucket);
+    __mmask8 key_cmp = _mm512_mask_cmpeq_epu64_mask(
+        DRAMBLAST_SIMD_KEY_MASK, cl, _mm512_set1_epi64(t->k));
+    dramblast_result_t *r = &results[result_head];
+    if (key_cmp > 0) {
+      r->v = bucket[__builtin_ctz(key_cmp) + 1];
+      r->id = t->id; r->status = DRAMBLAST_FOUND; result_head++;
+      continue;
+    }
+    count += 4;
+    if (count >= ht->len) {
+      r->v = 0; r->id = t->id; r->status = DRAMBLAST_TABLE_FULL; result_head++;
+      continue;
+    }
+    __mmask8 ept_cmp = _mm512_mask_cmpeq_epu64_mask(
+        DRAMBLAST_SIMD_KEY_MASK, cl, _mm512_setzero_si512());
+    if (ept_cmp == 0) {
+      idx = (idx + 4) & (ht->len - 1) & (uint64_t)DRAMBLAST_BUCKET_IDX_MASK;
+      dramblast_queue_item_t *s = &q->find_queue[q->find_queue_head];
+      uint64_t k = t->k; uint32_t kid = t->id;
+      s->idx = idx; s->k = k; s->id = kid; s->visit_count = count;
+      q->find_queue_head = (q->find_queue_head + 1) & (q->find_queue_size - 1);
+    } else {
+      r->v = 0; r->id = t->id; r->status = DRAMBLAST_ABSENT; result_head++;
+    }
+  }
+  return result_head;
+}
+
+/* fill table to ~alpha with random keys via insert_one; keys[] gets them */
+static unsigned fill_random(dramblast_ht_t *ht, double alpha, uint64_t *keys,
+                            unsigned cap, uint64_t *s) {
+  uint64_t want = (uint64_t)(alpha * (double)ht->len);
+  unsigned n = 0;
+  for (uint64_t occ = 0; occ < want && n < cap;) {
+    uint64_t k = xs64(s);
+    if (!k) continue;
+    uint64_t v = (xs64(s) & 7) ? xs64(s) : 0; /* some stored 0 */
+    if (dramblast_insert_one(ht, k, v) == 0) { keys[n++] = k; occ++; }
+  }
+  return n;
+}
+
+static int cmp_res_id(const void *a, const void *b) {
+  const dramblast_result_t *x = a, *y = b;
+  return x->id < y->id ? -1 : x->id > y->id;
+}
+
+static void t_find_equiv(void) {
+  HDR("T13 find_batch_sync = HEAD find, per id (status, v)");
+  static const unsigned lens[] = {1u << 8, 1u << 10, 1u << 12};
+  static const double alphas[] = {0, 0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0};
+  static const unsigned depths[] = {4, 8, 16, 32, 64};
+  enum { MAXB = 200 };
+  dramblast_arg_t args[MAXB];
+  dramblast_result_t rl[MAXB], rr[MAXB];
+  uint64_t s = 0x6A09E667F3BCC909ull;
+  size_t batches = 0, lookups = 0, mism = 0, badcnt = 0, badperm = 0,
+         notempty = 0, seq_same = 0, st[3] = {0, 0, 0};
+  for (unsigned li = 0; li < sizeof lens / sizeof *lens; li++)
+    for (unsigned ai = 0; ai < sizeof alphas / sizeof *alphas; ai++) {
+      dramblast_ht_t *ht = make_table(lens[li]);
+      uint64_t *keys = malloc(sizeof(uint64_t) * lens[li]);
+      unsigned nk = fill_random(ht, alphas[ai], keys, lens[li], &s);
+      for (unsigned di = 0; di < sizeof depths / sizeof *depths; di++) {
+        unsigned d = depths[di];
+        for (int qi = 0; qi < 2; qi++) { /* 0 library, 1 reference */
+          ht->queues[qi].find_queue_size = d;
+          ht->queues[qi].find_queue_head = ht->queues[qi].find_queue_tail =
+              (uint32_t)(xs64(&s) & (d - 1));
+        }
+        for (int it = 0; it < 120; it++) {
+          unsigned n = (it % 10 == 9) ? 65 + (unsigned)(xs64(&s) % (MAXB - 64))
+                                      : 1 + (unsigned)(xs64(&s) % 64);
+          for (unsigned j = 0; j < n; j++) {
+            uint64_t r = xs64(&s) % 10;
+            uint64_t k;
+            if (r < 5 && nk) k = keys[xs64(&s) % nk];          /* present  */
+            else if (r < 8 || j == 0) do k = xs64(&s); while (!k); /* absent */
+            else k = args[xs64(&s) % j].k;                     /* repeat   */
+            args[j].k = k; args[j].id = j;
+          }
+          unsigned gl = dramblast_find_batch_sync(ht, args, n, rl, 0);
+          unsigned gr = ref_find_head(ht, args, n, rr, 1);
+          batches++; lookups += n;
+          if (gl != n || gr != n) { badcnt++; continue; }
+          if (ht->queues[0].find_queue_head != ht->queues[0].find_queue_tail)
+            notempty++;
+          int same = 1;
+          for (unsigned j = 0; j < n; j++)
+            same &= rl[j].id == rr[j].id && rl[j].status == rr[j].status &&
+                    rl[j].v == rr[j].v;
+          seq_same += same;
+          qsort(rl, n, sizeof *rl, cmp_res_id);
+          qsort(rr, n, sizeof *rr, cmp_res_id);
+          for (unsigned j = 0; j < n; j++) {
+            if (rl[j].id != j || rr[j].id != j) { badperm++; break; }
+            if (rr[j].status < 3) st[rr[j].status]++;
+            if (rl[j].status != rr[j].status || rl[j].v != rr[j].v) mism++;
+          }
+        }
+      }
+      free(keys);
+      free_table(ht);
+    }
+  printf("    %zu batches, %zu lookups (ref: found %zu, absent %zu, full %zu):"
+         " mismatches %zu, bad count %zu, bad id set %zu, queue not empty %zu,"
+         " same result order %zu/%zu\n", batches, lookups, st[0], st[1], st[2],
+         mism, badcnt, badperm, notempty, seq_same, batches);
+  CHECK(mism == 0, "%zu lookups differ from HEAD find", mism);
+  CHECK(badcnt == 0 && badperm == 0, "count %zu / id set %zu wrong", badcnt, badperm);
+  CHECK(notempty == 0, "library queue not empty at return %zu times", notempty);
+  CHECK(seq_same == batches, "result order differs from HEAD in %zu of %zu batches",
+        batches - seq_same, batches);
+  CHECK(st[0] > 1000 && st[1] > 1000 && st[2] > 1000,
+        "path coverage: found %zu absent %zu full %zu", st[0], st[1], st[2]);
+}
+
 int main(void) {
   printf("dramblast functional tests (no timing, no DPDK, no hugepages)\n");
   printf("table: %llu slots x %zu B = %llu KiB\n",
@@ -707,6 +858,7 @@ int main(void) {
   t_backend_lut();
   t_flowhash_equiv();
   t_flowhash4_equiv();
+  t_find_equiv();
 
   printf("\n----------------------------------------------------------\n");
   printf("pass %d   fail %d\n", g_pass, g_fail);

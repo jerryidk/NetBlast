@@ -40,6 +40,9 @@ merely missing. `T7`–`T9` cover the result-id contract and two sentinel limits
 `flowhash` (static inline in `packettool.h`, unrolled) vs transcription of old
 loop version (HEAD 57bf217): all 16,777,216 pktgen tuples + 10M random frames,
 0 mismatches required, 16,777,216 distinct keys required (REFLECT_PATH §7).
+`T12`: `flowhash4` vs `flowhash` (REFLECT_PATH §8). `T13`: `dramblast_find_batch_sync`
+vs transcription of HEAD e20527e find, per id (status, v), random tables load 0-1.0,
+queue depth 4-64, batches 1-200 with in-batch repeats (REFLECT_PATH §9).
 
 Every test is now a regression guard for a fixed defect in
 `docs/dramblast_analysis.md`. Before the fixes the suite reported
@@ -49,7 +52,7 @@ inserted keys were found.
 ## Status
 
 ```
-pass 41   fail 0
+pass 46   fail 0
 ```
 
 Also clean under sanitizers, which finding C5 previously made impossible:

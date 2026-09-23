@@ -26,37 +26,6 @@ static LookUpTable dramblast_backends;
 
 dramblast_ht_t *dramblast_ht;
 
-static inline uint32_t dramblast_get_queue_sz(dramblast_ht_t *ht, unsigned int id) {
-
-  dramblast_queue_t *q = &ht->queues[id];
-  return (q->find_queue_head - q->find_queue_tail) & (q->find_queue_size - 1);
-}
-
-static inline void dramblast_push_queue(dramblast_ht_t *ht, uint64_t idx, uint64_t k,
-                                uint64_t visit_count,
-                                 uint32_t item_id, unsigned int tid) {
-
-  dramblast_queue_t *q = &ht->queues[tid];
-  dramblast_queue_item_t *queue_head_slot = &q->find_queue[q->find_queue_head];
-  queue_head_slot->idx = idx;
-  queue_head_slot->k = k;
-  queue_head_slot->id = item_id;
-  queue_head_slot->visit_count = visit_count;
-  q->find_queue_head++;
-  q->find_queue_head = q->find_queue_head & (q->find_queue_size - 1);
-}
-
-static inline dramblast_queue_item_t *dramblast_pop_queue(dramblast_ht_t *ht,
-                                                   unsigned int id) {
-
-  dramblast_queue_t *q = &ht->queues[id];
-  dramblast_queue_item_t *queue_tail_slot = &q->find_queue[q->find_queue_tail];
-  q->find_queue_tail++;
-  q->find_queue_tail = q->find_queue_tail & (q->find_queue_size - 1);
-
-  return queue_tail_slot;
-}
-
 /* C11 requires aligned_alloc()'s size to be an integral multiple of the
  * alignment, so round up rather than passing a bare sizeof(). */
 static inline void *dramblast_alloc64(size_t bytes) {
@@ -73,13 +42,20 @@ static inline void *dramblast_alloc64(size_t bytes) {
 // Macro to encode the instruction
 #define LX_PREFETCH(addr, level) _mm_prefetch((const char *)(addr), (level))
 
-// Updated dramblast_prefetch function
-static inline void dramblast_prefetch(dramblast_ht_t *ht, uint64_t idx) {
+/* Pointer form: find loop keeps table base in a local (P8), no ht->table
+   reload per prefetch. Hint unchanged (emits prefetcht2, s1.2). */
+static inline void dramblast_prefetch_kv(const dramblast_kv_t *kv) {
   // Using PREFETCH_T0 is standard for items you are about to access immediately
-  LX_PREFETCH(&ht->table[idx], PREFETCH_T1);
+  LX_PREFETCH(kv, PREFETCH_T1);
 }
 
-static inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
+static inline void dramblast_prefetch(dramblast_ht_t *ht, uint64_t idx) {
+  dramblast_prefetch_kv(&ht->table[idx]);
+}
+
+/* Home bucket of k under bmask = (len - 1) & DRAMBLAST_BUCKET_IDX_MASK.
+   Split out so find can hold bmask in a register for whole call (P8). */
+static inline uint64_t dramblast_home(uint64_t k, uint64_t bmask) {
   uint64_t hash;
 #ifdef SSE42
   hash = _mm_crc32_u64(0, k);
@@ -88,7 +64,11 @@ static inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
   hash = k * 0x9E3779B97F4A7C15ULL;
 #endif
 
-  return (uint64_t)hash & (ht->len - 1) & DRAMBLAST_BUCKET_IDX_MASK;
+  return (uint64_t)hash & bmask;
+}
+
+static inline uint64_t dramblast_hash(dramblast_ht_t *ht, uint64_t k) {
+  return dramblast_home(k, (ht->len - 1) & DRAMBLAST_BUCKET_IDX_MASK);
 }
 
 int dramblast_insert_one(dramblast_ht_t *ht, uint64_t k, uint64_t v) {
@@ -135,10 +115,28 @@ try_insert:
 }
 
 // Note: args_len is also length of results array
+/*
+ * D1 (REFLECT_PATH s9): queue pointer, head, tail, mask, table base, len,
+ * bucket mask in locals for whole call; head/tail stored back once at return.
+ * WHY: old push/pop/get_queue_sz helpers (removed) re-derived &ht->queues[id]
+ * and loaded/stored head/tail through memory every push and pop (P9);
+ * results[] stores may alias them (no restrict, P11), so compiler must reload
+ * after every result write: store->load chain per pop. Table geometry reloaded
+ * per probe likewise (P8). Same pushes, pops, prefetches, in same order as
+ * helper version: result sequence identical, not only multiset (tests T13).
+ */
 uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
                                    unsigned int args_len,
                                    dramblast_result_t *results,
                                    unsigned int id) {
+
+  dramblast_queue_t *const q = &ht->queues[id];
+  dramblast_queue_item_t *const fq = q->find_queue;
+  const uint32_t qmask = q->find_queue_size - 1; /* size pow2; also max fill */
+  uint32_t head = q->find_queue_head, tail = q->find_queue_tail;
+  dramblast_kv_t *const table = ht->table;
+  const uint64_t len = ht->len;
+  const uint64_t bmask = (len - 1) & DRAMBLAST_BUCKET_IDX_MASK;
 
   unsigned int args_head = 0;
   unsigned int result_head = 0;
@@ -151,31 +149,38 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
   while (result_head < args_len) {
 
     // push as many as possible without stalling on LFB.
-    while (args_head < args_len &&
-           dramblast_get_queue_sz(ht, id) < ht->queues[id].find_queue_size - 1) {
-      dramblast_arg_t *arg = &args[args_head];
+    while (args_head < args_len && ((head - tail) & qmask) < qmask) {
+      const dramblast_arg_t *arg = &args[args_head];
       args_head++;
-      idx = dramblast_hash(ht, arg->k);
-      dramblast_prefetch(ht, idx);
-      dramblast_push_queue(ht, idx, arg->k, 0, arg->id, id);
+      idx = dramblast_home(arg->k, bmask);
+      dramblast_prefetch_kv(&table[idx]);
+      dramblast_queue_item_t *slot = &fq[head];
+      slot->idx = idx;
+      slot->k = arg->k;
+      slot->id = arg->id;
+      slot->visit_count = 0;
+      head = (head + 1) & qmask;
       NBW(NBW_PUSH, arg->id, idx);
     }
 
 #ifdef NB_PROBE
     {
-      uint32_t occ = dramblast_get_queue_sz(ht, id); /* in flight at this pop */
+      uint32_t occ = (head - tail) & qmask; /* in flight at this pop */
       nbp_pops++;
       nbp_occ_sum += occ;
       if (occ > nbp_occ_max) nbp_occ_max = occ;
     }
 #endif
-    // pop_find_queue
-    dramblast_queue_item_t *queue_tail_slot = dramblast_pop_queue(ht, id);
-    idx = queue_tail_slot->idx;
-    count = queue_tail_slot->visit_count;
-    uint64_t *bucket = (uint64_t *)&ht->table[idx];
+    // pop_find_queue; copy out: reprobe push below may reuse queue slots
+    const dramblast_queue_item_t *it = &fq[tail];
+    tail = (tail + 1) & qmask;
+    idx = it->idx;
+    count = it->visit_count;
+    const uint64_t k = it->k;
+    const uint32_t kid = it->id;
+    uint64_t *bucket = (uint64_t *)&table[idx];
     __m512i cacheline = _mm512_load_si512(bucket);
-    __m512i key_vector = _mm512_set1_epi64(queue_tail_slot->k);
+    __m512i key_vector = _mm512_set1_epi64(k);
     __m512i zero_vector = _mm512_setzero_si512();
     __mmask8 key_cmp = _mm512_mask_cmpeq_epu64_mask(DRAMBLAST_SIMD_KEY_MASK,
                                                     cacheline, key_vector);
@@ -184,34 +189,37 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
       int offset = __builtin_ctz(key_cmp);
       dramblast_result_t *result = &results[result_head];
       result->v = bucket[offset + 1];
-      result->id = queue_tail_slot->id;
+      result->id = kid;
       result->status = DRAMBLAST_FOUND;
       result_head++;
-      NBW(NBW_FOUND, queue_tail_slot->id, count);
+      NBW(NBW_FOUND, kid, count);
     } else {
 
       count += 4;
-      if (unlikely(count >= ht->len)) {
+      if (unlikely(count >= len)) {
         // probe bound reached; we cannot say whether the key is present
         dramblast_result_t *result = &results[result_head];
         result->v = 0;
-        result->id = queue_tail_slot->id;
+        result->id = kid;
         result->status = DRAMBLAST_TABLE_FULL;
         result_head++;
-        NBW(NBW_FULL, queue_tail_slot->id, count);
+        NBW(NBW_FULL, kid, count);
         continue;
       }
 
       __mmask8 ept_cmp = _mm512_mask_cmpeq_epu64_mask(DRAMBLAST_SIMD_KEY_MASK,
                                                       cacheline, zero_vector);
       if (ept_cmp == 0) {
-        idx += 4;
-        idx = idx & (ht->len - 1);
-        idx = idx & DRAMBLAST_BUCKET_IDX_MASK;
-        dramblast_prefetch(ht, idx);
-        dramblast_push_queue(ht, idx, queue_tail_slot->k, count, queue_tail_slot->id,
-                             id);
-        NBW(NBW_REPROBE, queue_tail_slot->id, count);
+        /* idx 4-aligned: & bmask = & (len-1) then & ~3, as before */
+        idx = (idx + 4) & bmask;
+        dramblast_prefetch_kv(&table[idx]);
+        dramblast_queue_item_t *slot = &fq[head];
+        slot->idx = idx;
+        slot->k = k;
+        slot->id = kid;
+        slot->visit_count = count;
+        head = (head + 1) & qmask;
+        NBW(NBW_REPROBE, kid, count);
 #ifdef NB_PROBE
         nbp_reprobes++;
 #endif
@@ -219,14 +227,20 @@ uint32_t dramblast_find_batch_sync(dramblast_ht_t *ht, dramblast_arg_t *args,
         // an empty slot in this bucket proves the key is absent
         dramblast_result_t *result = &results[result_head];
         result->v = 0;
-        result->id = queue_tail_slot->id;
+        result->id = kid;
         result->status = DRAMBLAST_ABSENT;
         result_head++;
-        NBW(NBW_ABSENT, queue_tail_slot->id, count);
+        NBW(NBW_ABSENT, kid, count);
       }
     }
   }
 
+  /* head == tail here: loop ends only when every arg resolved, so every
+     pushed item was popped. Stored anyway (2 stores per call, not per
+     push/pop) so next call continues from same positions as helper version;
+     positions never change results. */
+  q->find_queue_head = head;
+  q->find_queue_tail = tail;
   NBP_SET(pops, nbp_pops);
   NBP_SET(reprobes, nbp_reprobes);
   NBP_SET(occ_sum, nbp_occ_sum);
