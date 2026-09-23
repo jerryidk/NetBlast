@@ -499,3 +499,124 @@ still DRAM-bound, but the working set is half what `pktgen/run.sh` says.
 **Fixed 2026-09-23** (`hash.c`, `fnv_1_multi` and `fnv_1a_multi` XOR `(unsigned char)`):
 offline reproduction now gives 16,777,216 distinct keys. A/B in §3.7. Every figure
 before the fix, §3.1-3.6 included, is on 8.45M flows.
+
+---
+
+## 6. Step 0: harness, loop metric, probe counters, build flags
+
+Data: `/users/sohamb/sweeps/reflect/step0/` (`rows.txt`, `launch_order.txt`, `arms.txt`,
+logs). Table: `python3 analysis.py ab <dir> old:new old_p9:new_p9`.
+
+### 6.1 What changed
+
+- `harness.sh ab <out> <arms> [q ...]`: A/B block driver. q outer (default 6..1), arms
+  inner in spec order, each run = one `cmd_sweep` in a subshell. Arm = `name bin extra`;
+  `-S` without `-D` gets `-D <out>/<name>_q<q>`. Defaults `SAMPLE_AFTER=6`,
+  `PERF_EVENTS=cycles,instructions`. `DRY_RUN=1` = plan only. Fails before first launch
+  on missing bin or duplicate name. Writes `rows.txt` (row prefixed `arm=`),
+  `launch_order.txt`, `arms.txt` (spec + bin sha256 + rev). `analysis.py ab` reads it.
+- main.c `All-poll cyc per fwd packet` = (loop_tsc + idle_tsc) / fwded. Every old label
+  unchanged. Sweep row gains `allpoll=` after `bin=`; `analysis.py probe` column `allp`.
+  Why: §4.1, work moved onto empty polls must not look free.
+- nbprobe `NBP_NEV` 6 → 8: `insns` (raw 0x00c0, inst_retired.any), `br_misp` (raw 0x00c5,
+  br_misp_retired.all_branches), appended so indices 0-5 unchanged. Record 264 → 328 B,
+  dump magic `nbprobp2` + version 2; `analysis.py` reads v1 and v2 (v1 parse of
+  `al_a000_dramblast_q1` byte-identical to old reader). Mark cost 106 → **136 ticks**
+  (+2 rdpmc, ~15 each).
+- PMU budget: probe pins cycles + insns (fixed 1/0 eligible) + 6 GP; harness
+  `cycles,instructions` then takes 2 GP = 8 GP full. Checked: `perf stat -C` during
+  `-S 16p` run reads 100.00% enabled; ring 262144 records, 0 with zero cycles or insns.
+  Any 3rd perf-stat event would multiplex perf stat (probe pinned, keeps counters).
+- `bench_membw` modes `insn` (asm loop, 8 instructions) and `brrand` / `brfix` (asm
+  `test; jz` on random vs alternating bit). `harness.sh validate` check 1b.
+- Build: meson option `march`, default `icelake-server`, appended in target c_args
+  (land after dependency cflags). `-Dmarch=dpdk` = old build. See 6.3.
+
+### 6.2 Validation
+
+| check | known answer | result | verdict |
+|---|---|---|---|
+| insns (0xc0 :u), `insn` n=1e8 vs 1e9 | 8 per iteration | (8000430111 − 800429981) / 9e8 = **8.0000001** | PASS exact |
+| br_misp (0xc5 :u), `brrand` / `brfix` 1e9 vs 1e8 diff | ~0.5 / ~0 | **0.50001** / 1.6e-7 per iteration | PASS |
+| same, perf generic `instructions:u` / `branch-misses:u` | = raw | identical counts every run | PASS |
+| net_null `-m none -S 16p` partition | phase sum ≈ Full-loop | corrected 66.3 (raw 72.6) vs Full-loop 68, All-poll 68 (no empty polls on net_null). Loop carries ~1.2 amortised mark cost of sampled bursts | PASS |
+| `tests/` (27 cases), old flags / new flags | pass | 27/27 both. Shipped Makefile FAILS under nix shell (`-march=native` stripped → no SSE4.2 crc32); passes with system gcc 11 | PASS |
+| hot functions, `-Dmarch=dpdk` vs HEAD build | identical | main_loop, find_batch_sync, process_frames, insert_one, flowhash, fnv_1_multi: identical modulo addresses | PASS |
+| net_null `-m dramblast -P 0.9 -c 2^22 -B 4k`, old vs new | same table | occupied 3774873 both, disp/hit/miss means equal to 3 dp; histogram deltas ≤ run-to-run of old itself (2-lcore CAS race) | PASS |
+| `harness.sh codegen` old, new | alloc/free/prefetch present | OK both | PASS |
+
+### 6.3 Build flags: what the old build really was
+
+`-march=native` in meson.build never took effect, twice over:
+1. nix cc-wrapper `NIX_ENFORCE_NO_NATIVE=1` strips `-march=native` (cc1 sees
+   `-march=x86-64 -mtune=generic`).
+2. DPDK 21.11 `libdpdk-libs.pc` Cflags end `-march=nehalem`, placed after project args.
+
+Effective old target: nehalem ISA + tune, plus explicit `-mavx512f -mavx512dq` (implies
+AVX2). No BMI/BMI2, FMA, LZCNT, MOVBE, AVX-512 BW/VL. gcc 10.3 knows no
+sapphirerapids/emeraldrapids; `native` with wrapper off would guess `cooperlake`.
+`icelake-server` = newest server target gcc 10.3 has, ISA subset of Xeon Gold 5512U
+(checked in `/proc/cpuinfo`). Codegen diff, hot functions: tuning only (inc vs add 1,
+`tzcnt` vs `bsf`, nop alignment). Only new-ISA encoding in hot path: 2 `tzcnt` (BMI1,
+same result as `bsf` here) in `dramblast_find_batch_sync`. Whole binary adds 2 `blsr`
+(BMI1) and drops zmm vectorisation (`vpermt2q`, `vextracti64x4`) in `main` stats code
+(lcore 0, not per-packet). LTO main loop picks it up too.
+
+A/B, one block, q 6→1, arms alternating old, new, old_p9, new_p9 (24 launches, 0 failed,
+02:22-02:40Z). Steady Mpps / loop ticks per pkt (All-poll = loop within 1 everywhere):
+
+| q | old α≈0 | new α≈0 | Δloop | old α 0.9 | new α 0.9 | Δloop |
+|---|---|---|---|---|---|---|
+| 6 | 93.28 / 135 | 93.28 / 134 | −1 | 28.27 / 453 | 28.51 / 449 | −4 |
+| 5 | 88.82 / 118 | 89.76 / 117 | −1 | 23.73 / 451 | 23.93 / 447 | −4 |
+| 4 | 70.89 / 119 | 71.48 / 118 | −1 | 19.04 / 452 | 19.21 / 448 | −4 |
+| 3 | 53.16 / 119 | 53.68 / 118 | −1 | 14.39 / 452 | 14.48 / 449 | −3 |
+| 2 | 35.22 / 120 | 35.75 / 118 | −2 | 9.57 / 460 | 9.65 / 455 | −5 |
+| 1 | 18.01 / 118 | 18.07 / 118 | 0 | 4.63 / 482 | 4.67 / 478 | −4 |
+
+(α 0.9 loop ~450, not §3.7's 454-487: same `both` code, one block apart. Compare within
+a block only.)
+
+**Verdict: keep new (`-Dmarch=icelake-server`).** α≈0: −0 to −2 ticks, inside ±3 noise
+per point. α 0.9: −3 to −5 at every q, ~1%. Sign agrees in all 12 pairs (Mpps +0.1-1.1%).
+Small, one pass, and old/new also differ in code layout (alignment nops), so part may be
+layout, not ISA/tune. Kept anyway because it is also the correct build: flags now mean
+what build files say, and nothing regressed. Revert = `-Dmarch=dpdk` or drop the
+`arch_args` hunks (`meson.build`, `libsashstore/meson.build`, `meson_options.txt`).
+Every figure before §6 is on the old (nehalem-tuned) build.
+
+### 6.4 Verification (independent replicate)
+
+Data: `/users/sohamb/sweeps/reflect/step0_rep/`, same binaries as §6.3 (`build-old` sha
+ab9ef90d, `build-new` e04aee0d; `.text` byte-identical to fresh rebuilds of working tree).
+Arm order REVERSED: new, old, new_p9, old_p9 per q, q 6→1, 24 launches, 0 failed,
+02:47-03:06Z. Freq 2090-2098 MHz all runs.
+
+Offline: HEAD build vs `-Dmarch=dpdk` build, 6 hot functions identical modulo addresses
+(probe changes = nothing in shipped hot path). `tests/` 27/27: system gcc native, system
+gcc icelake-server, nix gcc old flags, nix gcc new flags. Generator-tuple emulation
+through `flowhash`, old vs new flags: 16777216 distinct keys both, key-sequence digest
+e798f9c2d91c0f83 both (bit-identical). v1 dumps (`al_a000_dramblast_q1`, `_q4`): new
+`analysis.py probe` JSON = HEAD reader's, minus new `allpollcyc` key. bench_membw rerun:
+8.00000024 insns/iter; br_misp 0.50013 (brrand) vs 4.8e-5 (brfix) per iter at n=1e8,
+instructions equal both modes.
+
+Δloop = new − old, ticks/pkt (All-poll = same everywhere):
+
+| q | α≈0 p1 | α≈0 p2 | mean | α 0.9 p1 | α 0.9 p2 | mean |
+|---|---|---|---|---|---|---|
+| 6 | −1 | 0 | −0.5 | −4 | −3 | −3.5 |
+| 5 | −1 | −1 | −1 | −4 | −2 | −3 |
+| 4 | −1 | −1 | −1 | −4 | −2 | −3 |
+| 3 | −1 | −1 | −1 | −3 | −4 | −3.5 |
+| 2 | −2 | −2 | −2 | −5 | −5 | −5 |
+| 1 | 0 | 0 | 0 | −4 | −4 | −4 |
+
+ΔMpps p1/p2: α≈0 q6..1 0.00/0.00, +0.94/+0.43, +0.59/+0.64, +0.52/+0.54, +0.53/+0.53,
++0.06/+0.08; α 0.9 +0.24/+0.18, +0.20/+0.12, +0.17/+0.08, +0.09/+0.11, +0.08/+0.12,
++0.04/+0.04. Same arm pass-to-pass |Δloop| ≤ 1 every q, every arm.
+
+Verdict: α 0.9 gain holds, −2 to −5 every q both passes, mean −3.7, above ≤1 drift. α≈0:
+−0 to −2, no sign flip in 24 pairs but 3 zeros; q6 α≈0 at generator cap (93.28 both).
+§6.3 "sign agrees in all 12 pairs" overstated: pass 1 has 1 zero Δloop, 1 zero ΔMpps.
+Layout vs ISA/tune still not separated (same caveat). Keep new build.
