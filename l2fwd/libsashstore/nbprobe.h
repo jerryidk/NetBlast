@@ -13,7 +13,7 @@
  * splits one burst into rx / hash / alloc / find / post / free / mac / tx.
  *
  * Mechanism. Nine boundaries, one read each: rdtsc (wall) and, with -S <K>p,
- * rdpmc of six counters. Phase i = boundary i+1 minus boundary i, so phases
+ * rdpmc of NBP_NEV (8) counters. Phase i = boundary i+1 minus boundary i, so phases
  * partition the burst, no gap, no double count -- same rule as main.c's
  * loop_tsc. Only every K-th poll is read (-S K); rest pay one predictable
  * branch per boundary. Empty polls cancelled, never recorded.
@@ -42,7 +42,15 @@ enum {
   NBP_NB
 };
 #define NBP_NPH (NBP_NB - 1)
-#define NBP_NEV 6 /* cycles, stalls_total, stalls_l1d, stalls_l3, st_bound, rfo_hitm */
+/* cycles, stalls_total, stalls_l1d, stalls_l3, st_bound, rfo_hitm, insns,
+   br_misp. New events append only: analysis.py and v1 dumps read by index.
+   PMU budget/core: 8 GP + 4 fixed. Here cycles + insns may take fixed 1/0,
+   other six = 6 GP; harness perf stat cycles,instructions then lands on the
+   remaining 2 GP. Full: any further perf stat event multiplexes perf stat
+   (probe events pinned, keep their counters). Holds only with
+   kernel.nmi_watchdog=0 (as on this rig): watchdog takes fixed cycles counter,
+   budget then needs 9 GP of 8 and perf stat multiplexes. */
+#define NBP_NEV 8
 
 /* One sampled burst. Deltas as u32: one phase never spans 2^32 ticks. */
 struct nbp_rec {

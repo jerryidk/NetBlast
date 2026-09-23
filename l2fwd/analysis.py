@@ -18,6 +18,7 @@ backing        verify_backing.py            page_watch log -> did each arm get i
 selftest       test_perf_guard.py           fire perf multiplexing guard [--real]
 probe          (new, 2026-09-22)            nbprobe logs + ring dumps -> per-phase table, json
 ptw            (new, 2026-09-22)            PT ptwrite trace (build-ptw) -> per-packet push->resolve times
+ab             (new, 2026-09-23)            harness.sh ab rows.txt -> per-q per-arm Mpps/loop/all-poll, deltas
 
 Each section below keeps old module's header comment. Names that clashed
 between modules got section prefix (report_lsq, lat_dram_ceiling, CEIL_W, ...).
@@ -5526,30 +5527,45 @@ def cmd_selftest():
 # rfo_hitm = RFO served by modified line in another core: sharing signal.
 import struct as _struct
 
-NBP_REC = _struct.Struct("<Q8I48I6H4I2H")
 NBP_PHASES = ["rx", "hash", "alloc", "find", "post", "free", "mac", "tx"]
-NBP_EVS = ["cycles", "stall_total", "stall_l1d", "stall_l3", "st_bound", "rfo_hitm"]
+# Append-only: index i = nbprobe.c nbp_ev[i]. v1 dumps carry first 6.
+NBP_EVS = ["cycles", "stall_total", "stall_l1d", "stall_l3", "st_bound", "rfo_hitm",
+           "insns", "br_misp"]
+# dump version -> (magic, ev slots per record). v1 = NBP_NEV 6, v2 = 8.
+NBP_VER = {1: (0x3170726f6270626e, 6), 2: (0x3270726f6270626e, 8)}
+
+
+def nbp_rec_struct(nev_slots):
+    """tsc0, tsc[8], ev[nev_slots][8], 6 u16 counts, pops reprobes occ_sum ins_steps, occ_max lcore"""
+    return _struct.Struct(f"<Q8I{8 * nev_slots}I6H4I2H")
 
 
 def nbp_load(path):
     b = pathlib.Path(path).read_bytes()
     hdr = _struct.unpack_from("<8Q", b, 0)
-    if hdr[0] != 0x3170726f6270626e or hdr[2] != NBP_REC.size:
-        sys.exit(f"{path}: not an nbprobe v1 dump (magic/recsize)")
+    ver = hdr[1]
+    if ver not in NBP_VER or hdr[0] != NBP_VER[ver][0]:
+        sys.exit(f"{path}: not an nbprobe dump (magic {hdr[0]:#x} version {ver})")
+    slots = NBP_VER[ver][1]
+    rec = nbp_rec_struct(slots)
+    if hdr[2] != rec.size:
+        sys.exit(f"{path}: nbprobe v{ver} record size {hdr[2]} != {rec.size}")
     nev, every, n, cal_tsc, lcore = hdr[3], hdr[4], hdr[5], hdr[6], hdr[7]
-    cal_ev = _struct.unpack_from("<6Q", b, 64)
-    off = 64 + 48
-    # raw tuples, not dicts: 2^18 records per lcore, dict per record was minutes
-    # v[0] tsc0, v[1:9] tsc, v[9+8i : 17+8i] ev i, v[57] nb_rx, v[58] fn,
-    # v[59..62] found absent full inserts, v[63..66] pops reprobes occ_sum ins_steps, v[67] occ_max
-    recs = list(NBP_REC.iter_unpack(b[off: off + n * NBP_REC.size]))
+    cal_ev = _struct.unpack_from(f"<{slots}Q", b, 64)
+    off = 64 + 8 * slots
+    # raw tuples, not dicts: 2^18 records per lcore, dict per record was minutes.
+    # v[0] tsc0, v[1:9] tsc, v[9+8i : 17+8i] ev i, then from c = 9 + 8*slots:
+    # v[c] nb_rx, v[c+1] fn, v[c+2..c+5] found absent full inserts,
+    # v[c+6..c+9] pops reprobes occ_sum ins_steps, v[c+10] occ_max
+    recs = list(rec.iter_unpack(b[off: off + n * rec.size]))
     return {"lcore": lcore, "nev": nev, "every": every, "cal_tsc": cal_tsc,
-            "cal_ev": cal_ev[:nev], "recs": recs}
+            "cal_ev": cal_ev[:nev], "recs": recs, "version": ver, "cnt": 9 + 8 * slots}
 
 
 def nbp_summarise(dumps, tail_s=None, tsc_hz=None):
     """Per-phase per-packet means over ring records. tail_s: keep last N s."""
-    nev = dumps[0]["nev"] if dumps else 0
+    # mixed v1/v2 dumps in one summary: only counters all of them carry
+    nev = min(d["nev"] for d in dumps) if dumps else 0
     NP = len(NBP_PHASES)
     tsc_raw = [0] * NP
     tsc_cor = [0] * NP
@@ -5562,17 +5578,17 @@ def nbp_summarise(dumps, tail_s=None, tsc_hz=None):
         if tail_s and tsc_hz and rs:
             cut = rs[-1][0] - tail_s * tsc_hz
             rs = [r for r in rs if r[0] >= cut]
-        cal, cev = d["cal_tsc"], d["cal_ev"]
+        cal, cev, c = d["cal_tsc"], d["cal_ev"], d["cnt"]
         for r in rs:
-            n_rx = r[57]
+            n_rx = r[c]
             if not n_rx:
                 continue
             nb += 1
             pk += n_rx
-            fn += r[58]; absent += r[60]; full += r[61]
-            pops += r[63]; reprobes += r[64]; occ_sum += r[65]
-            if r[67] > occ_max:
-                occ_max = r[67]
+            fn += r[c + 1]; absent += r[c + 3]; full += r[c + 4]
+            pops += r[c + 6]; reprobes += r[c + 7]; occ_sum += r[c + 8]
+            if r[c + 10] > occ_max:
+                occ_max = r[c + 10]
             for p in range(NP):
                 t = r[1 + p]
                 tsc_raw[p] += t
@@ -5593,6 +5609,8 @@ def nbp_summarise(dumps, tail_s=None, tsc_hz=None):
             ph["work"] = ph["cycles"] - ph["stall_total"]
             ph["mem_wait"] = ph["stall_l1d"]
             ph["other_stall"] = ph["stall_total"] - ph["stall_l1d"]
+        if nev > 7:
+            ph["ipc"] = ph["insns"] / ph["cycles"] if ph["cycles"] > 0 else float("nan")
         xs = sorted(per[p])
         ph["p50"], ph["p90"], ph["p99"] = xs[len(xs) // 2], xs[int(len(xs) * .9)], xs[min(len(xs) - 1, int(len(xs) * .99))]
         out["phase"][name] = ph
@@ -5613,6 +5631,9 @@ def nbp_parse_log(path):
         rec["steady_mpps"] = round(statistics.median(samples[3:]), 2)
     m = re.findall(r"Full-loop cyc per fwd packet: (\d+)", t)
     rec["loopcyc"] = int(m[-1]) if m else None
+    # (loop+idle)/fwded, empty polls included; None on pre-2026-09-23 binaries
+    m = re.findall(r"All-poll cyc per fwd packet: (\d+)", t)
+    rec["allpollcyc"] = int(m[-1]) if m else None
     m = re.findall(r"Average rx batch sz \(nonempty polls\): (\d+)", t)
     rec["batch_ne"] = int(m[-1]) if m else None
     for when in ("prefill", "exit"):
@@ -5657,15 +5678,15 @@ def cmd_probe():
             rec["ring"] = nbp_summarise(dumps, tail_s=10, tsc_hz=tsc_hz)
         rows.append(rec)
     pathlib.Path(out).write_text(json.dumps(rows, indent=1))
-    hdr = f"{'log':<34}{'Mpps':>7}{'loop':>6}{'B':>4}{'alpha':>7}" + \
-          "".join(f"{p:>7}" for p in NBP_PHASES) + f"{'sum':>7}{'memw/f':>8}{'pops/k':>8}{'occ':>6}"
+    hdr = f"{'log':<34}{'Mpps':>7}{'loop':>6}{'allp':>6}{'B':>4}{'alpha':>7}" + \
+          "".join(f"{p:>7}" for p in NBP_PHASES) + f"{'sum':>7}{'memw/f':>8}{'pops/k':>8}{'occ':>6}{'ipc/f':>6}{'brm/p':>6}"
     print(hdr)
     for r in rows:
         g = r.get("ring") or {}
         ph = g.get("phase", {})
         alpha = (r.get("table_exit") or {}).get("alpha")
         line = (f"{pathlib.Path(r['log']).stem[-34:]:<34}{r.get('steady_mpps') or 0:>7.2f}"
-                f"{r.get('loopcyc') or 0:>6}{r.get('batch_ne') or 0:>4}"
+                f"{r.get('loopcyc') or 0:>6}{r.get('allpollcyc') or 0:>6}{r.get('batch_ne') or 0:>4}"
                 f"{alpha if alpha is not None else float('nan'):>7.3f}")
         line += "".join(f"{ph[p]['tsc']:>7.1f}" if p in ph else f"{'-':>7}" for p in NBP_PHASES)
         line += f"{g.get('tsc_total', 0):>7.1f}"
@@ -5673,6 +5694,9 @@ def cmd_probe():
         line += f"{f.get('mem_wait', float('nan')):>8.1f}"
         c = g.get("counts", {})
         line += f"{c.get('pops_per_key', float('nan')):>8.3f}{c.get('occ_mean', float('nan')):>6.1f}"
+        # v2 dumps only: find IPC, mispredicts per pkt over all phases
+        brm = sum(ph[p]["br_misp"] for p in ph if "br_misp" in ph[p]) if "br_misp" in f else float("nan")
+        line += f"{f.get('ipc', float('nan')):>6.2f}{brm:>6.2f}"
         if r["errors"]:
             line += "  ERR: " + "; ".join(r["errors"][:2])
         print(line)
@@ -5765,6 +5789,66 @@ def cmd_ptw():
                 print(f"  phase ending {name:<6} ns p50 {pct(xs, .5):>6}  p90 {pct(xs, .9):>6}  mean {sum(xs) / len(xs):8.1f}")
 
 # =============================================================================
+# ab: harness.sh ab block -> per-q per-arm table (new, 2026-09-23)
+# =============================================================================
+# Reads <out_dir>/rows.txt (sweep rows prefixed arm=) and each run's log for
+# steady Mpps (median of per-second samples after first 3: -P runs insert new
+# flows first seconds). Last row per (arm, q) wins: a rerun replaces, and
+# launch_order.txt still records both. Pairs `A:B` add B-A deltas.
+AB_ROW = re.compile(r"arm=(\S+) q=(\d+)\s.*?avg=(\S+)\s+loopcyc=(\S+)\s+idlecyc=(\S+)\s+"
+                    r"batch=(\S+)\s+batchne=(\S+)\s+missed=(\S+).*?freq=(\S+)MHz"
+                    r"(?:.*?allpoll=(\S+))?")
+
+
+def cmd_ab():
+    """analysis.py ab <out_dir> [A:B ...]"""
+    if len(sys.argv) < 2:
+        sys.exit("usage: analysis.py ab <out_dir> [armA:armB ...]")
+    out = pathlib.Path(sys.argv[1])
+    pairs = [a.split(":") for a in sys.argv[2:]]
+    num = lambda x: None if x in (None, "NA") else float(x)
+    runs, arms, qs, failed = {}, [], [], []
+    for line in (out / "rows.txt").read_text().splitlines():
+        if " FAILED " in line:
+            failed.append(line)
+            continue
+        m = AB_ROW.match(line)
+        if not m:
+            continue
+        arm, q = m.group(1), int(m.group(2))
+        r = dict(zip(("avg", "loop", "idle", "batch", "batchne", "missed", "freq", "allpoll"),
+                     map(num, m.groups()[2:])))
+        # exact <arm>_<mode>_q<q>: glob alone lets arm `old` match `old_p9_*` logs
+        logs = sorted(l for l in out.glob(f"{arm}_*_q{q}.log")
+                      if re.fullmatch(rf"{re.escape(arm)}_[^_]+_q{q}", l.stem))
+        if logs:
+            r["steady"] = nbp_parse_log(logs[-1]).get("steady_mpps")
+        runs[arm, q] = r
+        arms += [arm] if arm not in arms else []
+        qs += [q] if q not in qs else []
+    print(f"{'q':>3} " + "".join(f"{a:>24}" for a in arms))
+    print(f"{'':>3} " + "".join(f"{'Mpps loop allp B':>24}" for a in arms))
+    for q in qs:
+        cells = []
+        for a in arms:
+            r = runs.get((a, q))
+            f = lambda k, w, d: f"{r[k]:>{w}.{d}f}" if r and r.get(k) is not None else f"{'-':>{w}}"
+            cells.append(f"{f('steady', 9, 2)}{f('loop', 5, 0)}{f('allpoll', 5, 0)}{f('batchne', 5, 0)}")
+        print(f"{q:>3} " + "".join(cells))
+    for a, b in pairs:
+        print(f"\n{b} - {a}:  q  dMpps  dloop  dallp")
+        for q in qs:
+            ra, rb = runs.get((a, q)), runs.get((b, q))
+            if not (ra and rb):
+                continue
+            d = lambda k: (rb[k] - ra[k]) if rb.get(k) is not None and ra.get(k) is not None else float("nan")
+            print(f"{'':>{len(a) + len(b) + 4}}{q:>3}{d('steady'):>7.2f}{d('loop'):>7.0f}{d('allpoll'):>7.0f}")
+    for line in failed:
+        print("FAILED:", line)
+    (out / "ab.json").write_text(json.dumps({f"{a}_q{q}": r for (a, q), r in runs.items()}, indent=1))
+
+
+# =============================================================================
 # dispatch
 # =============================================================================
 COMMANDS = {
@@ -5781,6 +5865,7 @@ COMMANDS = {
     "selftest": cmd_selftest,
     "probe": cmd_probe,
     "ptw": cmd_ptw,
+    "ab": cmd_ab,
 }
 
 

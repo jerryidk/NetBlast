@@ -292,6 +292,15 @@ static void print_stats(void) {
            total_idle_polls, total_idle_duration / total_idle_polls);
   }
 
+  /* Whole loop wall time per fwd packet, empty polls included. Own label,
+     labels above unchanged: archived logs grep them. Why: Full-loop hides
+     work moved onto empty polls (async completion drained while queue dry)
+     -- such work would look free there. Async vs sync compares on this. */
+  if (total_packets_fwded > 0) {
+    printf("\nAll-poll cyc per fwd packet: %lu",
+           (total_loop_duration + total_idle_duration) / total_packets_fwded);
+  }
+
   total_packets_fwded_prev = total_packets_fwded;
   printf("\n====================================================\n");
 }
@@ -526,7 +535,7 @@ static void l2fwd_usage(const char *prgname) {
          "      (0 < ALPHA <= 0.95) with filler keys before forwarding, so\n"
          "      load factor moves while traffic stays 16M flows.\n"
          "  -S K[p]: probe build only. Phase-time every K-th poll; 'p' also\n"
-         "      reads six PMCs. See libsashstore/nbprobe.h.\n"
+         "      reads eight PMCs. See libsashstore/nbprobe.h.\n"
          "  -D PREFIX: probe build only. Dump sampled bursts to PREFIX_l<lcore>.nbp\n"
          "  --[no-]mac-updating: Enable/disable MAC updating\n",
          prgname);

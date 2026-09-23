@@ -24,7 +24,8 @@ static struct nbp_lcore *nbp_all[NBP_MAX_LCORE];
    207). Validated against bench_membw known answers, docs/REFLECT_PATH.md
    section 0. Order fixed: analysis.py probe reads by index. */
 const char *nbp_ev_name[NBP_NEV] = {"cycles",   "stall_total", "stall_l1d",
-                                    "stall_l3", "st_bound",    "rfo_hitm"};
+                                    "stall_l3", "st_bound",    "rfo_hitm",
+                                    "insns",    "br_misp"};
 static const struct {
   uint32_t type;
   uint64_t config, config1;
@@ -35,6 +36,12 @@ static const struct {
     {PERF_TYPE_RAW, 0x06a3 | (6ULL << 24), 0},  /* cycle_activity.stalls_l3_miss  */
     {PERF_TYPE_RAW, 0x40a6 | (2ULL << 24), 0},  /* exe_activity.bound_on_stores   */
     {PERF_TYPE_RAW, 0x012a, 0x10003C0002ULL},   /* ocr.demand_rfo.l3_hit.snoop_hitm */
+    /* insns: work per phase in instructions, not cycles -- IPC per phase, and
+       code-shape changes (hash, find) show as instruction count. br_misp:
+       find/post branch on key compare and chain length; a mispredict costs
+       ~15-20 cycles of "work" that cycles - stall_total cannot tell apart. */
+    {PERF_TYPE_RAW, 0x00c0, 0},                 /* inst_retired.any           */
+    {PERF_TYPE_RAW, 0x00c5, 0},                 /* br_misp_retired.all_branches */
 };
 
 /* Self-monitoring read, per perf_event_mmap_page protocol. Seqlock every read:
@@ -116,7 +123,7 @@ void nbp_worker_init(unsigned lcore) {
     }
   }
 
-  /* Ring: 1<<18 records x 264 B = 66 MiB per lcore. MADV_HUGEPAGE + prefault
+  /* Ring: 1<<18 records x 328 B = 82 MiB per lcore. MADV_HUGEPAGE + prefault
      so ring stores do not add 4 KiB TLB misses to the path being timed. */
   s->ring_cap = 1u << 18;
   size_t bytes = s->ring_cap * sizeof(struct nbp_rec);
@@ -209,10 +216,12 @@ static void nbp_dump_ring(struct nbp_lcore *s) {
   snprintf(path, sizeof(path), "%s_l%u.nbp", nbp_dump, s->lcore);
   FILE *f = fopen(path, "wb");
   if (!f) { perror(path); return; }
-  /* header: magic, version, rec size, nev, every, n in file, cal */
+  /* header: magic, version, rec size, nev, every, n in file, cal.
+     v2 = NBP_NEV 8 (v1 = 6): record and cal_ev sizes differ, so magic and
+     version both bumped; analysis.py reads either. */
   uint64_t n = s->ring_n < s->ring_cap ? s->ring_n : s->ring_cap;
   uint64_t start = s->ring_n - n;
-  uint64_t hdr[8] = {0x3170726f6270626eULL /* "nbprobp1" */, 1, sizeof(struct nbp_rec),
+  uint64_t hdr[8] = {0x3270726f6270626eULL /* "nbprobp2" */, 2, sizeof(struct nbp_rec),
                      (uint64_t)s->nev, (uint64_t)nbp_every, n, s->cal_tsc, s->lcore};
   fwrite(hdr, sizeof(hdr), 1, f);
   fwrite(s->cal_ev, sizeof(s->cal_ev), 1, f);

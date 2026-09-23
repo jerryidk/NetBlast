@@ -10,6 +10,7 @@
 #   harness.sh clock      {pinned|turbo|show}          core clock arms         (was set_clock.sh)
 #   harness.sh pagewatch  [log]                        page backing sampler    (was page_watch.sh)
 #   harness.sh codegen    [binary]                     binary still sane       (was check_codegen.sh)
+#   harness.sh ab         <out_dir> <arms> [q ...]     alternating A/B block   (new, 2026-09-23)
 #
 # Each sub runs alone in this process, with same shell options its old script
 # had, set at top of sub. Env knobs, args, output paths unchanged.
@@ -349,16 +350,104 @@ for MODE in "${MODES[@]}"; do
     BATNE=$(grep -oP 'Average rx batch sz \(nonempty polls\): \K[0-9]+' <<<"$T" | tail -1)
     MIS=$(grep -oP 'RX-Missed \(Dropped\): \K[0-9]+'  <<<"$T" | tail -1)
     ERR=$(grep -oP 'Cause: \K.*'                      <<<"$T" | tail -1)
+    # (loop+idle)/fwded, empty polls included: main.c `All-poll` line. Field
+    # goes after bin=, so older row regexes still match. NA on older binaries.
+    APC=$(grep -oP 'All-poll cyc per fwd packet: \K[0-9]+' <<<"$T" | tail -1)
 
-    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s loopcyc=%-6s idlecyc=%-6s batch=%-4s batchne=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz insns=%s extra='%s' bin=%s %s\n" \
+    printf "q=%-2s lcores=%-24s min=%-7s max=%-7s avg=%-7s loopcyc=%-6s idlecyc=%-6s batch=%-4s batchne=%-4s missed=%-12s hp1g=%s->%s freq=%sMHz insns=%s extra='%s' bin=%s allpoll=%s %s\n" \
       "$q" "$CORE_LIST" "${MIN:-NA}" "${MAX:-NA}" "${AVG:-NA}" \
       "${LCY:-NA}" "${EPC:-NA}" "${BAT:-NA}" "${BATNE:-NA}" "${MIS:-NA}" \
       "${HP_BEFORE:-NA}" "${HP_DURING:-NA}" "${FREQ_MHZ:-NA}" "${IPS:-NA}" \
-      "$L2FWD_EXTRA" "$L2FWD_BIN" "$ERR"
+      "$L2FWD_EXTRA" "$L2FWD_BIN" "${APC:-NA}" "$ERR"
   done
 done
 
 echo "SWEEP COMPLETE"
+}
+
+# ===========================================================================
+# ab -- consolidated A/B driver (new, 2026-09-23)
+# ===========================================================================
+#
+# Alternating-arm block over queue counts, reusing cmd_sweep for every run.
+# Replaces ad hoc shell loops: ordering rule lives here once, not per block.
+#
+# Order: q outer (default 6 5 4 3 2 1), arms inner in spec order, so each q
+# runs A,B,A',B' back to back. Never arm-at-a-time: drift over the block
+# (generator, thermals) must land on every arm equally, not on the last one.
+#
+# Arm = `name bin extra-args`. Spec = file, one arm per line (# comments ok),
+# or inline string, arms separated by `;`:
+#   ./harness.sh ab /users/sohamb/sweeps/x "old ./build-old/l2fwd; new ./build-new/l2fwd -P 0.9"
+# extra with -S and no -D gets `-D <out>/<name>_q<q>` (probe ring dump next to
+# its log; analysis.py probe finds it there).
+#
+# Per run: one cmd_sweep in a subshell (its exit/set -u stay there) with
+# QUEUES=q, L2FWD_BIN, L2FWD_EXTRA, TAG=name. Env passed through:
+#   MODE          l2fwd -m, default dramblast
+#   SAMPLE_AFTER  default 6: -P init 5-30 s, sample forwarding not init
+#   PERF_EVENTS   default cycles,instructions: probe -S Kp pins 8 counters
+#                 (nbprobe.h budget), wider sweep default would multiplex
+#   DRY_RUN=1     print launch plan, run nothing
+# Outputs in <out_dir>: sweep logs/perf sidecars as cmd_sweep names them
+# (<name>_<mode>_q<q>.log), rows.txt (sweep row prefixed `arm=<name>`),
+# launch_order.txt (`launch <name>_q<q> <UTC>`, execution order: the list
+# pktgen-monitor certifies against). Table: `analysis.py ab <out_dir>`.
+cmd_ab() {
+set -u
+local OUT SPEC QS
+OUT="${1:?usage: $0 ab <out_dir> <arms_file|'name bin extra; ...'> [q ...]}"
+SPEC="${2:?usage: $0 ab <out_dir> <arms_file|'name bin extra; ...'> [q ...]}"
+shift 2
+QS="${*:-6 5 4 3 2 1}"
+local MODE_AB="${MODE:-dramblast}"
+mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"   # absolute: -D path read by l2fwd
+
+local -a NAMES=() BINS=() EXTRAS=()
+local lines
+if [ -f "$SPEC" ]; then lines=$(grep -v '^\s*#' "$SPEC"); else lines=$(tr ';' '\n' <<<"$SPEC"); fi
+while read -r n b e; do
+  [ -n "${n:-}" ] || continue
+  NAMES+=("$n"); BINS+=("$b"); EXTRAS+=("${e:-}")
+done <<<"$lines"
+[ "${#NAMES[@]}" -gt 0 ] || { echo "FATAL: no arms in spec" >&2; exit 1; }
+# fail before first launch, not mid-block: half a block is not an A/B
+[ "$(printf '%s\n' "${NAMES[@]}" | sort | uniq -d)" = "" ] || { echo "FATAL: duplicate arm name" >&2; exit 1; }
+local i
+for i in "${!NAMES[@]}"; do
+  [ -x "${BINS[$i]}" ] || { echo "FATAL: arm ${NAMES[$i]}: ${BINS[$i]} missing or not executable" >&2; exit 1; }
+done
+
+# provenance: spec as run, binary hashes, source rev (appended per block)
+[ -n "${DRY_RUN:-}" ] || {
+  echo "# block $(date -u +%FT%TZ) rev=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)$(git -C "$HERE" diff --quiet 2>/dev/null || echo +dirty) q='$QS' mode=$MODE_AB"
+  for i in "${!NAMES[@]}"; do
+    echo "${NAMES[$i]} ${BINS[$i]} ${EXTRAS[$i]}  # sha256 $(sha256sum "${BINS[$i]}" | cut -c1-16)"
+  done; } >> "$OUT/arms.txt"
+
+local q ex name nrun=0 nfail=0 row
+for q in $QS; do
+  for i in "${!NAMES[@]}"; do
+    name=${NAMES[$i]}; ex=${EXTRAS[$i]}
+    if [[ " $ex " == *" -S "* && " $ex " != *" -D "* ]]; then ex="$ex -D $OUT/${name}_q${q}"; fi
+    nrun=$((nrun + 1))
+    if [ -n "${DRY_RUN:-}" ]; then
+      echo "plan $nrun: ${name}_q${q} bin=${BINS[$i]} mode=$MODE_AB extra='$ex'"
+      continue
+    fi
+    echo "launch ${name}_q${q} $(date -u +%FT%TZ)" >> "$OUT/launch_order.txt"
+    row=$( ( QUEUES="$q" L2FWD_BIN="${BINS[$i]}" L2FWD_EXTRA="$ex" \
+             SAMPLE_AFTER="${SAMPLE_AFTER:-6}" PERF_EVENTS="${PERF_EVENTS:-cycles,instructions}" \
+             cmd_sweep "$OUT" "$name" "$MODE_AB" ) 2>&1 | tee /dev/stderr | grep '^q=' )
+    # failed = no row, or row without throughput / loop ticks
+    if [ -z "$row" ] || grep -q 'avg=NA \|loopcyc=NA ' <<<"$row"; then
+      nfail=$((nfail + 1)); echo "arm=$name FAILED q=$q ${row:-no row}" >> "$OUT/rows.txt"
+    else
+      echo "arm=$name $row" >> "$OUT/rows.txt"
+    fi
+  done
+done
+echo "AB DONE out=$OUT runs=$nrun failed=$nfail${DRY_RUN:+ (dry run)}"
 }
 
 # ===========================================================================
@@ -797,6 +886,26 @@ if [ -n "${SLOTS:-}" ] && [ -n "${MEMB:-}" ] && [ "$SLOTS" -gt 0 ] 2>/dev/null; 
 else
   verdict no "topdown2 produced no usable slots/mem-bound values"
 fi
+
+echo
+echo "=== 1b. insn / brrand / brfix: nbprobe insns + br_misp encodings ==="
+echo "    predicts: inst_retired.any (0xc0) delta over two insn counts = 8/iter"
+echo "    exact; br_misp_retired.all_branches (0xc5) ~0.5/iter on random bit,"
+echo "    ~0 on alternating bit. Same raw configs nbprobe.c opens, :u like it."
+EVB='cpu/event=0xc0,umask=0x00,name=insns/u,cpu/event=0xc5,umask=0x00,name=br_misp/u'
+I1=$(val "$(sudo perf stat -e "$EVB" -x, -- taskset -c "$CPU" "$BM" insn 1 100000000 2>&1)" '^insns$')
+I2=$(val "$(sudo perf stat -e "$EVB" -x, -- taskset -c "$CPU" "$BM" insn 1 1000000000 2>&1)" '^insns$')
+BR=$(val "$(sudo perf stat -e "$EVB" -x, -- taskset -c "$CPU" "$BM" brrand 1 100000000 2>&1)" '^br_misp$')
+BF=$(val "$(sudo perf stat -e "$EVB" -x, -- taskset -c "$CPU" "$BM" brfix 1 100000000 2>&1)" '^br_misp$')
+IPI=$(awk -v a="${I1:-0}" -v b="${I2:-0}" 'BEGIN{printf "%.6f", (b-a)/9e8}')
+MR=$(awk -v a="${BR:-0}" 'BEGIN{printf "%.4f", a/1e8}'); MF=$(awk -v a="${BF:-0}" 'BEGIN{printf "%.6f", a/1e8}')
+note "insns/iter = $IPI   br_misp/iter random = $MR  alternating = $MF"
+awk -v x="$IPI" 'BEGIN{exit !(x > 7.9999 && x < 8.0001)}' \
+    && verdict ok "inst_retired.any = 8.000 per 8-instruction iteration" \
+    || verdict no "inst_retired.any = $IPI per iteration (expected 8 exact)"
+awk -v r="$MR" -v f="$MF" 'BEGIN{exit !(r > 0.45 && r < 0.55 && f < 0.001)}' \
+    && verdict ok "br_misp ~0.5 random, ~0 predictable" \
+    || verdict no "br_misp random $MR / predictable $MF (expected ~0.5 / ~0)"
 
 echo
 echo "=== 2. chase: a dependent pointer chase, 4 GiB ==="
@@ -1380,10 +1489,10 @@ exit "$fail"
 # dispatch
 # ===========================================================================
 case "${1:-}" in
-  sweep|matrix|saturation|validate|ceiling|clock|pagewatch|codegen)
+  sweep|matrix|saturation|validate|ceiling|clock|pagewatch|codegen|ab)
     sub=$1; shift; "cmd_$sub" "$@" ;;
   *)
-    sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'
     [ -z "${1:-}" ] || [ "$1" = -h ] || [ "$1" = --help ] || { echo "unknown sub: $1" >&2; exit 1; }
     exit 0 ;;
 esac

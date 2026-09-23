@@ -72,13 +72,25 @@
  *           in order, and mean cycles between marks = 16 x chase latency from
  *           perf stat cycles / loads. Run under `taskset -c` one CPU.
  *
+ *   insn    <n> iterations of an asm loop of exactly 8 instructions (6 add, dec,
+ *           jnz). Known answer for inst_retired.any: difference of two runs =
+ *           8 x difference of n, exact (setup, memset, exit cancel). nbprobe
+ *           insns counter validated on this.
+ *
+ *   brrand / brfix  <n> iterations: xorshift64 step, then asm `test $1; jz`
+ *           on a bit. brrand tests random bit 0 of state: ~0.5 mispredict per
+ *           iteration. brfix tests bit 0 of i: alternating, learned: ~0.
+ *           Same instructions both, only predictability differs. Known answer
+ *           for br_misp_retired.all_branches. asm, not C: compiler would turn a
+ *           C if() into cmov and there would be no branch to mispredict.
+ *
  *   nomem   A dependent ALU chain in registers. Touches no memory at all, so
  *           the memory counters must read ~0 and top-down must be almost
  *           entirely retiring. Catches a counter that is reading something
  *           unrelated, which a zero-reading counter cannot be distinguished
  *           from by any other means.
  *
- * Usage: bench_membw <stream|streamn|rmw|rmwn|chase|nomem> <MiB> <seconds|passes>
+ * Usage: bench_membw <stream|streamn|rmw|rmwn|chase|nomem|insn|brrand|brfix> <MiB> <seconds|passes|count>
  * Prints the bytes it actually touched, so the expected counter value is
  * computable from the program's own output rather than assumed.
  */
@@ -144,8 +156,8 @@ static void *count_thread(void *a_) {
 
 int main(int argc, char **argv) {
   if (argc < 4) {
-    fprintf(stderr, "usage: %s <stream|streamn|rmw|rmwn|chase|pingpong|fshare|padded|ptmark|nomem> "
-                    "<MiB> <seconds, passes for streamn, count for pingpong/ptmark>\n", argv[0]);
+    fprintf(stderr, "usage: %s <stream|streamn|rmw|rmwn|chase|pingpong|fshare|padded|ptmark|insn|brrand|brfix|nomem> "
+                    "<MiB> <seconds, passes for streamn, count for pingpong/ptmark/insn/br*>\n", argv[0]);
     return 2;
   }
   const char *mode = argv[1];
@@ -259,6 +271,31 @@ int main(int argc, char **argv) {
     t1 = now();
     touched = n * 16 * 64;
     sink = (uint64_t)(uintptr_t)p;
+  } else if (!strcmp(mode, "insn")) {
+    uint64_t n = (uint64_t)secs, x = 0;  /* third argument is iterations here */
+    t0 = now();
+    if (n)
+      __asm__ volatile("1:\n\t"
+                       "add $1, %0\n\tadd $1, %0\n\tadd $1, %0\n\t"
+                       "add $1, %0\n\tadd $1, %0\n\tadd $1, %0\n\t"
+                       "dec %1\n\tjnz 1b"
+                       : "+r"(x), "+r"(n));
+    t1 = now();
+    touched = 0;
+    sink = x;                        /* = 6 x iterations */
+  } else if (!strcmp(mode, "brrand") || !strcmp(mode, "brfix")) {
+    uint64_t n = (uint64_t)secs, st = 88172645463325252ULL, acc = 0;
+    int rnd = !strcmp(mode, "brrand");
+    t0 = now();
+    for (uint64_t i = 0; i < n; i++) {
+      st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+      uint64_t v = rnd ? st : i;     /* same work, bit source differs */
+      __asm__ volatile("test $1, %1\n\tjz 1f\n\tadd $1, %0\n1:"
+                       : "+r"(acc) : "r"(v));
+    }
+    t1 = now();
+    touched = 0;
+    sink = acc ^ st;                 /* acc = taken count: ~n/2 both modes */
   } else {                                      /* nomem */
     uint64_t a = 1;
     t0 = now();

@@ -36,7 +36,7 @@ argv rather than in the environment, because the sweep harness launches through
 | `-Q <n>` | prefetch pipeline depth, i.e. the find queue's size. Power of two, at least 4. Default 64. A burst of `B` packets fills the pipeline `ceil(B/Q)` times, so shortening it separates per-fill cost from per-burst cost — at the default they are the same event and cannot be told apart. |
 
 | `-P <alpha>` | dramblast only. Prefill table to load factor alpha (0, 0.95] with filler keys before forwarding; traffic unchanged. Prints measured `dramblast table prefill/exit` lines. |
-| `-S <K>[p]`, `-D <prefix>` | probe build only (`build-probe/`, `meson setup build-probe -Dnbprobe=true`). Per-burst phase timer every K-th poll, `p` adds six PMCs; `-D` dumps ring to `<prefix>_l<lcore>.nbp`. Shipped binary refuses both. See `libsashstore/nbprobe.h`, `docs/REFLECT_PATH.md`. |
+| `-S <K>[p]`, `-D <prefix>` | probe build only (`build-probe/`, `meson setup build-probe -Dnbprobe=true`). Per-burst phase timer every K-th poll, `p` adds eight PMCs; `-D` dumps ring to `<prefix>_l<lcore>.nbp`. Shipped binary refuses both. See `libsashstore/nbprobe.h`, `docs/REFLECT_PATH.md`. |
 
 Profiling tools: `nix develop ..#profile` (perf 7.2, pcm, pahole, llvm-mca, bpftrace, xed,
 likwid). Tools only; l2fwd still builds from default shell. `build-ptw/`
@@ -57,6 +57,8 @@ Everything that produced a number lives here, not in scratch dir. Two files:
 ./harness.sh clock {pinned|turbo|show}          # core clock arms
 ./harness.sh codegen [binary]             # alloc/free pairs and prefetches still exist
 ./harness.sh pagewatch & python3 analysis.py backing <log>   # backing each run ACTUALLY got
+./harness.sh ab <outdir> <arms_file|"name bin extra; ..."> [q ...]  # A/B block, q 6..1,
+                                          #   arms alternate per q; DRY_RUN=1 = plan only
 
 python3 analysis.py extract /users/sohamb/sweeps ../docs/results_reproduced.json \
         /users/sohamb/sweeps/*.out        # logs -> docs/results_reproduced.json
@@ -71,11 +73,16 @@ python3 analysis.py plot-ceiling <csv>    # docs/dram_ceiling.svg
 python3 analysis.py selftest [--real]     # fire perf multiplexing guard
 python3 analysis.py probe <out.json> <log ...>   # nbprobe logs + ring dumps -> per-phase table
 python3 analysis.py ptw <perf-script.txt ...>    # PT ptwrite trace -> per-packet timeline
+python3 analysis.py ab <outdir> [A:B ...]        # ab block -> Mpps / loop / all-poll per arm per q
 ```
 
 `harness.sh sweep` knobs added 2026-09-22: `L2FWD_BIN` (default `./build/l2fwd`; probe arms
 use `./build-probe/l2fwd`), `SAMPLE_AFTER` (wait for `Link UP`, then N s, before perf: for
-`-P` runs whose init is 5-30 s). Row now ends `bin=<binary>`.
+`-P` runs whose init is 5-30 s). Row now ends `bin=<binary>`; since 2026-09-23 then
+`allpoll=<(loop+idle)/fwded>` (main.c `All-poll cyc per fwd packet`, empty polls included).
+
+Build `-march` (2026-09-23): `-Dmarch=` (default `icelake-server`) appended after DPDK's
+pkg-config `-march=nehalem`; `-Dmarch=dpdk` = old build. See `meson.build`, REFLECT_PATH §6.
 
 `./harness.sh` or `python3 analysis.py` alone prints sub list. Each sub takes
 same args, env knobs, output paths as old script it replaced.
