@@ -1070,3 +1070,358 @@ Findings / corrections:
 
 Verdict: **keep C1, C2, C3**, two passes. Caveat for C1: fallback path costs on
 non-IPv4/TCP/UDP traffic (net_null −14%); fine for this rig, note if traffic mix changes.
+
+---
+
+## 9. Step 2b: find head/tail in locals (D1), in-order home compare (D2), insert from find hint (D3), prefetcht0 (D4)
+
+Data: `/users/sohamb/sweeps/reflect/step2b/` (`rows.txt`, `launch_order.txt`,
+`arms.txt`, `bin/` + `SHA256SUMS`, logs, `*.nbp`). Four changes, each own diff
+(`bin/d1..d4.patch`, each applies on e20527e), own binary, own arm; `all` = all
+four. Blocks: `step2b/` (1: all four), `b2/` (D2 v2), `b3/` (D2 v3), `b4/` (kept set
+D1+D3 = `d13`). **Kept: D1, D3. Reverted: D2 (3 designs), D4** (9.8). `bin/d1.patch`,
+`bin/d3.patch` each apply on e20527e; `bin/series-1-d1.patch` then
+`bin/series-2-d3.patch` = working tree for dramblast.{c,h}, tests/test_dramblast.c,
+tests/Makefile (not tests/README.md, not this doc: 9.9). Rejected diffs in `bin/rejected/`.
+
+### 9.1 What changed
+
+- **D1** `dramblast_find_batch_sync`: queue pointer, head, tail, mask, table
+  base, len, bucket mask read once into locals; head/tail stored back once at
+  return (queue empty then: loop ends only when every arg resolved). push /
+  pop / get_queue_sz helpers removed. `dramblast_home(k, bmask)` split out of
+  `dramblast_hash`. Same pushes, pops, prefetches in same order: result
+  SEQUENCE identical. Why: P9 (helpers re-derive `&ht->queues[id]`, head/tail
+  through memory every push/pop), P11 (results[] stores may alias them), P8.
+  Same idea as `opt/dramblast-hoist.patch` (INVESTIGATION s5.26: microbench
+  35.3 vs 35.7, nothing, at 3% occupancy, unpadded queues).
+- **D2** find: home bucket of every key compared in submission order straight
+  from args[]; queue holds reprobes only. In flight (homes prefetched not yet
+  compared + reprobes queued) kept ≤ depth − 1, as queue was: top up home
+  prefetches to bound, then one step = oldest prefetched home, else pop one
+  reprobe. α≈0 schedule = HEAD exactly (prefetch 63, compare, prefetch 64th,
+  ...). Home idx recomputed at compare (2nd crc32), not stored. Shared
+  `dramblast_bucket_step` = one bucket compare for home and reprobe. Order of
+  results changes (fresh home before older reprobe); per id status, v same.
+  Why: §4.1, every home hit paid full push → pop round trip. (= v1; v2, v3
+  after block 1: 9.5. All reverted.)
+- **D3** ABSENT result `v` = insert hint (was undefined, 0): low 32 bits first
+  empty slot find saw (terminal bucket + lane), high 32 slots walked from home
+  before it = insert_one's count on arrival there. Post loop calls
+  `dramblast_insert_at(ht, k, v, hint)`: same slot walk as insert_one
+  (`dramblast_insert_walk`, shared), started at hint. `DRAMBLAST_ABSENT_HINT`
+  in dramblast.h; init refuses len > 2^32 (hint packing; crc home caps table
+  at 2^32 anyway, C7). Why: P4, insert re-hashed and re-walked home..terminal
+  slot by slot. Safe under any interleaving: slot keys never change once set
+  (no deletes, CAS from 0), so walk from hint reaches hint slot in state walk
+  from home would; in-burst duplicate new flow (same hint) and other lcore
+  filling hint slot both land in existing CAS-fail / `kv->k == k` path.
+  nbprobe `ins_steps` now = slots actually walked (was count from home; same
+  for insert_one).
+- **D4** `PREFETCH_*` table fixed to `_MM_HINT_*` values (was inverted, §1.2),
+  find/insert/prefill prefetch = T0 (`prefetcht0`, was `prefetcht2`). Rebase
+  of `opt/dramblast-prefetch-hints.patch`. INVESTIGATION s5.26 microbench:
+  −0.95 ± 0.24 ticks/pkt. Cheap, separable: taken as D4. (Reverted: 9.4.)
+
+Probe (D2): home compare counts as pop, so pops = buckets loaded, pops/key
+comparable; occ at home compare = in flight incl. this one = queue size at
+pop before (same set when order same, e.g. α≈0: 32.5 predicted both).
+
+### 9.2 Before rig: equivalence, codegen, net_null
+
+`tests/`: T3, T6 check ABSENT by status (v now hint); new T13 (find vs HEAD
+e20527e transcription), T14 (insert_at vs insert_one, slot for slot), T15
+(2-thread race). nix gcc 10.3.0 and system gcc 11.4.0, both 0 warnings: base
+41/41, d1 d2 45/45, d3 all 56/56, d4 41/41. (Final, after 9.5: T13 also asserts
+result SEQUENCE = HEAD, since D1 and D3 keep it: d1 46/46, d3 and working tree
+57/57, both compilers.)
+
+| test | scenarios | result |
+|---|---|---|
+| T13 find vs HEAD, per id (status, v; ABSENT v = scalar-walk hint with D3) | len 2^8/2^10/2^12 × load 0-1.0 (10 steps) × depth 4-64 × random start head/tail, 18000 batches, 1..64 keys (1 in 10: 65..200), present / absent / in-batch repeat, stored v incl. 0: 766857 lookups (found 425767, absent 311452, full 29638) | **0** mismatches, 0 bad count / id set, queue empty at return every call. Same result sequence: d1 18000/18000, d2 10671/18000 (order only) |
+| T14 insert_at vs insert_one, single thread | 3 len × 7 loads 0-0.99, 1260 batches, 9811 ABSENT inserts (3046 share hint with earlier key of same batch, 215 fail both: table full) | hint = scalar walk 9811/9811; return codes, tables slot for slot equal after every batch; real `dramblast_process_frames` vs HEAD post loop: ret[] and table equal 1260/1260 |
+| T14 crafted wrap | table full but slot home+L (L 0..3) and home−1; 2 keys, same home | both paths: both succeed, 2nd walks whole ring to home−1; tables equal; also through process_frames |
+| T15 2 threads, find + insert per burst, 300 rounds × 1500 keys each (750 shared), load 0.5 → ~0.77 | insert_at and insert_one | duplicates 0, missing 0, wrong v 0, filler lost 0, failed 0, both paths. Hint slot filled by OTHER thread between find and insert: 13114 (other key), 9741 (same shared key) times |
+
+Teeth (mutant → caught by): D1 bmask without ~3 → SIGSEGV; fill `<= qmask` →
+T2/T3/T13; bound `count > len` → T13 (169); reprobe visit 0 → hang at full
+table (timeout). D2 home count 4 → T13 (149); top-up `<= window` → T13 (id set);
+home idx of k+1 → T2 T4 T5 T13; empty test off on home → T13 (147). D3 lane
+without >>1 → T13 T14; hint count +4 → T13 T14 wrap; count −lane → T13 T14;
+hint +1 → T13 T14; `kv->k == k` update only at 1st slot → T15 duplicates
+(49633); post loop hint & ~3 → T14 wrap via process_frames (lanes 1-3).
+Not caught, equivalent: hint count dropped to 0 (in insert_at or post loop):
+failing walk goes longer, outcome same (no empty slot appears: no deletes).
+
+Codegen (nix gcc 10.3, meson defaults, icelake-server): base `.text`,
+`.rodata`, `.data` = `step2a/bin/l2fwd-all` (and -prb = all-prb). find
+instructions (objdump): base 280, d1 249, d2 275, d3 278, d4 280, all 294.
+d4/all: every table prefetch `prefetcht0`, 0 `prefetcht2`. all: gcc spills
+head, tail, fq, len, args, results to stack (15 live values): no longer
+aliased by result stores, still memory. `harness.sh codegen` OK all 8 bins.
+
+net_null (`-l 24,25 --vdev=net_null0 --no-pci -m dramblast -c 1048576`, 30 s):
+all 6 + 2 probe exit clean (`Bye...`), unmapped = received (±64). Frames all
+zero → key 0 → find never called: start/exit smoke only. `-c 2^22 -B 4k -P
+0.9`: prefill occupied 3774873, disp/hit/miss means 0.993 / 1.993 / 13.027,
+max 288 in all 6; histogram deltas ≤ 150 (2-lcore CAS race, §6.2).
+
+### 9.3 Predictions, written before rig data
+
+Δ loop ticks/pkt vs base, α≈0 at q ≤ 3 (q ≥ 4 generator-capped since §8:
+0), α 0.9 every q. Base (= step2a `all`): α≈0 84/83/83 (q 3→1); α 0.9
+417-446. Probe base α≈0: find 27.1-28.5, pops/key 1.000, occ 32.5.
+
+| change | α≈0 loop | α 0.9 loop | probe |
+|---|---|---|---|
+| D1 | 0 to −2 (s5.26 microbench: nothing) | −5 to −25 (head/tail chain × 17.9 pops/key) | — |
+| D2 | −3 to −8 | −2 to −8 (one round trip per key saved, not per bucket) | — |
+| D3 | 0 ±1 (insert at home anyway) | −5 to −20 (whole-run loop holds warm-up: ~3% absent × ~74 slots walk) | — |
+| D4 | 0 to −2 | 0 to −3 | — |
+| all | −4 to −12, = sum ±3 | −12 to −50, = sum ±5 | α≈0 find 27-28 → 18-23, pops/key 1.000 and occ 32.5 unchanged; α 0.9 pops/key equal ±0.1, find work down; post (log sums, incl. warm-up) ins_steps per insert ~74 → ≤ 2 |
+
+Keep rule: better than noise (pass-to-pass ≤ 1-3) with same sign at every
+discriminating q, 0 unmapped, α 0.9 exit occupancy equal (q ≥ 4). Else revert
+from working tree, record why.
+
+### 9.4 A/B, block 1 (all four, one pass)
+
+`harness.sh ab step2b/`, q 6→1, per q: base d1 d2 d3 d4 all (α≈0), same `_p9`,
+baseprb allprb, baseprb_p9 allprb_p9. 96 launches, 07:08:53-08:24Z, 0 failed, 0
+unmapped. Base = step2a `all` (.text identical): α≈0 q 3/2/1 84/84/83 (75.43 / 50.50 /
+25.66 Mpps); α 0.9 418/418/417/418/425/446 (q 6→1). `d2`, `all` here = D2 v1.
+
+Δ loop ticks/pkt (arm − base), q 6/5/4/3/2/1. α≈0 q ≥ 4 capped (93.28 Mpps, Δ 0 or
+slack into B):
+
+| arm | α≈0 | α 0.9 |
+|---|---|---|
+| d1 | 0, 0, 0, **−2, −1, −1** | **−23, −24, −23, −23, −23, −25** |
+| d2 (v1) | −3 cap, 0, 0, −1, 0, 0 | **+18, +19, +19, +19, +20, +19** |
+| d3 | −1 cap, 0, 0, 0, 0, +1 | **−13, −15, −15, −18, −25, −46** |
+| d4 | −1 cap, 0, 0, −1, −1, −1 | **+5, +3, +6, +3, +2, 0** |
+| all (v1) | −1 cap, 0, 0, −5, −4, −4 | +9, +6, +5, +1, −6, −30 |
+| allprb − baseprb | 0, 0, −3, −5, −3, −5 | +28, +24, +24, +17, +8, −17 |
+
+α 0.9 ΔMpps d1 +1.78 … +0.32, d3 +0.48 … +0.26, d2 −1.30 … −0.21, d4 −0.36 … 0.00.
+Exit occupancy α 0.9: all arms 499961036 at q ≥ 5; q4 all_p9 499961034 (−2), rest
+equal; q ≤ 3 prefill race (§6.2).
+
+D3 grows as q falls: loop is whole-run, holds warm-up (16.8M first sightings).
+Fewer lcores = fewer packets per run: absent share of whole run α 0.9 base 1.9%
+(q6) → 12.1% (q1), each insert walk 74.5 slots → 1.0.
+
+D4 hurts at α 0.9 on rig while own microbench (scratch, L1 holds only table
+lines) gives −5 to −9 ticks/key: rig L1 also holds packet header + mbuf lines.
+Not probed alone; mechanism open.
+
+### 9.5 D2: two more designs, both lose
+
+D2 v1 probe (`allprb_p9` vs baseprb_p9, ring, q ≤ 4): find 399.7-408.6 vs
+368.8-372.1, find insns 1143-1149 vs 1021-1023, mem_wait +1-3: extra work, not wait.
+
+- **v2** (`b2/`, 60 launches 08:24:53-09:12Z, 0 failed, 0 unmapped): queue item
+  records `home_mark` (homes prefetched before it, old padding) so step order =
+  queue version FIFO exactly (T13: result sequence 18000/18000). Δ d2v2 − base:
+  α≈0 q3/2/1 **+3, +4, +3**; α 0.9 +17, +18, +18, +15, +19, +19. allv2: α≈0 −4, −2,
+  −4; α 0.9 +7, +4, +1, −5, −9, −31. Order not cause. 3 probe rows at q4
+  (allv2prb, allv2prb_p9, baseprb_p9) lost: disk full ~08:45Z (another session's
+  22 GB in /tmp plus ring dumps); step2b dumps since gzipped (`*.nbp.gz`,
+  `gunzip` before `analysis.py probe`).
+- **v3** (`b3/`, 69 launches 09:14:07-10:19Z, 0 failed, 0 unmapped; α≈0 plain arms
+  only q ≤ 3): no per-step choice: home pass (homes compared in order, reprobes
+  pushed, pop only when queue full), then drain loop = old pop loop without fill
+  test. Order: homes first, then reprobes FIFO. In flight up to 2 × 63.
+
+v3 Δ loop, q 6/5/4/3/2/1 (α≈0 q 3/2/1):
+
+| arm | vs | α≈0 | α 0.9 |
+|---|---|---|---|
+| d1 | base | −1, −2, −1 | −23, −23, −23, −23, −23, −24 |
+| d2v3 (helper style, on HEAD) | base | −1, −1, −1 | **+39, +42, +40, +41, +41, +43** |
+| d12v3 (D1 + D2 v3) | d1 | **+1, +2, +1** | **+3, +3, +2, +3, +2, +1** |
+| d123v3 (+ D3) | d12v3 | −1, −1, −1 | −5, −7, −8, −11, −17, −36 |
+
+Why D2 loses everywhere:
+- Alone, on helpers: its loops test queue size every step through
+  `ht->queues[id]`, reloaded after every result store (P9). HEAD pop loop stops
+  testing once args exhausted (`args_head < args_len` short-circuits). So D2
+  multiplies exactly the reload D1 removes.
+- On D1, α≈0: work saved turns into wait. d123v3prb vs baseprb ring q ≤ 4: find
+  insns 58.6 vs 75.5, work 17.0-17.4 vs 21.0-21.4, but mem_wait 4.8-6.6 vs 2.2-2.8,
+  find 26.6-29.2 vs 27.1-28.5. Faster compares reach first bucket sooner after
+  prefetch: burst-start fill ramp (§4, §4.1) now exposed. Net 0 to +2.
+- On D1, α 0.9: steady ring find equal (d123v3prb 351.7-364.0 vs d13prb
+  352.7-358.6, insns 931-935 vs 930-933): home round trip = 1 of 17.9 buckets per
+  key. Loop +1 to +3 over d1 (whole run).
+
+### 9.6 Kept set D1 + D3 (`d13`), block 4, and probe
+
+`b4/`, arm order reversed (d13 first), 42 launches 10:20-10:58Z, 0 failed, 0
+unmapped; α≈0 plain arms q ≤ 3 only. Exit occupancy α 0.9 d13 = base 499961036 at q
+≥ 4 (probe arms too); q ≤ 3 race.
+
+| q | α≈0 base → d13 (Mpps) | Δ | α 0.9 base → d13 (Mpps) | Δ | probe α≈0 Δ | probe α 0.9 Δ |
+|---|---|---|---|---|---|---|
+| 6 | cap | — | 419 → 388 (30.54 → 32.48) | **−31** | 0 cap | −23 |
+| 5 | cap | — | 418 → 386 (25.64 → 27.22) | **−32** | 0 cap | −26 |
+| 4 | cap | — | 418 → 384 (20.59 → 21.90) | **−34** | −1 | −27 |
+| 3 | 84 → 83 (75.38 → 76.38) | −1 | 419 → 382 (15.52 → 16.54) | **−37** | −3 | −30 |
+| 2 | 83 → 83 (50.58 → 51.02) | 0 | 425 → 382 (10.32 → 11.02) | **−43** | −3 | −36 |
+| 1 | 83 → 82 (25.67 → 25.93) | −1 | 446 → 381 (5.00 → 5.53) | **−65** | −3 | −61 |
+
+d13 α 0.9 loop flat 381-388 over q (base 418-446): q-dependence of base was
+warm-up insert walk. α 0.9 Mpps +6.3% (q6) to +10.6% (q1).
+
+Probe (`-S 16p`, ring = last 10 s, mark cost subtracted), q ≤ 4 ranges, b4:
+
+| | baseprb α≈0 | d13prb α≈0 | baseprb α 0.9 | d13prb α 0.9 |
+|---|---|---|---|---|
+| find | 27.4-28.4 | **24.4-26.6** | 368.4-372.0 | **352.7-355.6** |
+| work / mem_w / other | 21.1-21.4 / 2.3-2.8 / 4.1-4.3 | 18.7-19.1 / 2.1-3.7 / 3.7-3.9 | 302.3-303.1 / 35.6-37.5 / 29.3-31.1 | 286.9-287.9 / 37.2-39.0 / 27.8-28.6 |
+| find insns / pkt | 75.5 | 68.8 | 1021.4-1025.3 | 929.9-932.9 |
+| pops/key, occ | 1.000, 32.5 | 1.000, 32.0-32.5 | 17.87-17.94, 21.5 | 17.87-17.93, 21.5 |
+| post (ring) | 3.4 | 3.3-3.4 | 3.9-10.4 | 4.0-4.8 |
+| insert slots walked / insert (whole run) | 1.06 | **1.00** | 74.45-74.72 | **1.00** |
+| rfo_hitm, every lcore | 0.00 | 0.00 | 0.00 | 0.00 |
+
+Other phases ±0.5 (rx at q4 α≈0 +1.7: capped, slack). D1 per bucket: −92
+instructions per packet at 17.9 buckets = −5.1 per bucket, −16 ticks/pkt find.
+Loop Δ (−31 to −65) > ring find Δ (−16): rest is D3 on warm-up, outside 10 s
+ring. q1 base post 10.4 in ring = q1 still inserting in last 10 s (12% absent
+whole run).
+
+### 9.7 Predictions vs result
+
+| prediction (9.3) | result | verdict |
+|---|---|---|
+| D1 α≈0 0 to −2 | −2, −1, −1 (b1); −1, −2, −1 (b3) | PASS |
+| D1 α 0.9 −5 to −25 | −23 to −25, 12/12 | PASS (top end) |
+| D2 α≈0 −3 to −8 | v1 −1, 0, 0; v2 +3, +4, +3; v3 −1 alone, +1 to +2 on D1 | **FAIL** |
+| D2 α 0.9 −2 to −8 | v1 +18 to +20; v2 +15 to +19; v3 +39 to +43 alone, +1 to +3 on D1 | **FAIL**, sign |
+| D3 α≈0 0 ±1 | 0, 0, +1 | PASS |
+| D3 α 0.9 −5 to −20 | −13, −15, −15, −18, −25, −46 | PASS q ≥ 3; FAIL q2, q1 (bigger: warm-up share grows as q falls, not modelled) |
+| D3 ins_steps/insert ~74 → ≤ 2 | 74.45-75.03 → 1.00 | PASS |
+| D4 α≈0 0 to −2 | −1, −1, −1 | PASS |
+| D4 α 0.9 0 to −3 | +5, +3, +6, +3, +2, 0 | **FAIL**, sign |
+| all α≈0 −4 to −12 | all v1 −5, −4, −4; kept d13 −1, 0, −1 | PASS (v1); kept set smaller: D2/D4 gone |
+| all α 0.9 −12 to −50, = sum ±5 | all v1 +9 … −30: FAIL. d13 −31, −32, −34, −37, −43, −65 vs d1 + d3 (b1) −36, −39, −38, −41, −48, −71 | d13: range PASS q ≥ 2, FAIL q1 (−65); sum ±5 PASS q 6, 4, 3, 2, FAIL q5 (7), q1 (6): parts overlap a little |
+| probe find α≈0 → 18-23 | d13 24.4-26.6 | **FAIL**: D2 was carrying that |
+| pops/key, occ unchanged | 1.000 / 32.5; 17.9 / 21.5 | PASS |
+
+Miss pattern: D2 idea (skip queue at home) right in instruction count, wrong in
+time. At α≈0 lookup already bound by prefetch ramp (§4 fact 1): fewer
+instructions = earlier stall. At α 0.9 home is 1 of 17.9 buckets.
+
+### 9.8 Verdict
+
+**Keep D1, D3. Revert D2, D4** (removed from working tree).
+
+- D1: α 0.9 −23 to −25 every q, two blocks; α≈0 −1 to −2, 6/6 negative across two
+  blocks (noise edge, sign consistent). Result sequence identical to HEAD (T13).
+- D3: α 0.9 −13 to −46 (b1), −5 to −36 on top of D1+D2v3 (b3), d13 (b4) − d1 (b1)
+  −8 to −40 (cross-block);
+  α≈0 0 (inserts land at home anyway). Insert walk 74.5 → 1.0 slots. Functionally
+  identical: T13/T14/T15, exit occupancy equal.
+- D2: three designs, none better than noise; worse at α 0.9 in all. Rejected diffs
+  `bin/rejected/d2v2.patch`, `d2v3.patch`, `d2v3-on-d1.patch`, `v1/`.
+- D4: α 0.9 +2 to +6 on rig. `bin/rejected/d4.patch`. `opt/dramblast-prefetch-hints.patch`
+  stays unapplied; hint table still inverted in source (name-only fix measured flat
+  in s5.26; not re-tested alone here).
+
+Generator (pktgen-monitor, own RX-transition spans): blocks 96 + 60 + 69 + 42 = 267
+launches, 267 spans, 0 failures, MAPPING SAFE each; in-span 93.28 samples 3132/3153,
+1961/1974, 2253/2265, 1374/1381; exceptions = above-line-rate artifacts (RX
+undisturbed) and 11 rounding samples at 93.27 (adjacent run pairs); No-Mbufs 0, NIC
+errors 0, nothing quarantined.
+
+Revert, each one commit: D1 = dramblast.c find locals + `dramblast_home` + T13 (+ README
+T13 line); D3 = `dramblast_insert_walk` / `insert_at` / `absent_hint`, post loop
+call, init len check, dramblast.h hint, T3/T6 status checks, T14, T15, Makefile
+`-pthread` (+ README T14/T15 lines, status 57). sha256 (first 16): base f9a903ded212bf28,
+base-prb e0f1e4558ddfdfa0, d1 30110d64ee5731e2, d3 c19aeb17ae5db970, d13
+6d139723f70faabb, d13-prb 640efbb524881057; all 19 bins in `bin/SHA256SUMS`. d13
+source = working tree (series-1 + series-2 on e20527e, byte for byte, code + tests; README
+T12-T15 lines and status 57 not in patches).
+
+### 9.9 Verification (independent verifier, 2026-09-23)
+
+Data: `/users/sohamb/sweeps/reflect/step2b_rep/` (`rows.txt`, `launch_order.txt`,
+`arms_q*.spec`, `arms.txt`, logs). Same `step2b/bin/` binaries.
+
+Source + binaries: `series-1-d1.patch` + `series-2-d3.patch` on `git archive e20527e` =
+working tree for dramblast.{c,h}, test_dramblast.c, Makefile (README, doc not in
+patches: intro fixed). `d1.patch`, `d3.patch` each apply alone. Own rebuild (nix, meson
+defaults, CPUs 30-55) base, base-prb, d1, d3, d13, d13-prb: `.text`, `.rodata`, `.data`
+= `step2b/bin/` all 6 (whole-file sha differs: build paths). `harness.sh codegen` OK
+base d1 d3 d13 (prefetches 17, 17, 18, 18). `-Dnbprobe=true -Dnbptw=true` builds, no
+new warning.
+
+`tests/`: nix gcc 10.3.0 and system gcc 11.4.0 57/57, 0 warnings; ASan + UBSan
+(`-O1`, no recover) 57/57.
+
+Review:
+- ABSENT `v` read only by post loop (`insert_at`). grep l2fwd/, tests/, archive/: no
+  other reader; maglev, sashstore never touch `dramblast_result_t`. FULL still v = 0,
+  never inserted, never hinted.
+- ABSENT only when count < len, so hint slot < len ≤ 2^32 and count < 2^32: packing
+  safe. main.c `-c` already rejects > 2^32; init check = second guard.
+- Hint = first empty slot of walk from home at find time. Slots before it held non-k
+  keys; no code clears a key (grep: only CAS from 0, `v` update, munmap at exit), so
+  those stay non-k: walk from hint = walk from home from that slot on, incl. bound
+  (`count >= len`), wrap, CAS lost, same key filled by own burst or other lcore.
+- D1: only exit is loop end (FULL path `continue`s loop), head/tail stored there;
+  `head == tail` then. bmask = `(len-1) & ~3` = `dramblast_hash` mask; reprobe
+  `(idx+4) & bmask` = old `& (len-1)` then `& ~3`. prefill, `table_stats` still
+  `dramblast_hash`, unchanged.
+- Probe: pops, reprobes, occ at same points, same values. `ins_steps` = slots walked
+  from start slot (insert_one: from home, as before). Stale: `nbprobe.h` comment
+  still says "insert_one slots walked" (comment only, left).
+
+Own harness (scratch, not T13-T15): HEAD `dramblast.c` (`git show HEAD:`, HEAD header)
+compiled in own TU, every external symbol renamed by `-D`, linked next to working
+tree dramblast.c (included whole, backends settable).
+- (i) find, HEAD vs new, same table: 5 len (16-4096) × 13 loads (0-1.0, 1.0 = every
+  slot full), 65000 batches, 1-64 keys (1 in 10: 65-300), present / absent / in-batch
+  repeat / key 0, random ids, depth 4-64, random start head. 3077577 lookups (found
+  1529949, absent 1424424, full 123204): result SEQUENCE equal 65000/65000 (id,
+  status, v; ABSENT: HEAD v 0), ABSENT hint = scalar slot walk from home every one,
+  head/tail after = HEAD's and head = tail every call.
+- (ii) HEAD `dramblast_process_frames` (insert_one) vs new (insert_at), 5 len × 8 loads
+  0-1.0, 16000 bursts, 2 in 10 keys forced to one home per burst, 2 in 10 repeat of
+  recent new keys (57492 in-burst repeats of absent key): ret[] and whole table
+  (memcmp) equal after 16000/16000 bursts; 13437 inserts, 394129 ret 0 (full).
+- (iii) 4 threads, own queue id each, real process_frames, shared key set, in-burst
+  repeats: len 2^14 prefill 0.5 / 0.9, 2^12 prefill 0.97 (fills mid run), 2^10 and
+  2^16 empty; 3 reps each. Duplicates 0, wrong v 0, filler lost 0, bad ret 0; missing
+  keys and ret 0 only in configs that ended full (occupied = len); others occupied =
+  filler + distinct keys exactly. Same under ASan + UBSan.
+- Teeth: hint lane without `>> 1`, hint +1, `insert_at` start `& ~3`, `kv->k == k`
+  update off, head store dropped: each caught. `insert_at` count 0: not caught,
+  equivalent (9.2).
+
+Rig replicate, rotated arm order per q (q6 d13_p9 d3_p9 d1_p9 base_p9, rotating; q ≤ 3
+adds d13, base), 30 launches 11:15:51-11:44:40Z, 0 failed, 0 unmapped. pktgen-monitor:
+30 spans = 30 + 0, MAPPING SAFE, 93.28 in-span 984/987 (3 above-line-rate artifacts),
+No-Mbufs 0. freq 2092-2098 MHz.
+
+Δ loop ticks/pkt vs base_p9 (α 0.9), q 6/5/4/3/2/1. base_p9 rep 422, 418, 417, 419, 426,
+446.
+
+| arm | this rep | earlier | mean (n) | sign |
+|---|---|---|---|---|
+| d1_p9 | −26, −21, −23, −24, −24, −25 | b1 −23, −24, −23, −23, −23, −25; b3 −23, −23, −23, −23, −23, −24 | −24.0, −22.7, −23.0, −23.3, −23.3, −24.7 (3) | 18/18 − |
+| d3_p9 | −17, −14, −14, −19, −25, −46 | b1 −13, −15, −15, −18, −25, −46 | −15.0, −14.5, −14.5, −18.5, −25.0, −46.0 (2) | 12/12 − |
+| d13_p9 | −34, −33, −33, −38, −44, −65 | b4 −31, −32, −34, −37, −43, −65 | −32.5, −32.5, −33.5, −37.5, −43.5, −65.0 (2) | 12/12 − |
+
+d13_p9 loop rep 388, 385, 384, 381, 382, 381 (flat, as b4). Mpps base_p9 → d13_p9: 29.85
+→ 32.46, 25.07 → 27.25, 20.11 → 21.85, 15.03 → 16.50, 9.85 → 10.98, 4.71 → 5.51. α≈0 d13
+− base q 3/2/1: 0, 0, −1 (83 → 83, 83 → 83, 83 → 82); b4 −1, 0, −1. d1 + d3 (rep) vs d13:
+−43/−34, −35/−33, −37/−33, −43/−38, −49/−44, −71/−65: sub-additive, 2-9 ticks. q6 Δ
+here 2-4 bigger than other passes: base_p9 q6 422 (b1 418, b4 419).
+
+Exit occupancy α 0.9: all 12 arms 499961036 at q ≥ 4. q ≤ 3 differ (499873386-499961035,
+prefill race §6.2, base in range).
+
+Verdict: 9.1-9.8 claims hold. D1 PASS, D3 PASS, d13 PASS. Keep D1, D3. One doc fix
+(intro: patches do not carry README/doc). No code change.
